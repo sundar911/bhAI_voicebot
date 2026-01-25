@@ -1,0 +1,8 @@
+.DS_Store
+.cursor/
+.venv/
+__pycache__/
+*.pyc
+.env
+
+voice_poc/outputs/

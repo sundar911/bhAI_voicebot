@@ -1,0 +1,124 @@
+import json
+import os
+import time
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, Request, Response
+from fastapi.responses import PlainTextResponse
+
+ROOT = Path(__file__).resolve().parents[1]
+
+if str(ROOT) not in os.sys.path:
+    os.sys.path.insert(0, str(ROOT))
+
+from src.audio_utils import ensure_dir
+from src.config import OUTPUTS_DIR, load_config
+from src.pipeline import run_pipeline
+from src.sarvam_tts import SarvamTTS
+from src.whatsapp_client import WhatsAppClient
+
+app = FastAPI()
+
+INTRO_TEXT = (
+    "नमस्कार! मैं आपकी सहायता साथी हूँ। "
+    "आप मुझे यहाँ पर अपनी आवाज़ में सवाल पूछ सकते हैं, जैसे वेतन, छुट्टी, या काम से जुड़ी बात। "
+    "मैं आपकी बात सुनकर आसान हिंदी में जवाब दूँगी।"
+)
+
+SEEN_FILE = OUTPUTS_DIR / "wa_seen.json"
+
+
+def _load_seen() -> Dict[str, bool]:
+    if not SEEN_FILE.exists():
+        return {}
+    try:
+        return json.loads(SEEN_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+
+def _save_seen(seen: Dict[str, bool]) -> None:
+    ensure_dir(SEEN_FILE.parent)
+    SEEN_FILE.write_text(json.dumps(seen, indent=2), encoding="utf-8")
+
+
+def _get_message(entry: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    try:
+        changes = entry.get("changes", [])
+        if not changes:
+            return None
+        value = changes[0].get("value", {})
+        messages = value.get("messages", [])
+        return messages[0] if messages else None
+    except Exception:
+        return None
+
+
+@app.get("/webhook")
+async def verify_webhook(request: Request):
+    params = request.query_params
+    mode = params.get("hub.mode")
+    token = params.get("hub.verify_token")
+    challenge = params.get("hub.challenge")
+    config = load_config()
+    if mode == "subscribe" and token == config.meta_verify_token:
+        return PlainTextResponse(challenge or "")
+    return Response(status_code=403)
+
+
+@app.post("/webhook")
+async def webhook(request: Request):
+    payload = await request.json()
+    entry_list = payload.get("entry", [])
+    if not entry_list:
+        return {"status": "no_entry"}
+
+    config = load_config()
+    wa = WhatsAppClient(
+        token=config.meta_wa_token,
+        phone_number_id=config.meta_phone_number_id,
+        api_version=config.meta_api_version,
+    )
+
+    for entry in entry_list:
+        message = _get_message(entry)
+        if not message:
+            continue
+
+        sender = message.get("from")
+        msg_type = message.get("type")
+        if msg_type != "audio":
+            continue
+
+        audio = message.get("audio", {})
+        media_id = audio.get("id")
+        if not media_id or not sender:
+            continue
+
+        run_dir = OUTPUTS_DIR / f"wa_{int(time.time())}"
+        ensure_dir(run_dir)
+
+        media_info = wa.get_media_url(media_id)
+        media_url = media_info.get("url")
+        mime_type = media_info.get("mime_type", "audio/ogg")
+        extension = ".ogg" if "ogg" in mime_type else ".wav"
+        inbound_path = run_dir / f"inbound{extension}"
+        wa.download_media(media_url, inbound_path)
+
+        seen = _load_seen()
+        if not seen.get(sender):
+            tts = SarvamTTS(config)
+            intro_path = run_dir / "intro.wav"
+            tts.synthesize(INTRO_TEXT, intro_path)
+            intro_media_id = wa.upload_media(intro_path, mime_type="audio/wav")
+            wa.send_audio(sender, intro_media_id)
+            seen[sender] = True
+            _save_seen(seen)
+
+        result = run_pipeline(audio_path=inbound_path, out_dir=run_dir)
+        response_audio_path = run_dir / "response.wav"
+        response_media_id = wa.upload_media(response_audio_path, mime_type="audio/wav")
+        wa.send_audio(sender, response_media_id)
+
+    return {"status": "ok"}
