@@ -1,0 +1,58 @@
+# STT Model Configurations for Benchmarking
+
+models:
+  # Current production model (API-based)
+  sarvam_saarika:
+    type: api
+    provider: sarvam
+    model_id: saarika:v2.5
+    endpoint: https://api.sarvam.ai/speech-to-text
+    languages: [hi, mr, ta, te, kn, ml, gu, bn, pa, od]
+    notes: "Current baseline. Good Hindi/Marathi, low latency."
+
+  # ARTPARK-IISc model (HuggingFace)
+  vaani_whisper:
+    type: huggingface
+    model_id: ARTPARK-IISc/whisper-large-v3-vaani-hindi
+    device: cuda
+    languages: [hi]
+    notes: "Trained on Vaani, IndicVoices, FLEURS. Best for clean Hindi."
+
+  # AI4Bharat IndicWhisper
+  indic_whisper:
+    type: huggingface
+    model_id: ai4bharat/indicwhisper-large-v2
+    device: cuda
+    languages: [hi, mr, ta, te, kn, ml, gu, bn, pa, or]
+    notes: "Lowest WER on 39/59 Vistaar benchmarks."
+
+  # AI4Bharat Conformer
+  indic_conformer:
+    type: huggingface
+    model_id: ai4bharat/indic-conformer-600m-multilingual
+    device: cuda
+    languages: [hi, mr, ta, te, kn, ml, gu, bn, pa, or, as, ne, sd]
+    notes: "Modern transformer. 600M parameters. All 22 official languages."
+
+  # OpenAI Whisper (baseline)
+  whisper_large_v3:
+    type: openai
+    model_id: whisper-1
+    languages: [multilingual]
+    notes: "General baseline. Good but not specialized for Indic."
+
+datasets:
+  internal_hr_admin:
+    path: data/transcription_dataset/hr_admin/transcriptions.jsonl
+    language: hi
+    domain: hr_admin
+
+  internal_helpdesk:
+    path: data/transcription_dataset/helpdesk/transcriptions.jsonl
+    language: hi-mr-mix
+    domain: helpdesk
+
+  internal_production:
+    path: data/transcription_dataset/production/transcriptions.jsonl
+    language: hi-mr-mix
+    domain: production

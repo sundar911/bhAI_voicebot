@@ -1,0 +1,56 @@
+[project]
+name = "bhai-voice-bot"
+version = "0.2.0"
+description = "bhAI - Voice assistant for Tiny Miracles employees (HR, Helpdesk, Production)"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "openai>=1.52.0",
+    "pydub>=0.25.1",
+    "rich>=13.7.0",
+    "requests>=2.31.0",
+    "python-dotenv>=1.0.1",
+    "fastapi>=0.110.0",
+    "uvicorn>=0.29.0",
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.4.0",
+    "pytest-cov>=4.0.0",
+    "black>=23.0.0",
+    "isort>=5.12.0",
+    "mypy>=1.0.0",
+]
+benchmarking = [
+    "transformers>=4.35.0",
+    "torch>=2.0.0",
+    "torchaudio>=2.0.0",
+    "datasets>=2.14.0",
+    "jiwer>=3.0.0",
+]
+review = [
+    "streamlit>=1.30.0",
+    "indic-transliteration>=2.3.0",
+]
+
+[tool.uv]
+index-url = "https://pypi.org/simple"
+
+[tool.black]
+line-length = 88
+target-version = ["py310"]
+
+[tool.isort]
+profile = "black"
+line_length = 88
+
+[tool.mypy]
+python_version = "3.10"
+warn_return_any = true
+warn_unused_ignores = true
+
+[tool.pytest.ini_options]
+testpaths = ["src/tests"]
+python_files = ["test_*.py"]

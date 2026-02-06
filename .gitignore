@@ -1,8 +1,88 @@
-.DS_Store
-.cursor/
-.venv/
+# Python
 __pycache__/
-*.pyc
-.env
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
 
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# UV
+.uv/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+.cursor/
+
+# Environment and secrets
+.env
+.env.local
+.env.*.local
+*.pem
+credentials.json
+secrets/
+
+# Audio files (large, synced separately)
+data/sharepoint_sync/**/*.ogg
+data/sharepoint_sync/**/*.wav
+data/sharepoint_sync/**/*.mp3
+data/sharepoint_sync/**/*.m4a
+data/sharepoint_sync/**/*.opus
+!data/sharepoint_sync/**/.gitkeep
+
+# Inference outputs (generated at runtime)
+inference/outputs/
 voice_poc/outputs/
+
+# Benchmarking results (generated)
+benchmarking/results/*.json
+benchmarking/results/*.csv
+!benchmarking/results/.gitkeep
+
+# Temp files
+*.tmp
+*.temp
+.bhai_temp/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Coverage
+.coverage
+htmlcov/
+
+# pytest
+.pytest_cache/
+
+# mypy
+.mypy_cache/
+
+# Sync logs
+data/sharepoint_sync/sync.log
