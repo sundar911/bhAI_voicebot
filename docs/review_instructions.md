@@ -2,6 +2,16 @@
 
 This guide helps Tiny Miracles team members review and correct audio transcriptions.
 
+## Prerequisites
+
+Before using the review app, complete the initial setup.
+
+**First time?** Follow the complete guide: [SETUP_FOR_TINY.md](SETUP_FOR_TINY.md)
+
+**Already set up?** Continue to Quick Start below.
+
+---
+
 ## Quick Start
 
 ### Step 1: Open the Review App
@@ -125,4 +135,53 @@ The review app:
 To install dependencies:
 ```bash
 uv sync --extra review
+```
+
+---
+
+## Saving Your Work to Git
+
+After reviewing transcriptions, save your changes to git so others can see them.
+
+### Create Your Branch (First Time)
+
+```bash
+git checkout -b hr-admin-transcriptions
+```
+
+Or use a name for your domain: `production-transcriptions`, `helpdesk-transcriptions`
+
+### Save Your Changes
+
+```bash
+# Add your changes
+git add data/transcription_dataset/
+
+# Commit with a message
+git commit -m "Reviewed [X] files - [Your Name]"
+
+# Push to remote
+git push -u origin hr-admin-transcriptions
+```
+
+After the first push, you can use the shorter command:
+```bash
+git add data/transcription_dataset/
+git commit -m "More reviews - [Your Name]"
+git push
+```
+
+### Daily Workflow
+
+```bash
+# Start of day: get latest changes
+git pull
+
+# Start the app
+uv run streamlit run benchmarking/review_app.py
+
+# After reviewing: save your work
+git add data/transcription_dataset/
+git commit -m "Reviewed files - [Your Name]"
+git push
 ```

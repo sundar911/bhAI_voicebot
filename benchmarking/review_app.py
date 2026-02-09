@@ -7,7 +7,7 @@ Launch with:
 This app allows non-technical users to:
 1. Listen to audio files
 2. Review and correct STT transcriptions
-3. Use transliteration helper for adding Hindi text
+3. Use on-screen Devanagari keyboard for Hindi/Marathi text
 """
 
 import json
@@ -22,7 +22,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from benchmarking.transliteration import transliterate_sentence, transliterate_word
+# Import the custom Devanagari editor component
+from benchmarking.components import devanagari_editor
 
 # Paths
 DATA_DIR = ROOT / "data"
@@ -175,50 +176,35 @@ def main():
 
     st.divider()
 
-    # Editable transcription
+    # Editable transcription with integrated Devanagari keyboard
     st.subheader("✏️ Edit Transcription")
 
-    # Pre-fill with human_reviewed if exists, else stt_draft
-    current_text = entry.get("human_reviewed") or entry.get("stt_draft") or ""
+    # Get initial text
+    initial_text = entry.get("human_reviewed") or entry.get("stt_draft") or ""
 
-    edited_text = st.text_area(
-        "Edit the transcription below (fix any mistakes):",
-        value=current_text,
-        height=100,
-        key=f"edit_{entry_global_idx}"
+    # Use the custom Devanagari editor component
+    # This provides cursor-aware character insertion
+    st.caption("**Step 1:** Edit in the editor below. Click to place cursor, then use keyboard buttons.")
+    devanagari_editor(
+        initial_value=initial_text,
+        height=450,
+        key=f"editor_{entry_global_idx}"
     )
 
-    # Transliteration helper
-    st.subheader("🔤 Transliteration Helper")
-    st.caption("Need to add Hindi text? Type in English letters below:")
+    # Text area for final save (user copies from editor above)
+    st.caption("**Step 2:** After editing, click 'Copy Text' above, then paste here:")
 
-    col1, col2 = st.columns([2, 1])
+    # Session state for the save text area
+    save_key = f"save_textarea_{entry_global_idx}"
+    if save_key not in st.session_state:
+        st.session_state[save_key] = initial_text
 
-    with col1:
-        roman_input = st.text_input(
-            "Type Romanized Hindi",
-            placeholder="e.g., mera paisa kyun kata",
-            key="roman_input"
-        )
-
-    with col2:
-        if roman_input:
-            # Get alternatives for the last word
-            words = roman_input.split()
-            if words:
-                last_word = words[-1]
-                alternatives = transliterate_word(last_word, top_k=5)
-                if alternatives:
-                    st.caption("Alternatives for last word:")
-                    for alt in alternatives[:5]:
-                        if st.button(alt, key=f"alt_{alt}"):
-                            # This would ideally update the input, but Streamlit doesn't support that easily
-                            st.info(f"Copy: {alt}")
-
-    if roman_input:
-        transliterated = transliterate_sentence(roman_input)
-        st.success(f"**Transliterated:** {transliterated}")
-        st.caption("Copy this and paste into the edit box above")
+    edited_text = st.text_area(
+        "Paste edited text here before saving:",
+        height=100,
+        key=save_key,
+        label_visibility="collapsed"
+    )
 
     st.divider()
 
@@ -258,23 +244,24 @@ def main():
     with st.expander("📖 How to Review"):
         st.markdown("""
         ### Steps:
-        1. **Listen** to the audio using the player above
-        2. **Read** the original STT output (what the computer heard)
-        3. **Edit** the transcription to fix any mistakes
-        4. **Save** when you're done
+        1. **Listen** to the audio
+        2. **Edit** in the editor - click to place cursor, click keyboard buttons to insert
+        3. **Copy** - click the green "Copy Text" button
+        4. **Paste** - click in the text box below and Ctrl+V / Cmd+V
+        5. **Save** - click the Save button
 
-        ### Tips:
-        - Most transcriptions are 90%+ correct - just fix small errors
-        - If you need to add Hindi text, use the **Transliteration Helper**
-        - Type in English letters (like texting): `kyun` → क्यों
-        - If audio is unclear, type `[unclear]` for that part
-        - Don't guess - mark uncertain parts
+        ### Using the Editor:
+        - **Click in the text** to place your cursor
+        - **Type directly** or **click keyboard buttons** - they insert at cursor!
+        - Expand "Consonants", "Extras", "Numbers" as needed
 
-        ### Transliteration Examples:
-        - `mera` → मेरा
-        - `paisa` → पैसा
-        - `kyun` → क्यों
-        - `kata` → काटा
+        ### Quick Markers:
+        - `[unclear]` - Cannot understand this part
+        - `[noise]` - Background noise
+        - `[overlap]` - Multiple speakers
+
+        ### Why copy-paste?
+        The fancy editor runs in an iframe for cursor support. We need to copy the text out to save it.
         """)
 
 

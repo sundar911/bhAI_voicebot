@@ -32,7 +32,7 @@ Voice Input → STT → LLM (with knowledge base) → TTS → Voice Output
 
 ```bash
 # Clone the repository
-git clone https://github.com/your-org/bhAI_voice_bot.git
+git clone https://github.com/sundar911/bhAI_voicebot.git
 cd bhAI_voice_bot
 
 # Install dependencies
@@ -98,6 +98,17 @@ bhAI_voice_bot/
 ```
 
 ## For Tiny Miracles Team
+
+### Reviewing Transcriptions
+
+We have a web app for reviewing and correcting STT transcriptions.
+
+**First time setup?** See [docs/SETUP_FOR_TINY.md](docs/SETUP_FOR_TINY.md) for complete instructions.
+
+**Already set up?** Start the app:
+```bash
+uv run streamlit run benchmarking/review_app.py
+```
 
 ### Editing Knowledge Base
 

@@ -50,14 +50,22 @@ Example:
 
 ### Reviewing Transcriptions
 
-When reviewing STT outputs:
+We have a web app for reviewing transcriptions - no manual file editing needed!
 
-1. Pull the latest branch: `git checkout review/hr-admin-batch-XXX`
-2. Open `data/transcription_dataset/hr_admin/transcriptions.jsonl`
-3. Listen to audio files in `data/sharepoint_sync/hr_admin/`
-4. Correct any mistakes in the `human_reviewed` field
-5. Change `status` from `pending_review` to `reviewed`
-6. Commit and push your changes
+**First time?** See [docs/SETUP_FOR_TINY.md](docs/SETUP_FOR_TINY.md) for complete setup.
+
+**Already set up?** Start the app:
+```bash
+uv run streamlit run benchmarking/review_app.py
+```
+
+The app lets you:
+- Listen to audio files
+- Edit transcriptions with a Hindi keyboard
+- Track your progress
+- Save directly (no manual JSONL editing!)
+
+For detailed usage, see [docs/review_instructions.md](docs/review_instructions.md).
 
 ## For Developers
 
