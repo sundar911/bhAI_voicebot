@@ -30,10 +30,6 @@ benchmarking = [
     "datasets>=2.14.0",
     "jiwer>=3.0.0",
 ]
-review = [
-    "streamlit>=1.30.0",
-    "indic-transliteration>=2.3.0",
-]
 
 [tool.uv]
 index-url = "https://pypi.org/simple"

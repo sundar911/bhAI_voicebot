@@ -99,27 +99,17 @@ bhAI_voice_bot/
 
 ## For Tiny Miracles Team
 
-### Reviewing Transcriptions
+### Editing the Knowledge Base
 
-We have a web app for reviewing and correcting STT transcriptions.
+The `knowledge_base/` folder contains all the information bhAI uses to answer questions. You edit this using **Claude Code** (connected to this GitHub repo).
 
-**First time setup?** See [docs/SETUP_FOR_TINY.md](docs/SETUP_FOR_TINY.md) for complete instructions.
+Just tell Claude Code what to change. For example:
+- *"Update the leave policy in knowledge_base/hr_admin/policies.md"*
+- *"Add helpdesk info about Aadhaar card help"*
 
-**Already set up?** Start the app:
-```bash
-uv run streamlit run benchmarking/review_app.py
-```
+Claude Code will make the edit, create a branch, and push it. Sundar reviews and approves.
 
-### Editing Knowledge Base
-
-The `knowledge_base/` folder contains all the information bhAI uses to answer questions. You can edit these files directly:
-
-1. Open files in VS Code or any text editor
-2. Edit the content (keep it in simple Hindi)
-3. Save and commit your changes
-4. Changes take effect on next restart
-
-See [knowledge_base/README.md](knowledge_base/README.md) for detailed instructions.
+See [knowledge_base/README.md](knowledge_base/README.md) for writing guidelines and file structure.
 
 ### Contributing
 

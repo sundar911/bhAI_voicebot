@@ -10,17 +10,6 @@ The benchmarking workflow:
 3. **Compute metrics** (WER, CER)
 4. **Compare models** to select the best one
 
-## Review App
-
-For human review of transcriptions, we have a web-based tool:
-
-```bash
-uv run streamlit run benchmarking/review_app.py
-```
-
-See [../docs/SETUP_FOR_TINY.md](../docs/SETUP_FOR_TINY.md) for complete setup instructions.
-See [../docs/review_instructions.md](../docs/review_instructions.md) for detailed usage.
-
 ## Scripts
 
 ### `scripts/generate_initial_transcriptions.py`

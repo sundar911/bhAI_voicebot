@@ -17,17 +17,16 @@ You can directly edit files in `knowledge_base/` without needing to understand t
 | `knowledge_base/production/` | Factory floor info | Production team |
 | `knowledge_base/shared/` | Company overview, escalation rules | All teams (carefully) |
 
+Just a loose structure, feel free to change it up completely as you see fit. It just needs to work for further LLM processing.
+
 #### How to Edit
 
-1. **Open the file** in VS Code or any text editor
-2. **Make your changes** using simple Hindi
-3. **Save the file**
-4. **Commit your changes**:
-   ```bash
-   git add knowledge_base/
-   git commit -m "Updated leave policy information"
-   git push
-   ```
+Use **Claude Code** (connected to this GitHub repo). Just tell it what to change:
+
+- *"Update the leave policy in knowledge_base/hr_admin/policies.md to include 10 days maternity leave"*
+- *"Add a new section about PF withdrawal to knowledge_base/hr_admin/benefits.md"*
+
+Claude Code will edit the file, create a branch, and push the changes. Sundar reviews and approves.
 
 #### Writing Guidelines
 
@@ -48,24 +47,6 @@ Example:
 → Jaldi WhatsApp karo. Reason batao. Calendar me mark hoga.
 ```
 
-### Reviewing Transcriptions
-
-We have a web app for reviewing transcriptions - no manual file editing needed!
-
-**First time?** See [docs/SETUP_FOR_TINY.md](docs/SETUP_FOR_TINY.md) for complete setup.
-
-**Already set up?** Start the app:
-```bash
-uv run streamlit run benchmarking/review_app.py
-```
-
-The app lets you:
-- Listen to audio files
-- Edit transcriptions with a Hindi keyboard
-- Track your progress
-- Save directly (no manual JSONL editing!)
-
-For detailed usage, see [docs/review_instructions.md](docs/review_instructions.md).
 
 ## For Developers
 

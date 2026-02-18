@@ -75,4 +75,3 @@ Each transcription file uses JSONL format (one JSON object per line):
 
 - Audio files are NOT committed to git (too large)
 - JSONL files ARE committed for tracking and review
-- Use Git branches for review workflow (see CONTRIBUTING.md)
