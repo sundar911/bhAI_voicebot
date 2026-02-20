@@ -38,12 +38,11 @@ class Config:
     sarvam_tts_language: str = "hi-IN"
     sarvam_tts_sample_rate: Optional[int] = None
 
-    # WhatsApp (Meta)
-    meta_wa_token: str = ""
-    meta_phone_number_id: str = ""
-    meta_waba_id: str = ""
-    meta_verify_token: str = ""
-    meta_api_version: str = "v22.0"
+    # Twilio WhatsApp
+    twilio_account_sid: str = ""
+    twilio_auth_token: str = ""
+    twilio_whatsapp_number: str = ""  # e.g. "whatsapp:+14155238886"
+    base_url: str = ""  # Public URL for serving audio (e.g. ngrok URL)
 
 
 def load_config(env_path: Optional[Path] = None) -> Config:
@@ -73,9 +72,8 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         sarvam_tts_voice=os.getenv("SARVAM_TTS_VOICE", "manisha"),
         sarvam_tts_language=os.getenv("SARVAM_TTS_LANGUAGE", "hi-IN"),
         sarvam_tts_sample_rate=int(sarvam_tts_sample_rate) if sarvam_tts_sample_rate else None,
-        meta_wa_token=os.getenv("META_WA_TOKEN", ""),
-        meta_phone_number_id=os.getenv("META_PHONE_NUMBER_ID", ""),
-        meta_waba_id=os.getenv("META_WABA_ID", ""),
-        meta_verify_token=os.getenv("META_VERIFY_TOKEN", ""),
-        meta_api_version=os.getenv("META_API_VERSION", "v22.0"),
+        twilio_account_sid=os.getenv("TWILIO_ACCOUNT_SID", ""),
+        twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", ""),
+        twilio_whatsapp_number=os.getenv("TWILIO_WHATSAPP_NUMBER", ""),
+        base_url=os.getenv("BASE_URL", ""),
     )
