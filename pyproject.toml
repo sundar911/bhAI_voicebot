@@ -15,6 +15,7 @@ dependencies = [
     "pyyaml>=6.0",
     "twilio>=9.0.0",
     "python-multipart>=0.0.6",
+    "msal>=1.28.0",
 ]
 
 [project.optional-dependencies]

@@ -44,6 +44,11 @@ class Config:
     twilio_whatsapp_number: str = ""  # e.g. "whatsapp:+14155238886"
     base_url: str = ""  # Public URL for serving audio (e.g. ngrok URL)
 
+    # Azure / SharePoint (for transcription pipeline)
+    azure_tenant_id: str = ""
+    azure_app_client_id: str = ""
+    sharepoint_hostname: str = "tinymiraclesnl.sharepoint.com"
+
 
 def load_config(env_path: Optional[Path] = None) -> Config:
     """
@@ -76,4 +81,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         twilio_auth_token=os.getenv("TWILIO_AUTH_TOKEN", ""),
         twilio_whatsapp_number=os.getenv("TWILIO_WHATSAPP_NUMBER", ""),
         base_url=os.getenv("BASE_URL", ""),
+        azure_tenant_id=os.getenv("AZURE_TENANT_ID", ""),
+        azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),
+        sharepoint_hostname=os.getenv("SHAREPOINT_HOSTNAME", "tinymiraclesnl.sharepoint.com"),
     )
