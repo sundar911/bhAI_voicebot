@@ -39,3 +39,7 @@ class BaseSTT(ABC):
     def model_name(self) -> str:
         """Return the model identifier for logging."""
         pass
+
+    def cleanup(self) -> None:
+        """Release resources (e.g. GPU memory). Override in subclasses."""
+        pass

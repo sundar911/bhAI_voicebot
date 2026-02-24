@@ -36,10 +36,27 @@ models:
 
   # OpenAI Whisper (baseline)
   whisper_large_v3:
-    type: openai
-    model_id: whisper-1
+    type: huggingface
+    model_id: openai/whisper-large-v3
+    device: cuda
     languages: [multilingual]
     notes: "General baseline. Good but not specialized for Indic."
+
+  # Meta MMS (Massive Multilingual Speech)
+  meta_mms:
+    type: huggingface
+    model_id: facebook/mms-1b-all
+    device: cuda
+    languages: [hi, mr]
+    notes: "Ultra-lightweight (~2GB VRAM). Wav2Vec2 with language adapters."
+
+  # AI4Bharat IndicWav2Vec
+  indic_wav2vec:
+    type: huggingface
+    model_id: ai4bharat/indicwav2vec-hindi
+    device: cuda
+    languages: [hi]
+    notes: "Wav2Vec2-based CTC model. 317M params, low VRAM."
 
 datasets:
   internal_hr_admin:
