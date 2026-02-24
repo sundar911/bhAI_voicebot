@@ -63,7 +63,7 @@ fi
 if [[ "$DEVICE" == "cuda" ]]; then
     if python3 -c "import torch; assert torch.cuda.is_available()" 2>/dev/null; then
         GPU_NAME=$(python3 -c "import torch; print(torch.cuda.get_device_name(0))")
-        VRAM=$(python3 -c "import torch; print(f'{torch.cuda.get_device_properties(0).total_mem/1e9:.1f} GB')")
+        VRAM=$(python3 -c "import torch; p=torch.cuda.get_device_properties(0); m=getattr(p,'total_memory',None) or p.total_mem; print(f'{m/1e9:.1f} GB')")
         log "GPU: $GPU_NAME ($VRAM)"
     else
         log "ERROR: --device cuda but no CUDA GPU detected."
