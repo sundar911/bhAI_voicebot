@@ -18,14 +18,6 @@ models:
     languages: [hi]
     notes: "Trained on Vaani, IndicVoices, FLEURS. Best for clean Hindi."
 
-  # AI4Bharat IndicWhisper
-  indic_whisper:
-    type: huggingface
-    model_id: ai4bharat/indicwhisper-large-v2
-    device: cuda
-    languages: [hi, mr, ta, te, kn, ml, gu, bn, pa, or]
-    notes: "Lowest WER on 39/59 Vistaar benchmarks."
-
   # AI4Bharat Conformer
   indic_conformer:
     type: huggingface
