@@ -29,8 +29,6 @@ class VaaniWhisperSTT(GPUModelSTT):
         self._processor = WhisperProcessor.from_pretrained(self.model_id)
         self._model = WhisperForConditionalGeneration.from_pretrained(self.model_id)
         self._model.to(self.device)
-        if self.device.startswith("cuda"):
-            self._model.half()
 
     def transcribe(self, audio_path: Path) -> Dict[str, Any]:
         import torch
@@ -46,9 +44,6 @@ class VaaniWhisperSTT(GPUModelSTT):
             sampling_rate=sr,
             return_tensors="pt",
         ).input_features.to(self.device)
-
-        if self.device.startswith("cuda"):
-            input_features = input_features.half()
 
         with torch.no_grad():
             predicted_ids = self._model.generate(

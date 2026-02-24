@@ -49,7 +49,7 @@ class IndicWav2VecSTT(GPUModelSTT):
         with torch.no_grad():
             logits = self._model(input_values).logits
 
-        ids = torch.argmax(logits, dim=-1)[0]
-        text = self._processor.decode(ids)
+        predicted_ids = torch.argmax(logits, dim=-1)
+        text = self._processor.batch_decode(predicted_ids)[0]
 
         return {"text": text.strip(), "raw": {}, "wav_path": wav_path}
