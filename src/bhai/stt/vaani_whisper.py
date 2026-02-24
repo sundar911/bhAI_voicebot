@@ -24,10 +24,13 @@ class VaaniWhisperSTT(GPUModelSTT):
         return self.model_id
 
     def _load_model(self) -> None:
+        import torch
         from transformers import WhisperForConditionalGeneration, WhisperProcessor
 
         self._processor = WhisperProcessor.from_pretrained(self.model_id)
-        self._model = WhisperForConditionalGeneration.from_pretrained(self.model_id)
+        self._model = WhisperForConditionalGeneration.from_pretrained(
+            self.model_id, torch_dtype=torch.float32
+        )
         self._model.to(self.device)
 
     def transcribe(self, audio_path: Path) -> Dict[str, Any]:
