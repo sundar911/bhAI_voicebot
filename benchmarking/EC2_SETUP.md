@@ -34,9 +34,12 @@ cd bhAI_voicebot
 python3 -m venv .venv --system-site-packages
 source .venv/bin/activate
 
+# System deps (ffmpeg for audio conversion)
+sudo apt update && sudo apt install -y ffmpeg
+
 # Install project deps
 pip install -e ".[benchmarking]"
-pip install onnxruntime-gpu huggingface_hub
+pip install onnxruntime-gpu huggingface_hub torchcodec
 
 # HuggingFace login
 export HF_TOKEN="hf_your_token_here"
