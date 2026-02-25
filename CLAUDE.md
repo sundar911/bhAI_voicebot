@@ -36,3 +36,30 @@ Names of actual people at Tiny Miracles. This is what makes it feel real.
 If someone asks a compound question, bhAI answers the first part and asks if she wants to continue. No
 overwhelming information dumps.
 
+# Audio file naming convention
+Audio recordings from Tiny Miracles' Voice2Voice SharePoint folder follow the pattern:
+`{DEPT_PREFIX}_{Q|Ans}_{NUMBER}.ogg`
+
+Department prefixes:
+- **GV** — Grievance
+- **Hd** / **HD** — Helpdesk (mixed casing in source files)
+- **HR_Ad** — HR-Admin
+- **NG** — NextGen
+- **P** — Production
+
+File types:
+- `_Q_` — Question audio (what the artisan asks). These are the files we transcribe for STT benchmarking.
+- `_Ans_` / `_A_` — Answer audio (response from Tiny staff). Ignored for STT.
+
+Examples:
+- `HR_Ad_Q_1.ogg` — 1st question in HR-Admin
+- `P_Q_10.ogg` — 10th question in Production
+- `Hd_Ans_54.ogg` — 54th answer in Helpdesk (not used for STT)
+
+Domain folder mapping (for benchmarking):
+- Grievance → `grievance/`
+- Helpdesk → `helpdesk/`
+- HR-Admin → `hr_admin/`
+- NextGen → `nextgen/`
+- Production → `production/`
+

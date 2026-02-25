@@ -10,6 +10,16 @@ models:
     languages: [hi, mr, ta, te, kn, ml, gu, bn, pa, od]
     notes: "Current baseline. Good Hindi/Marathi, low latency."
 
+  # Sarvam Saaras v3 (API-based, with chunking for >30s audio)
+  sarvam_saaras:
+    type: api
+    provider: sarvam
+    model_id: saaras:v3
+    endpoint: https://api.sarvam.ai/speech-to-text
+    mode: transcribe
+    languages: [hi, mr, ta, te, kn, ml, gu, bn, pa, od, en, as, ur, ne, kok, ks, sd, sa]
+    notes: "Saaras v3. Silence-aware chunking for files >30s."
+
   # ARTPARK-IISc model (HuggingFace)
   vaani_whisper:
     type: huggingface
@@ -65,3 +75,13 @@ datasets:
     path: data/transcription_dataset/production/transcriptions.jsonl
     language: hi-mr-mix
     domain: production
+
+  internal_grievance:
+    path: data/transcription_dataset/grievance/transcriptions.jsonl
+    language: hi-mr-mix
+    domain: grievance
+
+  internal_nextgen:
+    path: data/transcription_dataset/nextgen/transcriptions.jsonl
+    language: hi-mr-mix
+    domain: nextgen

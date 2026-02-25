@@ -88,7 +88,7 @@ def run_model(
 
     # Build kwargs for the model constructor
     kwargs: dict = {}
-    if model_name == "sarvam_saarika":
+    if model_name in ("sarvam_saarika", "sarvam_saaras"):
         from src.bhai.config import load_config
         kwargs["config"] = load_config()
     else:

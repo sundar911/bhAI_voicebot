@@ -11,8 +11,8 @@
 set -euo pipefail
 
 # ── Defaults ─────────────────────────────────────────────────────────────────
-MODELS="vaani_whisper indic_conformer whisper_large_v3 meta_mms indic_wav2vec"
-DOMAINS="hr_admin helpdesk production"
+MODELS="sarvam_saaras vaani_whisper indic_conformer whisper_large_v3 meta_mms indic_wav2vec"
+DOMAINS="hr_admin helpdesk production grievance nextgen"
 DEVICE="cuda"
 
 # ── Parse CLI args ───────────────────────────────────────────────────────────

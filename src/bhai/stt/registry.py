@@ -11,7 +11,8 @@ from .base import BaseSTT
 
 # name -> (module_path, class_name)
 _REGISTRY: dict[str, tuple[str, str]] = {
-    "sarvam_saarika":  ("src.bhai.stt.sarvam_stt",      "SarvamSTT"),
+    "sarvam_saarika":  ("src.bhai.stt.sarvam_stt",          "SarvamSTT"),
+    "sarvam_saaras":   ("src.bhai.stt.sarvam_saaras_stt",  "SarvamSaarasSTT"),
     "vaani_whisper":   ("src.bhai.stt.vaani_whisper",    "VaaniWhisperSTT"),
     "indic_conformer": ("src.bhai.stt.indic_conformer",  "IndicConformerSTT"),
     "whisper_large_v3":("src.bhai.stt.whisper_large_v3", "WhisperLargeV3STT"),
