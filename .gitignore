@@ -60,7 +60,7 @@ voice_poc/outputs/
 
 # Benchmarking results (generated)
 benchmarking/results/*.json
-benchmarking/results/*.csv
+# benchmarking/results/*.csv
 !benchmarking/results/.gitkeep
 
 # Temp files

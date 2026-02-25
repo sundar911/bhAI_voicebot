@@ -1,0 +1,8 @@
+model,files,raw_wer,raw_cer,nwer,ncer
+saaras:v3,62,0.2121,0.0606,0.0492,0.0274
+saarika:v2.5,60,0.204,0.0575,0.1215,0.0386
+ai4bharat/indic-conformer-600m-multilingual,62,0.4,0.1582,0.3995,0.158
+ARTPARK-IISc/whisper-large-v3-vaani-hindi,62,0.4565,0.1939,0.4552,0.1933
+facebook/mms-1b-all (lang=hin),62,0.6194,0.2359,0.6158,0.2334
+ai4bharat/indicwav2vec-hindi,62,0.6774,0.2838,0.6764,0.2832
+openai/whisper-large-v3,62,0.6944,0.3264,0.6772,0.3181

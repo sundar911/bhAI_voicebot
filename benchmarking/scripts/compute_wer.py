@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
 """
-Compute Word Error Rate (WER) and Character Error Rate (CER) for transcriptions.
-Compares STT drafts against human-reviewed ground truth.
+Compute Word Error Rate (WER), Character Error Rate (CER), and optional
+Semantic Distance (SemDist) for STT transcriptions.
+
+Compares STT drafts against human-reviewed ground truth, with optional
+Indic text normalization for fair Hindi/Marathi ASR evaluation.
 """
 
 import argparse
 import json
 import sys
 from pathlib import Path
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Add src to path for imports
 ROOT = Path(__file__).resolve().parents[2]
@@ -17,6 +20,10 @@ if str(ROOT) not in sys.path:
 
 from src.bhai.config import DATA_DIR
 
+
+# ---------------------------------------------------------------------------
+# Levenshtein distance (core metric engine)
+# ---------------------------------------------------------------------------
 
 def levenshtein_distance(s1: List[str], s2: List[str]) -> int:
     """Compute Levenshtein distance between two sequences."""
@@ -75,6 +82,50 @@ def compute_cer(hypothesis: str, reference: str) -> Tuple[float, int, int]:
     return cer, distance, len(ref_chars)
 
 
+# ---------------------------------------------------------------------------
+# Semantic Distance (SemDist)
+# ---------------------------------------------------------------------------
+
+_semdist_model = None
+
+
+def _get_semdist_model():
+    """Lazy-load a multilingual sentence-transformer for SemDist."""
+    global _semdist_model
+    if _semdist_model is None:
+        try:
+            from sentence_transformers import SentenceTransformer
+            _semdist_model = SentenceTransformer(
+                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+            )
+        except ImportError:
+            raise ImportError(
+                "sentence-transformers is required for SemDist.\n"
+                "Install: pip install sentence-transformers"
+            )
+    return _semdist_model
+
+
+def compute_semdist(hypothesis: str, reference: str) -> float:
+    """
+    Compute Semantic Distance: 1 - cosine_similarity(embed(hyp), embed(ref)).
+
+    Returns a value in [0, 2] where 0 = identical meaning, higher = more different.
+    """
+    import numpy as np
+
+    model = _get_semdist_model()
+    embeddings = model.encode([hypothesis, reference])
+    cos_sim = np.dot(embeddings[0], embeddings[1]) / (
+        np.linalg.norm(embeddings[0]) * np.linalg.norm(embeddings[1])
+    )
+    return float(1 - cos_sim)
+
+
+# ---------------------------------------------------------------------------
+# CLI
+# ---------------------------------------------------------------------------
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Compute WER and CER for transcriptions"
@@ -93,6 +144,16 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Use 'final' field instead of 'human_reviewed' as reference"
     )
+    parser.add_argument(
+        "--normalize",
+        action="store_true",
+        help="Apply Indic text normalization before computing metrics"
+    )
+    parser.add_argument(
+        "--semdist",
+        action="store_true",
+        help="Also compute Semantic Distance (requires sentence-transformers)"
+    )
     return parser.parse_args()
 
 
@@ -103,6 +164,13 @@ def main() -> None:
     if not input_file.exists():
         print(f"Error: Input file not found: {input_file}")
         sys.exit(1)
+
+    # Load normalizer if requested
+    norm_fn: Optional[callable] = None
+    if args.normalize:
+        from benchmarking.scripts.normalize_indic import normalize_hindi
+        norm_fn = normalize_hindi
+        print("Using Indic text normalization")
 
     # Read transcriptions
     entries = []
@@ -131,11 +199,16 @@ def main() -> None:
     total_wer_words = 0
     total_cer_errors = 0
     total_cer_chars = 0
+    total_semdist = 0.0
     per_file_results = []
 
     for entry in valid_entries:
         hypothesis = entry["stt_draft"]
         reference = entry[ref_field]
+
+        if norm_fn:
+            hypothesis = norm_fn(hypothesis)
+            reference = norm_fn(reference)
 
         wer, wer_errors, wer_words = compute_wer(hypothesis, reference)
         cer, cer_errors, cer_chars = compute_cer(hypothesis, reference)
@@ -145,51 +218,70 @@ def main() -> None:
         total_cer_errors += cer_errors
         total_cer_chars += cer_chars
 
-        per_file_results.append({
+        result = {
             "audio_file": entry["audio_file"],
             "wer": round(wer, 4),
             "cer": round(cer, 4),
             "wer_errors": wer_errors,
             "cer_errors": cer_errors,
             "hypothesis": hypothesis,
-            "reference": reference
-        })
+            "reference": reference,
+        }
+
+        if args.semdist:
+            sd = compute_semdist(hypothesis, reference)
+            total_semdist += sd
+            result["semdist"] = round(sd, 4)
+
+        per_file_results.append(result)
 
     # Compute overall metrics
     overall_wer = total_wer_errors / total_wer_words if total_wer_words > 0 else 0
     overall_cer = total_cer_errors / total_cer_chars if total_cer_chars > 0 else 0
+    avg_semdist = total_semdist / len(valid_entries) if args.semdist else None
 
-    print("\n" + "=" * 50)
-    print("OVERALL RESULTS")
-    print("=" * 50)
+    label = "NORMALIZED " if args.normalize else ""
+    print(f"\n{'=' * 50}")
+    print(f"{label}OVERALL RESULTS")
+    print(f"{'=' * 50}")
     print(f"Files evaluated:    {len(valid_entries)}")
     print(f"Total words:        {total_wer_words}")
     print(f"Total characters:   {total_cer_chars}")
-    print(f"")
+    print()
     print(f"Word Error Rate:    {overall_wer:.2%} ({total_wer_errors} errors)")
     print(f"Char Error Rate:    {overall_cer:.2%} ({total_cer_errors} errors)")
+    if avg_semdist is not None:
+        print(f"Avg Semantic Dist:  {avg_semdist:.4f}")
     print("=" * 50)
 
     # Show worst performing files
     print("\nWorst performing files (by WER):")
     sorted_results = sorted(per_file_results, key=lambda x: x["wer"], reverse=True)
     for result in sorted_results[:5]:
-        print(f"  {result['audio_file']}: WER={result['wer']:.2%}, CER={result['cer']:.2%}")
+        line = f"  {result['audio_file']}: WER={result['wer']:.2%}, CER={result['cer']:.2%}"
+        if "semdist" in result:
+            line += f", SemDist={result['semdist']:.4f}"
+        print(line)
 
     # Save results if output specified
     if args.output:
         output_file = Path(args.output)
+        summary = {
+            "files_evaluated": len(valid_entries),
+            "total_words": total_wer_words,
+            "total_chars": total_cer_chars,
+            "overall_wer": round(overall_wer, 4),
+            "overall_cer": round(overall_cer, 4),
+            "wer_errors": total_wer_errors,
+            "cer_errors": total_cer_errors,
+            "normalized": args.normalize,
+        }
+        if avg_semdist is not None:
+            summary["avg_semdist"] = round(avg_semdist, 4)
+
         results = {
-            "summary": {
-                "files_evaluated": len(valid_entries),
-                "total_words": total_wer_words,
-                "total_chars": total_cer_chars,
-                "overall_wer": round(overall_wer, 4),
-                "overall_cer": round(overall_cer, 4),
-                "wer_errors": total_wer_errors,
-                "cer_errors": total_cer_errors
-            },
-            "per_file": per_file_results
+            "summary": summary,
+            "per_file": per_file_results,
         }
         with open(output_file, "w", encoding="utf-8") as f:
             json.dump(results, f, ensure_ascii=False, indent=2)

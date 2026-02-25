@@ -1,0 +1,7 @@
+model,files_compared,wer,cer,wer_errors,total_words
+ai4bharat/indic-conformer-600m-multilingual,9,0.12,0.0502,60,500
+saaras:v3,9,0.2,0.1186,100,500
+ARTPARK-IISc/whisper-large-v3-vaani-hindi,9,0.404,0.3288,202,500
+facebook/mms-1b-all (lang=hin),9,0.446,0.1829,223,500
+ai4bharat/indicwav2vec-hindi,9,0.52,0.2193,260,500
+openai/whisper-large-v3,9,0.618,0.5052,309,500
