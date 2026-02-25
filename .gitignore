@@ -45,12 +45,14 @@ credentials.json
 secrets/
 
 # Audio files (large, synced separately)
+Voice2Voice.zip
 data/sharepoint_sync/**/*.ogg
 data/sharepoint_sync/**/*.wav
 data/sharepoint_sync/**/*.mp3
 data/sharepoint_sync/**/*.m4a
 data/sharepoint_sync/**/*.opus
 !data/sharepoint_sync/**/.gitkeep
+sharepoint_audio 
 
 # Inference outputs (generated at runtime)
 inference/outputs/
