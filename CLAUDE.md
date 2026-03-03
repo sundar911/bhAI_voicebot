@@ -6,8 +6,7 @@ She could try to find someone from HR, but she doesn't know who to call or when 
 Now imagine she opens WhatsApp—something she already uses every day—and sends a voice note to
 bhAI: "Bhai, meri salary kam kyun aayi?"
 A minute later, she gets a voice note back. It's Vidhi's voice—someone she recognizes from Tiny
-Miracles. The response is short, clear: her salary was docked because of three absences last month. But
-bhAI doesn't just state the fact. It asks if everything's okay at home. It remembers she mentioned her son
+Miracles. The response is short, clear: her salary was docked because of three absences last month. But bhAI doesn't just state the fact. It asks if everything's okay at home. It remembers she mentioned her son
 was sick. It feels like talking to a colleague who actually knows her situation.
 That's the test. Not whether the bot works. Not whether it's accurate. Whether Yashoda wants to talk to
 it again.
