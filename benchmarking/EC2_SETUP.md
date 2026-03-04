@@ -12,7 +12,7 @@ Step-by-step guide to run the full benchmarking pipeline on a GPU instance.
 | **Security group** | SSH (port 22) from your IP |
 | **Key pair** | Your existing key pair or create a new one |
 
-Cost: ~$0.53/hr on-demand. Full benchmark (5 models × 3 domains × 86 files) takes ~30–60 min.
+Cost: ~$0.53/hr on-demand. Full benchmark (5 GPU models × 5 domains × 176 files) takes ~60–90 min.
 
 ## 2. SSH Into the Instance
 
@@ -71,7 +71,7 @@ unzip sharepoint_audio.zip -d data/sharepoint_sync/
 ## 5. Run Benchmarking
 
 ```bash
-# Full run (all 5 models × 3 domains)
+# Full run (all 5 GPU models × 5 domains)
 bash benchmarking/run_benchmark.sh
 
 # Quick test (fastest model, one domain — ~2 min)

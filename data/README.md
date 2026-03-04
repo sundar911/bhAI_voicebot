@@ -6,19 +6,27 @@ This directory contains audio data and transcription datasets for bhAI.
 
 ```
 data/
-├── sharepoint_sync/           # Auto-synced from SharePoint
-│   ├── helpdesk/              # Helpdesk domain audio
-│   ├── hr_admin/              # HR-Admin domain audio
-│   └── production/            # Production domain audio
+├── sharepoint_sync/           # Audio files (unzipped from sharepoint_audio.zip)
+│   ├── helpdesk/              # 114 Q files
+│   ├── hr_admin/              # 30 Q files
+│   ├── production/            # 28 Q files
+│   ├── grievance/             # 2 Q files
+│   └── nextgen/               # 2 Q files
 │
-└── transcription_dataset/     # Ground truth transcriptions
-    ├── manifest.csv           # Master tracking file
-    ├── hr_admin/
-    │   └── transcriptions.jsonl
+└── transcription_dataset/     # Per-model STT transcriptions
     ├── helpdesk/
-    │   └── transcriptions.jsonl
-    └── production/
-        └── transcriptions.jsonl
+    │   ├── transcriptions.jsonl                  # Legacy (mixed models)
+    │   ├── transcriptions_sarvam_saaras.jsonl
+    │   ├── transcriptions_sarvam_saarika.jsonl
+    │   ├── transcriptions_indic_conformer.jsonl
+    │   ├── transcriptions_vaani_whisper.jsonl
+    │   ├── transcriptions_whisper_large_v3.jsonl
+    │   ├── transcriptions_meta_mms.jsonl
+    │   └── transcriptions_indic_wav2vec.jsonl
+    ├── hr_admin/               # Same per-model JSONL structure
+    ├── production/             # Same per-model JSONL structure
+    ├── grievance/              # Same per-model JSONL structure
+    └── nextgen/                # Same per-model JSONL structure
 ```
 
 ## SharePoint Sync
@@ -50,7 +58,7 @@ The sync runs automatically every hour via launchd (macOS) or cron (Linux).
 Each transcription file uses JSONL format (one JSON object per line):
 
 ```jsonl
-{"audio_file": "hr_admin/001.ogg", "stt_model": "saarika:v2.5", "stt_draft": "मेरा पैसा क्यों काटे", "human_reviewed": null, "final": null, "status": "pending_review", "reviewer": null}
+{"audio_file": "hr_admin/HR_Ad_Q_1.ogg", "stt_model": "saaras:v3", "stt_draft": "मेरा पैसा क्यों काटे", "latency_seconds": 2.27, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-02-25T05:09:27.472942"}
 ```
 
 ### Fields
@@ -62,8 +70,9 @@ Each transcription file uses JSONL format (one JSON object per line):
 | `stt_draft` | Initial STT output |
 | `human_reviewed` | Corrected transcription by reviewer |
 | `final` | Final approved transcription |
+| `latency_seconds` | STT processing time |
 | `status` | `pending_review`, `reviewed`, `approved` |
-| `reviewer` | Email of reviewer |
+| `timestamp` | When the transcription was generated |
 
 ### Workflow
 
@@ -73,5 +82,6 @@ Each transcription file uses JSONL format (one JSON object per line):
 
 ## Notes
 
-- Audio files are NOT committed to git (too large)
-- JSONL files ARE committed for tracking and review
+- Audio files are NOT committed to git (too large) — packaged as `sharepoint_audio.zip` at project root
+- JSONL transcription files ARE committed for tracking and reproducibility
+- Ground truth lives in `source_of_truth_transcriptions.xlsx` (176 entries, project root)

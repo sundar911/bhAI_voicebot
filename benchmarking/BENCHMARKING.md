@@ -56,33 +56,46 @@ Different models produce different surface formatting for the same audio. Withou
 |---|---|---|
 | Punctuation | `मैडम, मैं चंदा देवी` vs `मैडम मैं चंदा देवी` | Saaras v3, Saarika v2.5, Whisper |
 | Numbers as digits | `50000 रुपये` vs `पचास हजार रुपये` | Saaras v3 |
+| Time as digits | `6.30 बजे` vs `साढ़े छह बजे` | Saaras v3 |
+| Currency symbols | `₹1000` vs `एक हजार रुपये` | Saaras v3 |
 | Diacritic variants | हूँ vs हूं (chandrabindu vs anusvara) | All models |
 | Zero-width chars | ZWJ/ZWNJ inserted by some models | Various |
 
 ### Normalization pipeline (`normalize_indic.py`)
 
-Applied to **both** hypothesis and reference before computing normalized metrics. Four stages, in order:
+Applied to **both** hypothesis and reference before computing normalized metrics. Six stages, in order:
 
 **1. Unicode / Indic normalization** (`normalize_unicode`)
 - Unicode NFC canonical composition
 - Strip zero-width characters (ZWJ U+200D, ZWNJ U+200C, ZWSP U+200B, BOM U+FEFF)
 - `IndicNormalizerFactory("hi")` from `indic-nlp-library`: canonicalizes chandrabindu/anusvara, nukta, multi-part vowel signs
 
-**2. Strip punctuation** (`strip_punctuation`)
-- Removes: `, . ? ! ; : । | " ' " " ' ' ( ) [ ] { } < > … – — - / \ ~ @ # $ % ^ & * + = _`
-- Both Latin and Devanagari punctuation
+**2. Normalize time expressions** (`normalize_time`)
+- Pattern: `(\d+)\.(\d+)\s*बजे` → Hindi time + बजे
+- Context-aware: `6.30 बजे` → `साढ़े छह बजे`, `1.30 बजे` → `डेढ़ बजे`, `3.15 बजे` → `सवा तीन बजे`, `1.45 बजे` → `पौने दो बजे`
+- Must run BEFORE general number normalization so "6.30" isn't split into digits
 
-**3. Normalize numbers** (`normalize_numbers`)
-- Regex matches digit sequences (with optional commas: `50,000`)
+**3. Normalize currency** (`normalize_currency`)
+- Pattern: `₹\s*(\d[\d,]*)` → Hindi number + रुपये
+- Examples: `₹1000` → `एक हजार रुपये`, `₹50,000` → `पचास हजार रुपये`
+
+**4. Normalize numbers** (`normalize_numbers`)
+- Regex matches remaining digit sequences (with optional commas: `50,000`)
 - Converts to Hindi words using the Indian number system: सौ (100), हजार (1,000), लाख (1,00,000), करोड़ (1,00,00,000)
 - Custom lookup table covers all 100 unique Hindi words for integers 0–99
 - Examples: `50000` → `पचास हजार`, `2024` → `दो हजार चौबीस`, `26` → `छब्बीस`
-- Decimals left as-is; integers >99,99,99,999 left as-is
+- Decimals: integer part + "दशमलव" + fractional digits; integers >99,99,99,999 left as-is
 
-**4. Collapse whitespace** (`collapse_whitespace`)
+**5. Strip punctuation** (`strip_punctuation`)
+- Removes: `, . ? ! ; : । | " ' " " ' ' ( ) [ ] { } < > … – — - / \ ~ @ # $ % ^ & * + = _ ₹ ₨ $ € £ ¥`
+- Both Latin and Devanagari punctuation, plus currency symbols not caught by step 3
+
+**6. Collapse whitespace** (`collapse_whitespace`)
 - Multiple spaces → single space, strip leading/trailing
 
 Each step is a standalone function so the error analysis can measure their individual impact.
+
+**Pipeline order matters**: Time and currency must be normalized before punctuation stripping, otherwise "6.30" loses its dot and becomes "630" → wrong Hindi conversion.
 
 ### What normalization does NOT do
 
@@ -123,7 +136,7 @@ CER after full normalization.
 
 ### SemDist (Semantic Distance)
 
-Measures meaning similarity rather than surface form. Uses `paraphrase-multilingual-MiniLM-L12-v2` (a multilingual sentence-transformer that supports Hindi).
+Measures meaning similarity rather than surface form. Uses `krutrim-ai-labs/Vyakyarth` (Vyakyarth-1 Indic Embedding model, 768-dim, supports Hindi + Marathi + 8 other Indian languages).
 
 ```
 SemDist = 1 - cosine_similarity(embed(hypothesis), embed(reference))
@@ -144,12 +157,12 @@ AWER/ACER (Adjusted WER/CER) from the 2022 paper "Is Word Error Rate a good eval
 `error_analysis.py` breaks down each model's WER into layers, showing how much is due to formatting vs genuine transcription errors:
 
 ```
-Raw WER  →  (−punct)  →  (−numbers)  →  (−diacritics)  →  nWER (genuine errors)
+Raw WER  →  (−numbers/time/currency)  →  (−punct)  →  (−diacritics)  →  nWER (genuine errors)
 ```
 
 Each step subtracts one normalization layer. The deltas show:
-- **Δpunct** — WER reduction from stripping punctuation alone
-- **Δnumbers** — additional WER reduction from normalizing digits
+- **Δnumbers** — WER reduction from normalizing time, currency, and digit expressions
+- **Δpunct** — additional WER reduction from stripping punctuation
 - **Δdiacritics** — additional reduction from Indic Unicode normalization
 - **genuine** — remaining nWER = actual transcription errors
 
@@ -207,27 +220,49 @@ python3 benchmarking/scripts/error_analysis.py --domain helpdesk
 python3 benchmarking/scripts/error_analysis.py --domain helpdesk --output benchmarking/results/error_analysis_helpdesk.csv
 ```
 
+### Statistical significance
+
+```bash
+# Full report (binomial CI, bootstrap, Wilcoxon, domain consistency, power analysis)
+python3 benchmarking/scripts/statistical_significance.py
+
+# Save structured results to JSON
+python3 benchmarking/scripts/statistical_significance.py --output benchmarking/results/significance.json
+```
+
 ---
 
-## Results (helpdesk domain, 62 files)
+## Results (all domains, 175 files)
 
-From `comparison_helpdesk.csv`:
+From `comparison_all.csv`:
 
-| Model | Files | Raw WER | Raw CER | nWER | nCER |
-|---|---|---|---|---|---|
-| saaras:v3 | 62 | 21.21% | 6.06% | **4.92%** | 2.74% |
-| saarika:v2.5 | 60 | 20.40% | 5.75% | 12.15% | 3.86% |
-| indic-conformer | 62 | 40.00% | 15.82% | 39.95% | 15.80% |
-| vaani-whisper | 62 | 45.65% | 19.39% | 45.52% | 19.33% |
-| mms-1b-all | 62 | 61.94% | 23.59% | 61.58% | 23.34% |
-| indicwav2vec | 62 | 67.74% | 28.38% | 67.64% | 28.32% |
-| whisper-large-v3 | 62 | 69.44% | 32.64% | 67.72% | 31.81% |
+| Model | Files | Raw WER | Raw CER | nWER | nCER | SemDist |
+|---|---|---|---|---|---|---|
+| saaras:v3 | 175 | 19.88% | 7.28% | **6.76%** | 3.83% | 0.0371 |
+| saarika:v2.5 | 175 | 18.86% | 7.44% | 12.83% | 5.51% | 0.0614 |
+| indic-conformer | 175 | 25.89% | 11.04% | 25.80% | 10.99% | 0.1345 |
+| vaani-whisper | 175 | 39.77% | 25.99% | 39.52% | 25.89% | 0.1792 |
+| mms-1b-all | 175 | 51.70% | 22.31% | 51.60% | 22.07% | 0.3565 |
+| indicwav2vec | 175 | 55.28% | 23.77% | 55.22% | 23.68% | 0.3517 |
+| whisper-large-v3 | 175 | 58.82% | 37.72% | 57.47% | 37.20% | 0.3156 |
 
 Key observations:
-- **Saaras v3 drops from 21.21% raw WER to 4.92% nWER** — most of its "errors" were punctuation, not wrong words
-- Saarika v2.5 also improves significantly (20.40% → 12.15%)
+- **Saaras v3 drops from 19.88% raw WER to 6.76% nWER** — most of its "errors" were punctuation and digit formatting, not wrong words
+- Saarika v2.5 also improves significantly (18.86% → 12.83%)
 - GPU models barely change — their errors are genuine transcription mismatches, not formatting
-- Saaras v3 is the clear winner after fair normalization
+- Saaras v3 is the clear winner after fair normalization, confirmed by statistical significance testing
+
+### Statistical significance
+
+`statistical_significance.py` validates the findings with 5 tests:
+
+1. **Binomial CIs**: saaras 95% CI [6.09%, 7.44%] vs saarika [11.94%, 13.73%] — non-overlapping
+2. **Paired bootstrap** (10,000 iterations): p < 0.0001 for saaras vs all competitors
+3. **Wilcoxon signed-rank**: p < 0.0001, saaras wins on 120/175 individual recordings
+4. **Per-domain consistency**: saaras ranks #1 in all 3 domains with sufficient data
+5. **Power analysis**: 99.9% power at N=175 — sample size is more than adequate
+
+See `benchmarking/results/significance.json` for full structured output.
 
 ---
 
@@ -246,10 +281,14 @@ benchmarking/
 │   ├── compute_wer.py                       ← WER/CER/SemDist computation
 │   ├── normalize_indic.py                   ← text normalization pipeline
 │   ├── error_analysis.py                    ← waterfall error breakdown
+│   ├── statistical_significance.py          ← statistical validation (5 tests)
 │   ├── load_ground_truth.py                 ← reads xlsx ground truth
+│   ├── download_audio_from_sharepoint.py    ← SharePoint audio sync
 │   └── extract_voice2voice_questions.py     ← extracts Q files from Voice2Voice.zip
 └── results/
-    └── comparison_helpdesk.csv              ← latest results
+    ├── comparison_all.csv                   ← all-domains results
+    ├── comparison_{domain}.csv              ← per-domain results
+    └── significance.json                    ← statistical significance output
 ```
 
 ---
@@ -262,7 +301,8 @@ Core benchmarking deps (in `pyproject.toml` under `[project.optional-dependencie
 |---|---|
 | `transformers`, `torch`, `torchaudio` | HuggingFace model inference |
 | `indic-nlp-library` | Devanagari Unicode normalization |
-| `sentence-transformers` | SemDist (semantic distance) via multilingual embeddings |
+| `sentence-transformers` | SemDist via Vyakyarth-1 Indic embeddings |
+| `scipy` | Statistical significance testing |
 | `openpyxl` | Reading ground truth xlsx |
 | `jiwer` | Reference WER library (available but we use our own Levenshtein) |
 

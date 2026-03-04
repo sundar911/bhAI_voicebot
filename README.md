@@ -53,7 +53,7 @@ SARVAM_API_KEY=...
 
 # Optional
 OPENAI_MODEL=gpt-4o-mini
-SARVAM_STT_MODEL=saarika:v2.5
+SARVAM_STT_MODEL=saaras:v3
 SARVAM_TTS_VOICE=manisha
 ```
 
@@ -87,14 +87,13 @@ bhAI_voice_bot/
 │   └── transcription_dataset/  # Ground truth transcriptions
 │
 ├── benchmarking/          # STT model evaluation
-│   ├── scripts/           # Benchmark runners
-│   └── notebooks/         # Analysis notebooks
+│   ├── scripts/           # Benchmark runners and analysis
+│   ├── configs/           # Model registry (models.yaml)
+│   └── results/           # Comparison CSVs, significance reports
 │
 ├── inference/             # Production inference
 │   ├── scripts/           # CLI tools
-│   └── webhooks/          # WhatsApp integration
-│
-└── docs/                  # Documentation
+│   └── webhooks/          # WhatsApp/Twilio integration
 ```
 
 ## For Tiny Miracles Team
@@ -126,23 +125,28 @@ uv run pytest
 ### STT Benchmarking
 
 ```bash
-# Generate initial transcriptions
-uv run python benchmarking/scripts/generate_initial_transcriptions.py
+# Compare all 7 models across all domains
+python3 benchmarking/scripts/compare_models.py
 
-# Compute WER after human review
-uv run python benchmarking/scripts/compute_wer.py
+# Statistical significance report
+python3 benchmarking/scripts/statistical_significance.py
+
+# Error analysis waterfall
+python3 benchmarking/scripts/error_analysis.py --domain helpdesk
 ```
+
+See [benchmarking/BENCHMARKING.md](benchmarking/BENCHMARKING.md) for full methodology and results.
 
 ### WhatsApp Integration
 
 ```bash
-# Start webhook server
-uv run uvicorn inference.webhooks.whatsapp_webhook:app --host 0.0.0.0 --port 8000
+# Start Twilio webhook server (port 8001 — Django uses 8000)
+uv run uvicorn inference.webhooks.twilio_webhook:app --host 0.0.0.0 --port 8001
 ```
 
 ## Tech Stack
 
-- **STT**: Sarvam AI (saarika:v2.5), with benchmarking for IndicWhisper, Vaani Whisper
+- **STT**: Sarvam AI (saaras:v3) — statistically validated as best across 7 models on 175 Hindi recordings
 - **LLM**: OpenAI (gpt-4o-mini)
 - **TTS**: Sarvam AI (manisha voice), future: ElevenLabs voice cloning
 - **Framework**: Python, FastAPI, pydub

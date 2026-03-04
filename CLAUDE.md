@@ -62,3 +62,27 @@ Domain folder mapping (for benchmarking):
 - NextGen → `nextgen/`
 - Production → `production/`
 
+# STT model decision
+Sarvam saaras:v3 is our chosen STT model, statistically validated as the best across 175 recordings (6.76% nWER, p < 0.0001 vs all competitors). Both Sarvam models (saaras, saarika) use silence-aware chunking for audio >30s.
+
+# Benchmarking normalization pipeline
+The normalization pipeline in `benchmarking/scripts/normalize_indic.py` must be applied in this order:
+1. Unicode/Indic normalization
+2. Time expressions (`6.30 बजे` → `साढ़े छह बजे`) — BEFORE punctuation stripping
+3. Currency (`₹1000` → `एक हजार रुपये`) — BEFORE punctuation stripping
+4. Numbers (`50000` → `पचास हजार`)
+5. Punctuation stripping
+6. Whitespace collapse
+
+Pipeline order matters: time/currency before punctuation, otherwise dots in "6.30" get stripped.
+
+# Ground truth
+`source_of_truth_transcriptions.xlsx` has 176 entries (175 with text, 1 empty: Hd_Q_110.ogg). Columns: Department, File Name, Human Reviewed.
+
+# Transcription JSONL naming
+Per-model files: `data/transcription_dataset/{domain}/transcriptions_{model_key}.jsonl`
+Model keys: `sarvam_saaras`, `sarvam_saarika`, `indic_conformer`, `vaani_whisper`, `whisper_large_v3`, `meta_mms`, `indic_wav2vec`
+
+# Twilio/WhatsApp
+Webhook server runs on port 8001 (not 8000 — Django occupies 8000). ngrok must target 8001.
+
