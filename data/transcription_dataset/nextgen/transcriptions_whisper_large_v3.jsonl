@@ -1,0 +1,2 @@
+{"audio_file": "nextgen/NG_Q_1.ogg", "stt_model": "openai/whisper-large-v3", "stt_draft": "बिआइटी में टूशन टीचर नहीं आ रहे हैं", "latency_seconds": 33.87, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-03T04:59:17.346056"}
+{"audio_file": "nextgen/NG_Q_2.ogg", "stt_model": "openai/whisper-large-v3", "stt_draft": "ओ मिस्स नेहा मिस्सा एमाडी सी वर्नो मलपित्ती मेडम सिराफ हंगेशन बगदर माइटी विचिरेचे", "latency_seconds": 3.48, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-03T04:59:20.824649"}

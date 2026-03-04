@@ -1,0 +1,2 @@
+{"audio_file": "nextgen/NG_Q_1.ogg", "stt_model": "ai4bharat/indicwav2vec-hindi", "stt_draft": "बीआईटी में टूशन टीचर नहीं आ रहे", "latency_seconds": 14.84, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-03T05:00:18.819166"}
+{"audio_file": "nextgen/NG_Q_2.ogg", "stt_model": "ai4bharat/indicwav2vec-hindi", "stt_draft": "ओमी स्नेह मिशा एमएडीसी वर्ना मलपिदी मे डंसीरा फाउंडेशन बद्दर माई के नीचे रही थे", "latency_seconds": 0.23, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-03T05:00:19.047833"}

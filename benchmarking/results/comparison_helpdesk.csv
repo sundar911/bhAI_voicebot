@@ -1,8 +1,8 @@
-model,files,raw_wer,raw_cer,nwer,ncer
-saaras:v3,62,0.2121,0.0606,0.0492,0.0274
-saarika:v2.5,60,0.204,0.0575,0.1215,0.0386
-ai4bharat/indic-conformer-600m-multilingual,62,0.4,0.1582,0.3995,0.158
-ARTPARK-IISc/whisper-large-v3-vaani-hindi,62,0.4565,0.1939,0.4552,0.1933
-facebook/mms-1b-all (lang=hin),62,0.6194,0.2359,0.6158,0.2334
-ai4bharat/indicwav2vec-hindi,62,0.6774,0.2838,0.6764,0.2832
-openai/whisper-large-v3,62,0.6944,0.3264,0.6772,0.3181
+model,files,raw_wer,raw_cer,nwer,ncer,semdist
+saaras:v3,113,0.2274,0.0774,0.0696,0.0428,0.0319
+saarika:v2.5,113,0.2297,0.087,0.1635,0.0688,0.0606
+ai4bharat/indic-conformer-600m-multilingual,113,0.3875,0.1615,0.3867,0.1611,0.1652
+ARTPARK-IISc/whisper-large-v3-vaani-hindi,113,0.4183,0.1931,0.4166,0.1925,0.2136
+facebook/mms-1b-all (lang=hin),113,0.6307,0.2678,0.6287,0.265,0.4044
+openai/whisper-large-v3,113,0.6475,0.3264,0.6305,0.3188,0.3456
+ai4bharat/indicwav2vec-hindi,113,0.6485,0.2882,0.6474,0.2875,0.3901

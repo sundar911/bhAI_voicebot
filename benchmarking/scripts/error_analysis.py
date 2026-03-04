@@ -28,8 +28,10 @@ from benchmarking.scripts.compute_wer import compute_wer
 from benchmarking.scripts.load_ground_truth import load_ground_truth
 from benchmarking.scripts.normalize_indic import (
     collapse_whitespace,
+    normalize_currency,
     normalize_hindi,
     normalize_numbers,
+    normalize_time,
     normalize_unicode,
     strip_punctuation,
 )
@@ -88,15 +90,20 @@ def stage_raw(text: str) -> str:
     return text
 
 
-def stage_punct(text: str) -> str:
-    """Strip punctuation only."""
-    return collapse_whitespace(strip_punctuation(text))
-
-
 def stage_numbers(text: str) -> str:
-    """Strip punctuation + normalize numbers."""
-    text = strip_punctuation(text)
+    """Normalize time, currency, and digit expressions only."""
+    text = normalize_time(text)
+    text = normalize_currency(text)
     text = normalize_numbers(text)
+    return collapse_whitespace(text)
+
+
+def stage_punct(text: str) -> str:
+    """Normalize numbers + strip punctuation."""
+    text = normalize_time(text)
+    text = normalize_currency(text)
+    text = normalize_numbers(text)
+    text = strip_punctuation(text)
     return collapse_whitespace(text)
 
 
@@ -106,10 +113,10 @@ def stage_full(text: str) -> str:
 
 
 STAGES = [
-    ("raw",        stage_raw),
-    ("−punct",     stage_punct),
-    ("−numbers",   stage_numbers),
-    ("−diacritics (nWER)", stage_full),
+    ("raw",                  stage_raw),
+    ("−numbers",             stage_numbers),
+    ("−punct",               stage_punct),
+    ("−diacritics (nWER)",   stage_full),
 ]
 
 
@@ -166,8 +173,8 @@ def main() -> None:
             stage_wers.append(wer)
 
         # Compute deltas (how much each stage reduces WER)
-        row["delta_punct"] = round(stage_wers[0] - stage_wers[1], 4)
-        row["delta_numbers"] = round(stage_wers[1] - stage_wers[2], 4)
+        row["delta_numbers"] = round(stage_wers[0] - stage_wers[1], 4)
+        row["delta_punct"] = round(stage_wers[1] - stage_wers[2], 4)
         row["delta_diacritics"] = round(stage_wers[2] - stage_wers[3], 4)
         row["genuine_errors"] = round(stage_wers[3], 4)
 
@@ -178,14 +185,14 @@ def main() -> None:
         return
 
     # Print waterfall table
-    print(f"{'Model':<50} {'Files':>5}  {'Raw':>7}  {'-punct':>7}  {'-nums':>7}  {'nWER':>7}  | {'Δpunct':>7}  {'Δnums':>7}  {'Δdiac':>7}  {'genuine':>7}")
+    print(f"{'Model':<50} {'Files':>5}  {'Raw':>7}  {'-nums':>7}  {'-punct':>7}  {'nWER':>7}  | {'Δnums':>7}  {'Δpunct':>7}  {'Δdiac':>7}  {'genuine':>7}")
     print("-" * 130)
 
     for r in sorted(results, key=lambda x: x["−diacritics (nWER)"]):
         print(
             f"{r['model']:<50} {r['files']:>5}  "
-            f"{r['raw']:>6.2%}  {r['−punct']:>6.2%}  {r['−numbers']:>6.2%}  {r['−diacritics (nWER)']:>6.2%}  | "
-            f"{r['delta_punct']:>6.2%}  {r['delta_numbers']:>6.2%}  {r['delta_diacritics']:>6.2%}  {r['genuine_errors']:>6.2%}"
+            f"{r['raw']:>6.2%}  {r['−numbers']:>6.2%}  {r['−punct']:>6.2%}  {r['−diacritics (nWER)']:>6.2%}  | "
+            f"{r['delta_numbers']:>6.2%}  {r['delta_punct']:>6.2%}  {r['delta_diacritics']:>6.2%}  {r['genuine_errors']:>6.2%}"
         )
 
     # Save CSV

@@ -1,0 +1,2 @@
+{"audio_file": "nextgen/NG_Q_1.ogg", "stt_model": "facebook/mms-1b-all (lang=hin)", "stt_draft": "बीआईटी में टूशन टीचर नहीं आ रहे", "latency_seconds": 39.1, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-03T05:00:02.177252"}
+{"audio_file": "nextgen/NG_Q_2.ogg", "stt_model": "facebook/mms-1b-all (lang=hin)", "stt_draft": "ओmiस नहa मिसा एmidीcी वरण मलपितिमेडम शिराफ फंगरेशनबद्दल माहिती विचे रहचे", "latency_seconds": 0.38, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-03T05:00:02.561023"}

@@ -90,13 +90,13 @@ _semdist_model = None
 
 
 def _get_semdist_model():
-    """Lazy-load a multilingual sentence-transformer for SemDist."""
+    """Lazy-load Vyakyarth-1 Indic Embedding model for SemDist."""
     global _semdist_model
     if _semdist_model is None:
         try:
             from sentence_transformers import SentenceTransformer
             _semdist_model = SentenceTransformer(
-                "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2"
+                "krutrim-ai-labs/Vyakyarth"
             )
         except ImportError:
             raise ImportError(

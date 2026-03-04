@@ -1,0 +1,2 @@
+{"audio_file": "nextgen/NG_Q_1.ogg", "stt_model": "saarika:v2.5", "stt_draft": "बीआईटी में ट्यूशन टीचर नहीं आ रहे हैं।", "latency_seconds": 2.97, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-02T23:12:18.764302"}
+{"audio_file": "nextgen/NG_Q_2.ogg", "stt_model": "saarika:v2.5", "stt_draft": "ओ मी स्नेहा मिसाळ एमआयडीसी वरन. मला प्रीती मॅडम शिरा फाउंडेशन बद्दल माहिती विचारायची आहे.", "latency_seconds": 3.33, "human_reviewed": null, "final": null, "status": "pending_review", "timestamp": "2026-03-02T23:12:22.098172"}
