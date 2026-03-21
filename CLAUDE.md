@@ -83,6 +83,43 @@ Pipeline order matters: time/currency before punctuation, otherwise dots in "6.3
 Per-model files: `data/transcription_dataset/{domain}/transcriptions_{model_key}.jsonl`
 Model keys: `sarvam_saaras`, `sarvam_saarika`, `indic_conformer`, `vaani_whisper`, `whisper_large_v3`, `meta_mms`, `indic_wav2vec`
 
+# LLM backends
+Three interchangeable backends, selected via `LLM_BACKEND` env var:
+- **sarvam** (default) — `sarvam-105b` via `api.sarvam.ai/v1` (OpenAI-compatible endpoint)
+- **openai** — `gpt-4o-mini`
+- **claude** — `claude-haiku-4-5-20251001` via Anthropic SDK
+
+All implement `BaseLLM.generate()`. Prompt templates live in `src/bhai/llm/prompts/`.
+
+# TTS backends
+- **Sarvam AI** (default) — manisha voice, `hi-IN`
+- **ElevenLabs** — voice cloning support, emotion tagging via `src/bhai/tts/emotion_tagger.py`
+
+Selected via `TTS_BACKEND` env var (defaults to `sarvam`).
+
+# Memory system
+`src/bhai/memory/` provides encrypted conversation memory:
+- `store.py` — conversation history persistence (per-user)
+- `summarizer.py` — conversation summarization for context window management
+All PII encrypted at rest with Fernet (`BHAI_ENCRYPTION_KEY`).
+
+# User profiles
+`knowledge_base/users/` holds per-user profile templates (`_template.md`). These give bhAI context about who it's talking to.
+
+# Resilience
+`src/bhai/resilience/` handles production reliability:
+- `faq_cache.py` — caches frequent questions for fast responses
+- `queue.py` — request queue for handling load
+- `retry.py` — retry logic with backoff for API failures
+- `worker.py` — background worker for async processing
+
+# Security
+`src/bhai/security/` handles:
+- `crypto.py` — Fernet encryption/decryption for PII at rest
+- `webhook_auth.py` — Twilio signature verification, path traversal protection, rate limiting
+
+Religion, caste, disability, and loan info are NEVER sent to any API.
+
 # Twilio/WhatsApp
 Webhook server runs on port 8001 (not 8000 — Django occupies 8000). ngrok must target 8001.
 

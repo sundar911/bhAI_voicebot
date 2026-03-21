@@ -34,6 +34,7 @@ class GPUModelSTT(BaseSTT):
     def _resolve_device(device: str) -> str:
         if device == "auto":
             import torch
+
             return "cuda" if torch.cuda.is_available() else "cpu"
         return device
 
@@ -44,6 +45,7 @@ class GPUModelSTT(BaseSTT):
     def _load_audio_tensor(self, wav_path: Path):
         """Load WAV as a float32 tensor. Returns (waveform, sample_rate)."""
         import torchaudio
+
         waveform, sr = torchaudio.load(str(wav_path))
         return waveform, sr
 
@@ -55,6 +57,7 @@ class GPUModelSTT(BaseSTT):
     def cleanup(self) -> None:
         """Unload model from GPU and free VRAM."""
         import torch
+
         self._model = None
         self._processor = None
         if torch.cuda.is_available():

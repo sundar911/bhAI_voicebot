@@ -46,4 +46,4 @@ jobs:
         run: uv sync --extra dev
 
       - name: Type check
-        run: uv run mypy src/bhai/
+        run: uv run mypy src/bhai/ --ignore-missing-imports

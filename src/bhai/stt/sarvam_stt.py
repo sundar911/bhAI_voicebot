@@ -13,6 +13,7 @@ from pydub.silence import split_on_silence
 
 from ..audio_utils import convert_to_16k_mono, ensure_dir
 from ..config import Config
+from ..resilience.retry import retry_with_backoff
 from .base import BaseSTT
 
 # Sarvam REST API hard limit
@@ -71,7 +72,11 @@ class SarvamSTT(BaseSTT):
                     chunk_path.unlink(missing_ok=True)
 
             full_text = " ".join(transcripts)
-            payload = {"transcript": full_text, "_chunked": True, "_num_chunks": len(chunks)}
+            payload = {
+                "transcript": full_text,
+                "_chunked": True,
+                "_num_chunks": len(chunks),
+            }
 
         text = self._extract_text(payload)
         return {
@@ -131,7 +136,16 @@ class SarvamSTT(BaseSTT):
 
     # ── API call ─────────────────────────────────────────────────────────
 
-    def _call_api(self, wav_path: Path) -> dict:
+    def _call_api(self, wav_path: Path, max_attempts: int = 3) -> dict:
+        return retry_with_backoff(
+            self._call_api_once,
+            wav_path,
+            max_attempts=max_attempts,
+            base_delay=1.0,
+            max_delay=10.0,
+        )
+
+    def _call_api_once(self, wav_path: Path) -> dict:
         headers = {
             "api-subscription-key": self.config.sarvam_api_key,
         }

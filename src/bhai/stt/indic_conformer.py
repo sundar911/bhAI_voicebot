@@ -31,15 +31,14 @@ class IndicConformerSTT(GPUModelSTT):
 
     def _load_model(self) -> None:
         import os
+
         from transformers import AutoModel
 
         # This model uses ONNX internally. Force CPU to avoid CUBLAS
         # compatibility issues between onnxruntime-gpu and the AMI's CUDA.
         orig = os.environ.get("CUDA_VISIBLE_DEVICES")
         os.environ["CUDA_VISIBLE_DEVICES"] = ""
-        self._model = AutoModel.from_pretrained(
-            self.model_id, trust_remote_code=True
-        )
+        self._model = AutoModel.from_pretrained(self.model_id, trust_remote_code=True)
         # Restore so subsequent PyTorch models can use GPU
         if orig is not None:
             os.environ["CUDA_VISIBLE_DEVICES"] = orig
@@ -68,8 +67,12 @@ class IndicConformerSTT(GPUModelSTT):
         elif isinstance(result, (list, tuple)) and len(result) > 0:
             text = result[0] if isinstance(result[0], str) else str(result[0])
         elif isinstance(result, dict):
-            text = result.get("text", result.get("transcription", str(result)))
+            text = str(result.get("text") or result.get("transcription") or result)
         else:
             text = str(result)
 
-        return {"text": text.strip(), "raw": {"result": str(result)}, "wav_path": wav_path}
+        return {
+            "text": text.strip(),
+            "raw": {"result": str(result)},
+            "wav_path": wav_path,
+        }

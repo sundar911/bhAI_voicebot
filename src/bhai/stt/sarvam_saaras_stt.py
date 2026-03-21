@@ -71,7 +71,11 @@ class SarvamSaarasSTT(BaseSTT):
                     chunk_path.unlink(missing_ok=True)
 
             full_text = " ".join(transcripts)
-            payload = {"transcript": full_text, "_chunked": True, "_num_chunks": len(chunks)}
+            payload = {
+                "transcript": full_text,
+                "_chunked": True,
+                "_num_chunks": len(chunks),
+            }
 
         text = self._extract_text(payload)
         return {
@@ -92,9 +96,9 @@ class SarvamSaarasSTT(BaseSTT):
         """
         segments = split_on_silence(
             audio,
-            min_silence_len=300,   # 300 ms pause = natural word gap
+            min_silence_len=300,  # 300 ms pause = natural word gap
             silence_thresh=audio.dBFS - 16,
-            keep_silence=150,      # keep 150 ms padding on each side
+            keep_silence=150,  # keep 150 ms padding on each side
         )
 
         if not segments:

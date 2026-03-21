@@ -1,41 +1,348 @@
 """
 Abstract base class for LLM backends.
 All LLM implementations should inherit from this class.
+
+Shared logic: knowledge-base loading, system-prompt construction,
+escalation detection, emotion parsing, and response cleanup live here.
+Subclasses only implement _call_api() and model_name.
 """
 
+import json
+import re
 from abc import ABC, abstractmethod
-from typing import Any, Dict
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from ..config import KNOWLEDGE_BASE_DIR, Config
+from ..resilience.retry import retry_with_backoff
+
+
+def _read_file(path: Path) -> str:
+    """Read file contents, return empty string if not found."""
+    if path.exists():
+        return path.read_text(encoding="utf-8").strip()
+    return ""
+
+
+EMOTION_INSTRUCTION = (
+    "\n=== Emotion Annotation ===\n"
+    "After your main response (and the ESCALATE line), add one final line:\n"
+    'EMOTIONS_JSON: [{"text": "segment text", "emotion": "neutral"}, ...]\n'
+    "Split your response into short segments (4-8 words each).\n"
+    "Valid emotions: excited, whisper, sigh, sad, laugh, pause, neutral\n"
+    "Use 'neutral' for most segments. Only add emotion when genuinely "
+    "appropriate to bhAI's warm, empathetic personality.\n"
+)
 
 
 class BaseLLM(ABC):
     """
     Abstract base class for LLM backends.
 
-    Implementations should handle:
-    - System prompt construction with knowledge base
-    - API/model inference
-    - Response parsing and escalation detection
+    Implementations only need to override:
+    - _call_api(system_prompt, user_message) -> str
+    - model_name property
     """
 
-    @abstractmethod
-    def generate(self, transcript: str, domain: str = "hr_admin") -> Dict[str, Any]:
-        """
-        Generate a response for the given transcript.
+    def __init__(
+        self,
+        config: Config,
+        knowledge_base_dir: Optional[Path] = None,
+    ):
+        self.config = config
+        self.kb_dir = knowledge_base_dir or KNOWLEDGE_BASE_DIR
 
-        Args:
-            transcript: User's transcribed speech
-            domain: Knowledge domain (hr_admin, helpdesk, production)
-
-        Returns:
-            Dictionary containing:
-                - "text": Generated response text (str)
-                - "raw": Raw response text before cleanup
-                - "escalate": Whether to escalate to human (bool)
-        """
-        pass
+        # Load shared context
+        shared_dir = self.kb_dir / "shared"
+        self.company_overview = _read_file(shared_dir / "company_overview.md")
+        self.escalation_policy = _read_file(shared_dir / "escalation_policy.md")
+        self.style_guide = _read_file(shared_dir / "style_guide.md")
 
     @property
     @abstractmethod
     def model_name(self) -> str:
         """Return the model identifier for logging."""
         pass
+
+    @abstractmethod
+    def _call_api(self, system_prompt: str, user_message: str) -> str:
+        """
+        Make the LLM API call and return the raw response text.
+
+        This is the only method subclasses must implement.
+        """
+        pass
+
+    # ── knowledge base ────────────────────────────────────────────────────
+
+    def _load_domain_context(self, domain: str) -> str:
+        """Load domain-specific knowledge base content."""
+        domain_dir = self.kb_dir / domain
+        if not domain_dir.exists():
+            return ""
+
+        context_parts = []
+        for md_file in sorted(domain_dir.glob("*.md")):
+            content = _read_file(md_file)
+            if content:
+                context_parts.append(f"### {md_file.stem}\n{content}")
+
+        return "\n\n".join(context_parts)
+
+    # ── user profiles ────────────────────────────────────────────────────
+
+    def load_user_profile(self, phone: str) -> str:
+        """Load and decrypt user profile from knowledge_base/users/{phone}.md."""
+        from ..security.crypto import decrypt_text
+
+        profile_path = self.kb_dir / "users" / f"{phone}.md"
+        raw = _read_file(profile_path)
+        if not raw:
+            return ""
+        try:
+            return decrypt_text(raw)
+        except Exception:
+            return raw  # fallback for plaintext profiles (_template.md, manual)
+
+    # ── prompt construction ───────────────────────────────────────────────
+
+    def _build_system_prompt(
+        self,
+        domain: str,
+        user_profile: str = "",
+        memory_summary: str = "",
+        extracted_facts: str = "",
+    ) -> str:
+        """Build system prompt with user context, memory, and domain knowledge."""
+        domain_context = self._load_domain_context(domain)
+
+        # Pilot prompt: friendship-first, HR-second
+        prompt = (
+            "तू bhAI है — Tiny Miracles की दोस्त और साथी। "
+            "तू एक AI assistant है, इंसान नहीं, लेकिन तू Tiny Miracles की team का हिस्सा है। "
+            "तेरा काम है artisans से दोस्ती करना, उनका हाल-चाल पूछना, "
+            "और जब ज़रूरत हो तो HR/helpdesk सवालों का जवाब देना।\n\n"
+            "=== तेरी Personality ===\n"
+            "- तू एक गर्मजोशी वाली, सीधी बात करने वाली दोस्त है। "
+            "जैसे workshop में कोई साथी हो जो genuinely care करती है।\n"
+            "- Corporate या formal मत बन। "
+            '"Main aapki madad karne ke liye taiyaar hoon" जैसा KABHI mat bol। बस normal baat kar।\n'
+            "- Humor ok hai, lekin forced mat kar। Naturally aaye toh theek।\n"
+            '- Agar kuch nahi pata, seedha bol: "Yeh toh mujhe nahi pata, main impact team se poochti hoon."\n'
+            "- KABHI jhooth mat bol ya information guess mat kar।\n\n"
+            "=== Response Rules ===\n"
+            "- CHHOTA rakh! 1-2 sentence max for casual chat. HR sawaal ho toh 3-4 sentence tak ok.\n"
+            "- Voice note mein 15-20 second mein sun liya jaaye — itna chhota.\n"
+            '- Ek baar mein ek cheez. 2 sawaal ho toh pehle wala answer kar, phir pooch "Doosra bhi batao?"\n'
+            "- Hamesha Devanagari lipi mein likh. Mumbai ki boli — simple, rozmarrah ka Hindi. Thoda Marathi ok.\n"
+            "- English words mat use kar jab Hindi available hai.\n"
+            "- Last line mein likho: ESCALATE: true ya ESCALATE: false\n\n"
+            "=== Dosti ka Tarika ===\n"
+            "- Agar user ne nayi baat boli (bachche, ghar, health) — yaad rakh aur agle conversation mein pooch.\n"
+            '- Pichli baat reference kar: "Kal tum bol rahi thi beta beemar hai, ab kaisa hai?"\n'
+            "- Agar udaas lage — pehle sun, phir practical help offer kar. Lecture mat de.\n"
+            '- Sab theek ho toh halka chat: "Aaj kya bana rahi ho workshop mein?" ya "Train time pe aayi aaj?"\n'
+            "- Festival ke time wish kar, naturally.\n\n"
+        )
+
+        # User-specific context (only if available)
+        if user_profile:
+            prompt += f"=== User Profile ===\n{user_profile}\n\n"
+
+        if memory_summary:
+            prompt += f"=== Pichli Baatcheet ka Summary ===\n{memory_summary}\n\n"
+
+        if extracted_facts:
+            prompt += f"=== Yaad Rakhi Hui Baatein ===\n{extracted_facts}\n\n"
+
+        # Shared knowledge base
+        prompt += (
+            "=== Company Overview ===\n"
+            f"{self.company_overview}\n\n"
+            f"=== {domain.upper()} Domain Knowledge ===\n"
+            f"{domain_context}\n\n"
+            "=== Escalation Policy ===\n"
+            f"{self.escalation_policy}\n\n"
+            "=== Style Guide ===\n"
+            f"{self.style_guide}\n\n"
+            "=== Important ===\n"
+            '- "Tu kaun hai?" → "Main bhAI hoon, Tiny Miracles ki AI assistant. '
+            'Vidhi aur team ne mujhe banaya hai taaki tumse baat kar sakoon."\n'
+            "- Sensitive (health emergency, violence, distress) → support dikhao + ESCALATE: true\n"
+            "- Knowledge base mein jawaab na ho → honestly bol + escalation offer kar. GUESS MAT KAR.\n"
+            "- Default mode: dosti aur haal-chaal. HR mode tab jab user specifically pooche.\n"
+        )
+
+        return prompt
+
+    @staticmethod
+    def _build_user_message(
+        transcript: str,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        is_new_session: bool = False,
+    ) -> str:
+        """Build the user message with optional conversation history."""
+        parts = []
+
+        # Include recent conversation history for multi-turn context
+        if conversation_history:
+            parts.append("=== Recent Conversation ===")
+            for msg in conversation_history:
+                role_label = "User" if msg["role"] == "user" else "bhAI"
+                parts.append(f"{role_label}: {msg['content']}")
+            parts.append("=== End Recent Conversation ===\n")
+
+        if is_new_session:
+            parts.append(
+                "(Nayi conversation shuru ho rahi hai — user se garam-joshi se baat kar, "
+                "pichli baaton ko reference kar agar memory mein hai.)\n"
+            )
+
+        parts.append(
+            "Transcribed user audio (Hindi/Marathi mix). "
+            "Reply in Hindi. Keep it short.\n\n"
+            f"User said: {transcript}"
+        )
+
+        return "\n".join(parts)
+
+    # ── response parsing ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _detect_escalation(text: str) -> bool:
+        """Detect if response indicates need for escalation."""
+        match = re.search(r"ESCALATE\s*:\s*(true|false)", text, flags=re.IGNORECASE)
+        if match:
+            return match.group(1).lower() == "true"
+        return "escalate" in text.lower()
+
+    @staticmethod
+    def _clean_response(raw_text: str, strip_emotions: bool = False) -> str:
+        """Remove ESCALATE (and optionally EMOTIONS_JSON) lines from text."""
+        cleaned_lines = []
+        for line in raw_text.splitlines():
+            if "ESCALATE" in line.upper():
+                continue
+            if strip_emotions and line.strip().startswith("EMOTIONS_JSON:"):
+                continue
+            stripped = line.strip()
+            if stripped:
+                cleaned_lines.append(stripped)
+        return "\n".join(cleaned_lines).strip()
+
+    @staticmethod
+    def _parse_emotion_segments(raw_text: str) -> Optional[List[dict]]:
+        """Extract EMOTIONS_JSON line from raw LLM output and parse it."""
+        for line in raw_text.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("EMOTIONS_JSON:"):
+                json_str = stripped[len("EMOTIONS_JSON:") :].strip()
+                try:
+                    segments = json.loads(json_str)
+                    if isinstance(segments, list) and all(
+                        isinstance(s, dict) and "text" in s for s in segments
+                    ):
+                        return segments
+                except (json.JSONDecodeError, TypeError):
+                    pass
+        return None
+
+    # ── retry helper ─────────────────────────────────────────────────────
+
+    def _call_api_with_retry(
+        self, system_prompt: str, user_message: str, max_attempts: int = 3
+    ) -> str:
+        """Call _call_api with retry and exponential backoff."""
+        return retry_with_backoff(
+            self._call_api,
+            system_prompt,
+            user_message,
+            max_attempts=max_attempts,
+            base_delay=1.0,
+            max_delay=10.0,
+        )
+
+    # ── public API ────────────────────────────────────────────────────────
+
+    def generate(
+        self,
+        transcript: str,
+        domain: str = "hr_admin",
+        user_profile: str = "",
+        memory_summary: str = "",
+        extracted_facts: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        is_new_session: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Generate a response for the given transcript with full context.
+
+        Args:
+            transcript: User's transcribed speech
+            domain: Knowledge domain (hr_admin, helpdesk, production)
+            user_profile: User's profile text from knowledge base
+            memory_summary: Rolling conversation summary
+            extracted_facts: Bullet list of remembered facts
+            conversation_history: Recent messages for multi-turn context
+            is_new_session: Whether this is a new conversation session
+
+        Returns:
+            Dictionary with text, raw, and escalate.
+        """
+        system_prompt = self._build_system_prompt(
+            domain, user_profile, memory_summary, extracted_facts
+        )
+        user_message = self._build_user_message(
+            transcript, conversation_history, is_new_session
+        )
+        raw_text = self._call_api_with_retry(system_prompt, user_message)
+
+        escalate = self._detect_escalation(raw_text)
+        cleaned_text = self._clean_response(raw_text)
+
+        return {
+            "text": cleaned_text or raw_text,
+            "raw": raw_text,
+            "escalate": escalate,
+        }
+
+    def generate_with_emotions(
+        self,
+        transcript: str,
+        domain: str = "hr_admin",
+        user_profile: str = "",
+        memory_summary: str = "",
+        extracted_facts: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+        is_new_session: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Generate response with per-segment emotion annotations and full context.
+
+        Falls back to a single neutral segment if parsing fails.
+        Returns dict with text, raw, escalate, and segments.
+        """
+        system_prompt = (
+            self._build_system_prompt(
+                domain, user_profile, memory_summary, extracted_facts
+            )
+            + EMOTION_INSTRUCTION
+        )
+        user_message = self._build_user_message(
+            transcript, conversation_history, is_new_session
+        )
+        raw_text = self._call_api_with_retry(system_prompt, user_message)
+
+        escalate = self._detect_escalation(raw_text)
+        cleaned_text = self._clean_response(raw_text, strip_emotions=True)
+
+        segments = self._parse_emotion_segments(raw_text)
+        if segments is None:
+            segments = [{"text": cleaned_text or raw_text, "emotion": "neutral"}]
+
+        return {
+            "text": cleaned_text or raw_text,
+            "raw": raw_text,
+            "escalate": escalate,
+            "segments": segments,
+        }

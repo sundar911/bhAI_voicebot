@@ -19,8 +19,11 @@ knowledge_base/
 ├── helpdesk/               # Helpdesk domain (FUTURE)
 │   └── .gitkeep            # Govt schemes, document help
 │
-└── production/             # Production domain (FUTURE)
-    └── .gitkeep            # Factory floor, machines, chai/breakfast
+├── production/             # Production domain (FUTURE)
+│   └── .gitkeep            # Factory floor, machines, chai/breakfast
+│
+└── users/                  # Per-user profile templates
+    └── _template.md        # Template for new user profiles
 ```
 
 ## For Tiny Miracles Team

@@ -53,8 +53,6 @@ class WhisperLargeV3STT(GPUModelSTT):
                 input_features, language="hi", task="transcribe"
             )
 
-        text = self._processor.batch_decode(
-            predicted_ids, skip_special_tokens=True
-        )[0]
+        text = self._processor.batch_decode(predicted_ids, skip_special_tokens=True)[0]
 
         return {"text": text.strip(), "raw": {}, "wav_path": wav_path}

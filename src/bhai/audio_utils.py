@@ -16,9 +16,7 @@ def ensure_dir(path: Path) -> Path:
 
 
 def convert_to_16k_mono(
-    input_path: Path,
-    target_dir: Path,
-    target_sr: int = 16000
+    input_path: Path, target_dir: Path, target_sr: int = 16000
 ) -> Path:
     """
     Convert audio to 16kHz mono WAV for STT models.
@@ -39,6 +37,17 @@ def convert_to_16k_mono(
     audio = audio.set_frame_rate(target_sr).set_channels(1).set_sample_width(2)
     audio.export(output_path, format="wav")
 
+    return output_path
+
+
+def convert_to_ogg_opus(input_path: Path, output_path: Path) -> Path:
+    """
+    Convert any audio file to OGG Opus format (required by WhatsApp voice notes).
+
+    Uses pydub (ffmpeg backend) for the conversion.
+    """
+    audio = AudioSegment.from_file(input_path)
+    audio.export(output_path, format="ogg", codec="libopus")
     return output_path
 
 

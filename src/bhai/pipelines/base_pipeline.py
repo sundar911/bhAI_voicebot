@@ -10,10 +10,10 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from ..audio_utils import ensure_dir
-from ..config import Config, INFERENCE_OUTPUTS_DIR
+from ..config import INFERENCE_OUTPUTS_DIR, Config
+from ..llm.base import BaseLLM
 from ..stt.base import BaseSTT
 from ..tts.base import BaseTTS
-from ..llm.base import BaseLLM
 
 
 class BasePipeline(ABC):
@@ -30,7 +30,7 @@ class BasePipeline(ABC):
         stt: BaseSTT,
         llm: BaseLLM,
         tts: Optional[BaseTTS] = None,
-        domain: str = "hr_admin"
+        domain: str = "hr_admin",
     ):
         """
         Initialize pipeline with components.
@@ -55,10 +55,7 @@ class BasePipeline(ABC):
         pass
 
     def run(
-        self,
-        audio_path: Path,
-        out_dir: Optional[Path] = None,
-        enable_tts: bool = True
+        self, audio_path: Path, out_dir: Optional[Path] = None, enable_tts: bool = True
     ) -> Dict[str, Any]:
         """
         Run the full voice processing pipeline.
@@ -100,7 +97,13 @@ class BasePipeline(ABC):
         tts_path = None
         if enable_tts and self.tts and response_text:
             t2 = time.perf_counter()
-            tts_result = self.tts.synthesize(response_text, out_dir / "response.wav")
+            segments = llm_result.get("segments")
+            if segments and hasattr(self.tts, "synthesize_with_emotions"):
+                tts_output = out_dir / "response.ogg"
+                tts_result = self.tts.synthesize_with_emotions(segments, tts_output)
+            else:
+                tts_output = out_dir / "response.wav"
+                tts_result = self.tts.synthesize(response_text, tts_output)
             tts_path = tts_result.get("audio_path")
             timings["tts_seconds"] = round(time.perf_counter() - t2, 3)
         else:

@@ -68,11 +68,27 @@ uv run pytest
 
 ```
 src/bhai/
-├── stt/base.py          # Abstract STT interface
-├── tts/base.py          # Abstract TTS interface
-├── llm/base.py          # Abstract LLM interface
-├── pipelines/base_pipeline.py  # Pipeline orchestration
-└── config.py            # Configuration management
+├── config.py                    # Configuration management
+├── audio_utils.py               # Audio format conversion
+├── stt/                         # Speech-to-text (7 model backends)
+│   ├── base.py                  # Abstract STT interface
+│   └── registry.py              # Model registry
+├── tts/                         # Text-to-speech
+│   ├── base.py                  # Abstract TTS interface
+│   ├── sarvam_tts.py            # Sarvam AI TTS
+│   └── elevenlabs_tts.py        # ElevenLabs voice cloning
+├── llm/                         # Language models
+│   ├── base.py                  # Abstract LLM interface
+│   ├── sarvam_llm.py            # Sarvam (default)
+│   ├── openai_llm.py            # OpenAI
+│   ├── claude_llm.py            # Anthropic Claude
+│   └── prompts/                 # Prompt templates
+├── pipelines/                   # Pipeline orchestration
+│   └── base_pipeline.py
+├── memory/                      # Conversation memory (encrypted)
+├── resilience/                  # FAQ cache, request queue, retry
+├── security/                    # Encryption, webhook auth
+└── integrations/                # WhatsApp (Twilio), SharePoint
 ```
 
 ### Adding a New STT Backend

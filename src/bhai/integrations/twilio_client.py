@@ -77,6 +77,33 @@ class TwilioWhatsAppClient:
         target_path.write_bytes(response.content)
         return target_path
 
+    def send_text_message(
+        self,
+        to_number: str,
+        body: str,
+    ) -> Dict[str, Any]:
+        """
+        Send a text message via Twilio WhatsApp.
+
+        Args:
+            to_number: Recipient in Twilio format
+                       (e.g., "whatsapp:+919876543210")
+            body: Text message content
+
+        Returns:
+            Dictionary with message SID and status
+        """
+        message = self.client.messages.create(
+            from_=self.whatsapp_number,
+            to=to_number,
+            body=body,
+        )
+
+        return {
+            "sid": message.sid,
+            "status": message.status,
+        }
+
     def send_audio_message(
         self,
         to_number: str,

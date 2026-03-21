@@ -43,6 +43,16 @@ env/
 *.pem
 credentials.json
 secrets/
+twilio_2FA_recovery_code.txt
+
+# PII: user profiles and conversation database
+knowledge_base/users/*.md
+!knowledge_base/users/_template.md
+*.db
+*.xlsx
+*.xls
+*.pdf
+*.docx
 
 # Audio files (large, synced separately)
 Voice2Voice.zip

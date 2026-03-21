@@ -10,6 +10,7 @@ from typing import Any, Dict
 import requests
 
 from ..config import Config
+from ..resilience.retry import retry_with_backoff
 from .base import BaseTTS
 
 
@@ -39,7 +40,7 @@ class SarvamTTS(BaseTTS):
 
     def synthesize(self, text: str, output_path: Path) -> Dict[str, Any]:
         """
-        Synthesize speech using Sarvam API.
+        Synthesize speech using Sarvam API (with retry).
 
         Args:
             text: Hindi text to convert to speech
@@ -48,12 +49,23 @@ class SarvamTTS(BaseTTS):
         Returns:
             Dictionary with audio_path and raw response
         """
+        return retry_with_backoff(
+            self._synthesize_once,
+            text,
+            output_path,
+            max_attempts=3,
+            base_delay=1.0,
+            max_delay=10.0,
+        )
+
+    def _synthesize_once(self, text: str, output_path: Path) -> Dict[str, Any]:
+        """Single attempt at Sarvam TTS API call."""
         headers = {
             "api-subscription-key": self.config.sarvam_api_key,
             "Content-Type": "application/json",
         }
 
-        payload = {
+        payload: dict = {
             "inputs": [text],
             "target_language_code": self.config.sarvam_tts_language,
             "speaker": self.config.sarvam_tts_voice,
@@ -86,14 +98,11 @@ class SarvamTTS(BaseTTS):
 
         if isinstance(payload_json, dict):
             audio_b64 = (
-                payload_json.get("audio")
-                or payload_json.get("audios", [None])[0]
+                payload_json.get("audio") or payload_json.get("audios", [None])[0]
             )
 
         if not audio_b64:
-            raise RuntimeError(
-                f"Sarvam TTS response missing audio: {payload_json}"
-            )
+            raise RuntimeError(f"Sarvam TTS response missing audio: {payload_json}")
 
         output_path.write_bytes(base64.b64decode(audio_b64))
         return {"audio_path": output_path, "raw": payload_json}

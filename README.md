@@ -26,7 +26,7 @@ Voice Input → STT → LLM (with knowledge base) → TTS → Voice Output
 - Python 3.10+
 - [UV](https://github.com/astral-sh/uv) for dependency management
 - ffmpeg for audio processing
-- API keys for OpenAI and Sarvam AI
+- API keys for Sarvam AI (required), plus OpenAI or Anthropic if using those LLM backends
 
 ### Installation
 
@@ -48,14 +48,25 @@ cp .env.example .env
 Create a `.env` file with:
 
 ```env
-OPENAI_API_KEY=sk-...
-SARVAM_API_KEY=...
+# LLM Backend: "sarvam" (default), "openai", or "claude"
+LLM_BACKEND=sarvam
 
-# Optional
-OPENAI_MODEL=gpt-4o-mini
+# Sarvam AI (required for STT/TTS; also used for LLM when LLM_BACKEND=sarvam)
+SARVAM_API_KEY=...
 SARVAM_STT_MODEL=saaras:v3
 SARVAM_TTS_VOICE=manisha
+
+# OpenAI (only needed when LLM_BACKEND=openai)
+# OPENAI_API_KEY=sk-...
+
+# Claude (only needed when LLM_BACKEND=claude)
+# ANTHROPIC_API_KEY=sk-ant-...
+
+# Encryption (required for conversation memory)
+BHAI_ENCRYPTION_KEY=...
 ```
+
+See `.env.example` for all available options.
 
 ### Run Demo
 
@@ -72,15 +83,20 @@ uv run python inference/scripts/run_demo.py --audio path/to/audio.m4a --no_tts
 ```
 bhAI_voice_bot/
 ├── src/bhai/              # Core library
-│   ├── stt/               # Speech-to-text backends
-│   ├── tts/               # Text-to-speech backends
-│   ├── llm/               # Language model backends
+│   ├── stt/               # Speech-to-text backends (7 models)
+│   ├── tts/               # Text-to-speech (Sarvam, ElevenLabs)
+│   ├── llm/               # Language model backends (Sarvam, OpenAI, Claude)
+│   │   └── prompts/       # Prompt templates
 │   ├── pipelines/         # Processing pipelines
-│   └── integrations/      # External integrations (WhatsApp)
+│   ├── memory/            # Conversation memory (encrypted store)
+│   ├── resilience/        # FAQ cache, request queue, retry logic
+│   ├── security/          # Encryption (Fernet), webhook auth
+│   └── integrations/      # External integrations (WhatsApp, SharePoint)
 │
 ├── knowledge_base/        # Domain knowledge (editable by TM team)
 │   ├── shared/            # Cross-domain (escalation, style)
-│   └── hr_admin/          # HR-specific policies
+│   ├── hr_admin/          # HR-specific policies
+│   └── users/             # Per-user profile templates
 │
 ├── data/                  # Audio data and transcriptions
 │   ├── sharepoint_sync/   # Auto-synced audio from SharePoint
@@ -94,6 +110,8 @@ bhAI_voice_bot/
 ├── inference/             # Production inference
 │   ├── scripts/           # CLI tools
 │   └── webhooks/          # WhatsApp/Twilio integration
+│
+├── scripts/               # Utility scripts (SharePoint sync, cleanup)
 ```
 
 ## For Tiny Miracles Team
@@ -147,8 +165,9 @@ uv run uvicorn inference.webhooks.twilio_webhook:app --host 0.0.0.0 --port 8001
 ## Tech Stack
 
 - **STT**: Sarvam AI (saaras:v3) — statistically validated as best across 7 models on 175 Hindi recordings
-- **LLM**: OpenAI (gpt-4o-mini)
-- **TTS**: Sarvam AI (manisha voice), future: ElevenLabs voice cloning
+- **LLM**: Sarvam (sarvam-105b, default), OpenAI (gpt-4o-mini), or Claude (haiku) — configurable via `LLM_BACKEND`
+- **TTS**: Sarvam AI (manisha voice) or ElevenLabs (voice cloning)
+- **Security**: Fernet encryption for PII at rest, Twilio signature verification
 - **Framework**: Python, FastAPI, pydub
 
 ## License

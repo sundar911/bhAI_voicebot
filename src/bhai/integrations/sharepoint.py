@@ -64,7 +64,9 @@ class SharePointClient:
         # Fall back to device code flow
         flow = self._app.initiate_device_flow(scopes=SCOPES)
         if "user_code" not in flow:
-            raise RuntimeError(f"Device flow failed: {flow.get('error_description', flow)}")
+            raise RuntimeError(
+                f"Device flow failed: {flow.get('error_description', flow)}"
+            )
 
         print(f"\n{'='*60}", flush=True)
         print(f"To sign in, open: {flow['verification_uri']}", flush=True)
@@ -73,7 +75,9 @@ class SharePointClient:
 
         result = self._app.acquire_token_by_device_flow(flow)
         if "access_token" not in result:
-            raise RuntimeError(f"Auth failed: {result.get('error_description', result)}")
+            raise RuntimeError(
+                f"Auth failed: {result.get('error_description', result)}"
+            )
 
         self._token = result["access_token"]
         self._save_cache()
@@ -130,7 +134,9 @@ class SharePointClient:
                     break
             if not self._drive_id:
                 available = [d["name"] for d in data["value"]]
-                raise ValueError(f"Drive '{drive_name}' not found. Available: {available}")
+                raise ValueError(
+                    f"Drive '{drive_name}' not found. Available: {available}"
+                )
         else:
             data = self._get(f"{GRAPH_BASE}/sites/{site_id}/drive")
             self._drive_id = data["id"]
@@ -154,7 +160,7 @@ class SharePointClient:
         while url:
             data = self._get(url)
             items.extend(data.get("value", []))
-            url = data.get("@odata.nextLink")
+            url = data.get("@odata.nextLink") or ""
         return items
 
     def list_audio_files(self, folder_path: str) -> list[dict]:
@@ -162,7 +168,8 @@ class SharePointClient:
         audio_exts = {".ogg", ".wav", ".mp3", ".m4a", ".opus"}
         items = self.list_folder_children(folder_path)
         return [
-            item for item in items
+            item
+            for item in items
             if not item.get("folder")
             and Path(item["name"]).suffix.lower() in audio_exts
         ]

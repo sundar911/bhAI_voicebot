@@ -4,12 +4,13 @@ Specialized pipeline for HR, salary, leave, and benefits queries.
 """
 
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Union
 
 from ..config import Config, load_config
+from ..llm import create_llm
 from ..stt.sarvam_stt import SarvamSTT
+from ..tts.elevenlabs_tts import ElevenLabsTTS
 from ..tts.sarvam_tts import SarvamTTS
-from ..llm.openai_llm import OpenAILLM
 from .base_pipeline import BasePipeline
 
 
@@ -28,7 +29,7 @@ class HRAdminPipeline(BasePipeline):
         self,
         config: Optional[Config] = None,
         work_dir: Optional[Path] = None,
-        enable_tts: bool = True
+        enable_tts: bool = True,
     ):
         """
         Initialize HR-Admin pipeline with default components.
@@ -46,16 +47,15 @@ class HRAdminPipeline(BasePipeline):
 
         # Initialize components
         stt = SarvamSTT(config, work_dir=work_dir)
-        llm = OpenAILLM(config)
-        tts = SarvamTTS(config) if enable_tts else None
+        llm = create_llm(config)
+        tts: Union[ElevenLabsTTS, SarvamTTS, None] = None
+        if enable_tts:
+            if config.tts_backend == "elevenlabs":
+                tts = ElevenLabsTTS(config)
+            else:
+                tts = SarvamTTS(config)
 
-        super().__init__(
-            config=config,
-            stt=stt,
-            llm=llm,
-            tts=tts,
-            domain="hr_admin"
-        )
+        super().__init__(config=config, stt=stt, llm=llm, tts=tts, domain="hr_admin")
 
     @property
     def name(self) -> str:
@@ -66,7 +66,7 @@ def run_pipeline(
     audio_path: Path,
     out_dir: Optional[Path] = None,
     openai_model: Optional[str] = None,
-    enable_tts: bool = True
+    enable_tts: bool = True,
 ):
     """
     Convenience function to run HR-Admin pipeline.
