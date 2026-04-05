@@ -84,19 +84,21 @@ uv run python inference/scripts/run_demo.py --audio path/to/audio.m4a --no_tts
 bhAI_voice_bot/
 ├── src/bhai/              # Core library
 │   ├── stt/               # Speech-to-text backends (7 models)
-│   ├── tts/               # Text-to-speech (Sarvam, ElevenLabs)
+│   ├── tts/               # Text-to-speech (Sarvam, ElevenLabs + emotion tagging)
 │   ├── llm/               # Language model backends (Sarvam, OpenAI, Claude)
 │   │   └── prompts/       # Prompt templates
-│   ├── pipelines/         # Processing pipelines
-│   ├── memory/            # Conversation memory (encrypted store)
-│   ├── resilience/        # FAQ cache, request queue, retry logic
-│   ├── security/          # Encryption (Fernet), webhook auth
+│   ├── pipelines/         # Processing pipelines (base + hr_admin)
+│   ├── memory/            # Conversation memory (encrypted store + summarizer)
+│   ├── resilience/        # FAQ cache, request queue, retry logic, background worker
+│   ├── security/          # Encryption (Fernet), webhook auth, rate limiting
 │   └── integrations/      # External integrations (WhatsApp, SharePoint)
+│
+├── src/tests/             # Test suite (75 tests — config, crypto, retry, etc.)
 │
 ├── knowledge_base/        # Domain knowledge (editable by TM team)
 │   ├── shared/            # Cross-domain (escalation, style)
 │   ├── hr_admin/          # HR-specific policies
-│   └── users/             # Per-user profile templates
+│   └── users/             # Per-user profiles (200+ artisans)
 │
 ├── data/                  # Audio data and transcriptions
 │   ├── sharepoint_sync/   # Auto-synced audio from SharePoint
@@ -109,9 +111,12 @@ bhAI_voice_bot/
 │
 ├── inference/             # Production inference
 │   ├── scripts/           # CLI tools
+│   ├── web/               # Dev web chat UI (localhost:8002)
 │   └── webhooks/          # WhatsApp/Twilio integration
 │
-├── scripts/               # Utility scripts (SharePoint sync, cleanup)
+├── scripts/               # Utility scripts (SharePoint sync, cleanup, profiles)
+│
+└── .github/workflows/     # CI (tests, black, isort, mypy)
 ```
 
 ## For Tiny Miracles Team
@@ -137,8 +142,18 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this pr
 ### Running Tests
 
 ```bash
+# Run all 75 tests
 uv run pytest
+
+# Run with coverage
+uv run pytest --cov=src/bhai
 ```
+
+### CI/CD
+
+GitHub Actions runs on every push/PR to `main` and `develop`:
+- **test**: pytest + black + isort
+- **lint**: mypy type checking
 
 ### STT Benchmarking
 
@@ -160,6 +175,14 @@ See [benchmarking/BENCHMARKING.md](benchmarking/BENCHMARKING.md) for full method
 ```bash
 # Start Twilio webhook server (port 8001 — Django uses 8000)
 uv run uvicorn inference.webhooks.twilio_webhook:app --host 0.0.0.0 --port 8001
+```
+
+### Dev Web Chat
+
+```bash
+# Full voice pipeline in-browser (mic → STT → LLM → TTS → playback)
+uv run python inference/web/chat_server.py
+# Open http://127.0.0.1:8002
 ```
 
 ## Tech Stack

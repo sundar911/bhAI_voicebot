@@ -43,14 +43,14 @@ def test_build_user_message_with_history():
     ]
     msg = BaseLLM._build_user_message("salary?", conversation_history=history)
     assert "User: PF ke baare mein baat karo" in msg
-    assert "bhAI: PF ke liye HR se form lo" in msg
+    assert "भाई: PF ke liye HR se form lo" in msg
     assert "salary?" in msg
 
 
 def test_build_user_message_new_session_flag():
     """is_new_session=True adds a new-session notice."""
     msg = BaseLLM._build_user_message("hello", is_new_session=True)
-    assert "Nayi conversation" in msg or "nayi" in msg.lower()
+    assert "नई बातचीत" in msg or "Nayi conversation" in msg
 
 
 # ── _detect_escalation ────────────────────────────────────────────────
@@ -140,9 +140,10 @@ def test_parse_emotion_segments_missing_text_key():
 # ── _build_system_prompt ──────────────────────────────────────────────
 
 
-def test_system_prompt_contains_domain_name(stub_llm):
+def test_system_prompt_contains_pilot_mode(stub_llm):
+    """Pilot mode prompt contains friendship-only instructions."""
     prompt = stub_llm._build_system_prompt("hr_admin")
-    assert "HR_ADMIN" in prompt.upper() or "hr_admin" in prompt
+    assert "पायलट" in prompt or "दोस्ती" in prompt
 
 
 def test_system_prompt_includes_user_profile(stub_llm):

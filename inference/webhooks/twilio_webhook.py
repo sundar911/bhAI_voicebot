@@ -57,6 +57,28 @@ logging.basicConfig(
 )
 logger = logging.getLogger("bhai.webhook")
 
+# ── Onboarding / ice-breaker ──────────────────────────────────────────────
+
+_GREETING_WORDS = {"hi", "hello", "namaste", "hii", "hlo", "hey", "helo"}
+_INTRO_TEMPLATE = (
+    "अरे हाय! मैं भाई हूँ — विधी की आवाज़ में बोलती हूँ पर विधी नहीं हूँ। "
+    "मुझसे कुछ भी पूछो — मैं कहाँ रहती हूँ, मुझे किसने बनाया — "
+    "और मैं भी आपके बारे में जानना चाहती हूँ! आपका नाम क्या है?"
+)
+
+
+def _detect_greeting(text: str) -> str | None:
+    """If the message is a short, standalone greeting, return the greeting word; else None."""
+    stripped = text.strip()
+    if not stripped or len(stripped) > 50:
+        return None
+    first_word = stripped.split()[0].rstrip("!.,?").lower()
+    return first_word if first_word in _GREETING_WORDS else None
+
+
+def _build_intro(greeting: str = "hi") -> str:
+    return _INTRO_TEMPLATE.format(greeting=greeting)
+
 
 def _phone_hash(phone: str) -> str:
     """Hash a phone number for safe log correlation."""
@@ -203,8 +225,9 @@ def process_message(
 
     # ── Session management ─────────────────────────────────────────
     session_id, is_new_session = store.get_or_create_session(phone)
-    logger.info("Session for user=%s: session=%s new=%s",
-                phone_id, session_id, is_new_session)
+    is_first_ever = store.is_first_ever_message(phone)
+    logger.info("Session for user=%s: session=%s new=%s first_ever=%s",
+                phone_id, session_id, is_new_session, is_first_ever)
 
     run_id = f"twilio_{int(time.time())}"
     run_dir = INFERENCE_OUTPUTS_DIR / run_id
@@ -259,59 +282,85 @@ def process_message(
     store.save_message(phone, "user", transcript, session_id,
                        audio_path=str(run_dir) if is_audio else None)
 
+    # ── Onboarding: detect pure greeting on first-ever message ────────
+    _greeting_word = _detect_greeting(transcript) if is_first_ever else None
+
     # ── FAQ cache check ────────────────────────────────────────────
-    faq_match = faq_cache.match(transcript)
+    faq_match = None
     llm_result = None
     response_text = None
+    memory_summary = ""
 
-    if faq_match:
-        response_text = faq_cache.format_response(faq_match)
-        logger.info("FAQ cache hit for user=%s: '%s'",
-                    phone_id, faq_match.question)
+    if is_first_ever and _greeting_word:
+        # Pure greeting — skip FAQ/LLM entirely, send intro directly
+        intro = _build_intro(_greeting_word)
+        response_text = intro
+        llm_result = {
+            "text": intro,
+            "segments": [{"text": intro, "emotion": "happy"}],
+            "escalate": False,
+        }
+        logger.info("Onboarding greeting branch for user=%s (greeting=%s)",
+                    phone_id, _greeting_word)
     else:
-        # ── LLM ────────────────────────────────────────────────────
-        try:
-            llm = create_llm(config)
-            user_profile = llm.load_user_profile(phone)
-            memory = store.get_memory(phone)
+        faq_match = faq_cache.match(transcript)
 
-            memory_summary = ""
-            extracted_facts = ""
-            if memory:
-                memory_summary = memory["summary"]
-                facts_list = memory["facts"]
-                if facts_list:
-                    extracted_facts = "\n".join(f"- {f}" for f in facts_list)
+        if faq_match:
+            response_text = faq_cache.format_response(faq_match)
+            logger.info("FAQ cache hit for user=%s: '%s'",
+                        phone_id, faq_match.question)
+        else:
+            # ── LLM ────────────────────────────────────────────────────
+            try:
+                llm = create_llm(config)
+                user_profile = llm.load_user_profile(phone)
+                memory = store.get_memory(phone)
 
-            recent = store.get_recent_messages(phone, limit=8)
+                extracted_facts = ""
+                if memory:
+                    memory_summary = memory["summary"]
+                    facts_list = memory["facts"]
+                    if facts_list:
+                        extracted_facts = "\n".join(f"- {f}" for f in facts_list)
 
-            llm_result = llm.generate_with_emotions(
-                transcript,
-                domain="hr_admin",
-                user_profile=user_profile,
-                memory_summary=memory_summary,
-                extracted_facts=extracted_facts,
-                conversation_history=recent,
-                is_new_session=is_new_session,
-            )
-            response_text = llm_result["text"]
-            logger.info("LLM response for user=%s, length=%d chars, escalate=%s",
-                        phone_id, len(response_text), llm_result["escalate"])
-        except Exception as e:
-            logger.error("LLM failed for user=%s: %s", phone_id, e)
-            # Queue for retry from LLM stage (transcript saved)
-            queue.enqueue(
-                phone=phone,
-                sender=sender,
-                audio_path=str(inbound_path or run_dir),
-                stage="llm",
-                transcript=transcript,
-            )
-            twilio_client.send_text_message(
-                to_number=sender,
-                body="Samajh gayi, bas thoda time lagega jawab dene mein.",
-            )
-            return
+                recent = store.get_recent_messages(phone, limit=8)
+
+                llm_result = llm.generate_with_emotions(
+                    transcript,
+                    domain="hr_admin",
+                    user_profile=user_profile,
+                    memory_summary=memory_summary,
+                    extracted_facts=extracted_facts,
+                    conversation_history=recent,
+                    is_new_session=is_new_session,
+                )
+                response_text = llm_result["text"]
+                logger.info("LLM response for user=%s, length=%d chars, escalate=%s",
+                            phone_id, len(response_text), llm_result["escalate"])
+
+                # First-ever message that was a real question — answer first, then intro
+                if is_first_ever:
+                    intro = _build_intro()
+                    response_text = llm_result["text"] + " " + intro
+                    segs = list(
+                        llm_result.get("segments")
+                        or [{"text": llm_result["text"], "emotion": "neutral"}]
+                    )
+                    segs.append({"text": intro, "emotion": "happy"})
+                    llm_result = {**llm_result, "text": response_text, "segments": segs}
+
+            except Exception as e:
+                logger.error("LLM failed for user=%s: %s", phone_id, e)
+                # Queue for retry from LLM stage (transcript saved)
+                queue.enqueue(
+                    phone=phone,
+                    sender=sender,
+                    audio_path=str(inbound_path or run_dir),
+                    stage="llm",
+                    transcript=transcript,
+                )
+                # Voice-only mode — no text fallback; request queued for retry
+                return
 
     # Save assistant response
     store.save_message(phone, "assistant", response_text, session_id)
@@ -354,13 +403,9 @@ def process_message(
                     phone_id, send_result.get("sid"))
 
     except Exception as e:
-        # TTS failed → send text instead of silence
-        logger.warning("TTS failed for user=%s: %s, sending text fallback",
-                      phone_id, e)
-        twilio_client.send_text_message(
-            to_number=sender,
-            body=response_text,
-        )
+        # TTS failed — no text fallback; ack already acknowledged receipt
+        logger.error("TTS failed for user=%s: %s — voice-only mode, no fallback",
+                     phone_id, e)
 
 
 def _try_summarize(phone, phone_id, store, config, memory_summary="", memory=None):
@@ -443,19 +488,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
         logger.info("Skipping non-processable message from user=%s", phone_id)
         return _twiml_empty()
 
-    # ── Send immediate acknowledgment ──────────────────────────────
-    if config.ack_enabled:
-        try:
-            twilio_client = TwilioWhatsAppClient(
-                account_sid=config.twilio_account_sid,
-                auth_token=config.twilio_auth_token,
-                whatsapp_number=config.twilio_whatsapp_number,
-            )
-            ack_text = random.choice(ACK_MESSAGES)
-            twilio_client.send_text_message(to_number=sender, body=ack_text)
-            logger.info("Ack sent to user=%s", phone_id)
-        except Exception as e:
-            logger.warning("Failed to send ack to user=%s: %s", phone_id, e)
+    # ── Acknowledgment disabled — voice-only mode, response is fast enough ──
 
     # ── Process in background ──────────────────────────────────────
     background_tasks.add_task(

@@ -35,11 +35,17 @@ class ClaudeLLM(BaseLLM):
     def _call_api(self, system_prompt: str, user_message: str) -> str:
         response = self.client.messages.create(
             model=self.config.anthropic_model,
-            max_tokens=512,
+            max_tokens=1024,
             system=system_prompt,
             messages=[{"role": "user", "content": user_message}],
             temperature=0.4,
         )
+        if response.stop_reason == "max_tokens":
+            import logging
+            logging.getLogger("bhai.llm").warning(
+                "Claude response truncated (hit max_tokens=%d)", 1024
+            )
+
         from anthropic.types import TextBlock
 
         block = next((b for b in response.content if isinstance(b, TextBlock)), None)

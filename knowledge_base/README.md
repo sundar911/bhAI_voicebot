@@ -17,13 +17,14 @@ knowledge_base/
 │   └── benefits.md         # Support programs, health, childcare
 │
 ├── helpdesk/               # Helpdesk domain (FUTURE)
-│   └── .gitkeep            # Govt schemes, document help
+│                           # Govt schemes, document help
 │
 ├── production/             # Production domain (FUTURE)
-│   └── .gitkeep            # Factory floor, machines, chai/breakfast
+│                           # Factory floor, machines, chai/breakfast
 │
-└── users/                  # Per-user profile templates
-    └── _template.md        # Template for new user profiles
+└── users/                  # Per-user profiles (200+ artisans)
+    ├── _template.md        # Template for new profiles
+    └── +91XXXXXXXXXX.md    # Auto-generated per-artisan profiles
 ```
 
 ## For Tiny Miracles Team

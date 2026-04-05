@@ -72,11 +72,20 @@ src/bhai/
 ├── audio_utils.py               # Audio format conversion
 ├── stt/                         # Speech-to-text (7 model backends)
 │   ├── base.py                  # Abstract STT interface
-│   └── registry.py              # Model registry
+│   ├── gpu_base.py              # GPU model base class
+│   ├── registry.py              # Model registry
+│   ├── sarvam_stt.py            # Sarvam saarika (API)
+│   ├── sarvam_saaras_stt.py     # Sarvam saaras (API)
+│   ├── indic_conformer.py       # IndicConformer (GPU)
+│   ├── vaani_whisper.py         # Vaani Whisper (GPU)
+│   ├── whisper_large_v3.py      # Whisper Large v3 (GPU)
+│   ├── meta_mms.py              # Meta MMS (GPU)
+│   └── indic_wav2vec.py         # IndicWav2Vec (GPU)
 ├── tts/                         # Text-to-speech
 │   ├── base.py                  # Abstract TTS interface
 │   ├── sarvam_tts.py            # Sarvam AI TTS
-│   └── elevenlabs_tts.py        # ElevenLabs voice cloning
+│   ├── elevenlabs_tts.py        # ElevenLabs voice cloning
+│   └── emotion_tagger.py        # Emotion tagging for TTS
 ├── llm/                         # Language models
 │   ├── base.py                  # Abstract LLM interface
 │   ├── sarvam_llm.py            # Sarvam (default)
@@ -84,11 +93,22 @@ src/bhai/
 │   ├── claude_llm.py            # Anthropic Claude
 │   └── prompts/                 # Prompt templates
 ├── pipelines/                   # Pipeline orchestration
-│   └── base_pipeline.py
+│   ├── base_pipeline.py         # Abstract pipeline
+│   └── hr_admin_pipeline.py     # HR-Admin domain pipeline
 ├── memory/                      # Conversation memory (encrypted)
-├── resilience/                  # FAQ cache, request queue, retry
-├── security/                    # Encryption, webhook auth
-└── integrations/                # WhatsApp (Twilio), SharePoint
+│   ├── store.py                 # Per-user message persistence
+│   └── summarizer.py            # Context window summarization
+├── resilience/                  # Production reliability
+│   ├── faq_cache.py             # FAQ matching (Jaccard similarity)
+│   ├── queue.py                 # Request queue (SQLite-backed)
+│   ├── retry.py                 # Retry with exponential backoff
+│   └── worker.py                # Background retry worker
+├── security/                    # Security
+│   ├── crypto.py                # Fernet encryption/decryption
+│   └── webhook_auth.py          # Twilio sig verify, rate limiting
+└── integrations/                # External integrations
+    ├── twilio_client.py         # WhatsApp via Twilio
+    └── sharepoint.py            # SharePoint Graph API
 ```
 
 ### Adding a New STT Backend
@@ -133,15 +153,20 @@ Use clear, descriptive messages:
 ### Testing
 
 ```bash
-# Run all tests
+# Run all 75 tests
 uv run pytest
 
 # Run specific test file
-uv run pytest src/tests/test_stt.py
+uv run pytest src/tests/test_config.py
 
 # Run with coverage
 uv run pytest --cov=src/bhai
+
+# Run with verbose output
+uv run pytest -v
 ```
+
+Tests live in `src/tests/` and cover: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth.
 
 ### Code Style
 

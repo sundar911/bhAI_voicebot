@@ -170,6 +170,10 @@ class ConversationStore:
         ).fetchone()
         return row[0]
 
+    def is_first_ever_message(self, phone: str) -> bool:
+        """Returns True if this is the user's very first message ever."""
+        return self.count_user_messages(phone) == 0
+
     # ── Memory (rolling summary + facts) ──────────────────────────────
 
     def get_memory(self, phone: str) -> Optional[Dict[str, Any]]:

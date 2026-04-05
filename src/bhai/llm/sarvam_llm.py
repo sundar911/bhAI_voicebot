@@ -50,6 +50,8 @@ class SarvamLLM(BaseLLM):
             ],
             temperature=0.4,
             max_tokens=2048,
+            frequency_penalty=0.6,
+            presence_penalty=0.4,
         )
 
         usage = getattr(response, "usage", None)
@@ -58,6 +60,13 @@ class SarvamLLM(BaseLLM):
                 f"[Sarvam LLM] Tokens — prompt: {usage.prompt_tokens}, "
                 f"completion: {usage.completion_tokens}, "
                 f"total: {usage.total_tokens}"
+            )
+
+        if response.choices[0].finish_reason in ("length", "max_tokens"):
+            import logging
+            logging.getLogger("bhai.llm").warning(
+                "Sarvam response truncated (finish_reason=%s)",
+                response.choices[0].finish_reason,
             )
 
         content = response.choices[0].message.content

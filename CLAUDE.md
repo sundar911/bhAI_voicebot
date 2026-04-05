@@ -103,9 +103,6 @@ Selected via `TTS_BACKEND` env var (defaults to `sarvam`).
 - `summarizer.py` — conversation summarization for context window management
 All PII encrypted at rest with Fernet (`BHAI_ENCRYPTION_KEY`).
 
-# User profiles
-`knowledge_base/users/` holds per-user profile templates (`_template.md`). These give bhAI context about who it's talking to.
-
 # Resilience
 `src/bhai/resilience/` handles production reliability:
 - `faq_cache.py` — caches frequent questions for fast responses
@@ -122,4 +119,17 @@ Religion, caste, disability, and loan info are NEVER sent to any API.
 
 # Twilio/WhatsApp
 Webhook server runs on port 8001 (not 8000 — Django occupies 8000). ngrok must target 8001.
+
+# CI/CD
+GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` and `develop`:
+- **test** job: `uv run pytest --cov=src/bhai` + `black --check` + `isort --check-only`
+- **lint** job: `uv run mypy src/bhai/ --ignore-missing-imports`
+
+75 tests in `src/tests/` — all pass without API keys (mocked, temp DBs, Fernet fixture).
+Test modules: `test_config`, `test_crypto`, `test_retry`, `test_faq_cache`, `test_memory`, `test_llm_base`, `test_webhook`.
+
+Note: there's a legacy `tests/` dir at root — ignore it, active tests are in `src/tests/`.
+
+# User profiles
+`knowledge_base/users/` contains 200+ per-artisan profiles (phone-number-named `.md` files) plus `_template.md`. These give bhAI context about who it's talking to. Auto-generated via `scripts/extract_profiles.py`.
 

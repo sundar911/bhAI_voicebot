@@ -37,19 +37,15 @@ def annotate_with_emotions(segments: List[dict]) -> str:
         Single string with embedded audio tags, e.g.:
         "[excited] Arre waah! [pause] Batao kya hua."
     """
+    # NOTE: ElevenLabs audio tags ([laughs], [sighs], etc.) are read literally
+    # when surrounding text is Hindi/Hinglish — disabled until ElevenLabs
+    # improves multilingual tag support. Segments still tracked for logging.
     parts = []
     for seg in segments:
         text = seg.get("text", "").strip()
         if not text:
             continue
-
-        emotion = (seg.get("emotion") or "neutral").lower().strip()
-        tag = EMOTION_TAGS.get(emotion)
-
-        if tag:
-            parts.append(f"{tag} {text}")
-        else:
-            parts.append(text)
+        parts.append(text)
 
     return " ".join(parts)
 

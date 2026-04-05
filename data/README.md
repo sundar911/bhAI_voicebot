@@ -6,6 +6,8 @@ This directory contains audio data and transcription datasets for bhAI.
 
 ```
 data/
+├── sample_audio/              # Example audio files for dev/testing
+│
 ├── sharepoint_sync/           # Audio files (unzipped from sharepoint_audio.zip)
 │   ├── helpdesk/              # 114 Q files
 │   ├── hr_admin/              # 30 Q files

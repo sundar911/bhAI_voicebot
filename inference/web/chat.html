@@ -1,0 +1,526 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>bhAI Voice Chat</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    background: #f0f2f5;
+    height: 100vh;
+    display: flex;
+    flex-direction: column;
+  }
+  header {
+    background: #075e54;
+    color: #fff;
+    padding: 14px 20px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+  }
+  header h1 { font-size: 18px; font-weight: 600; }
+  header .meta { font-size: 12px; opacity: 0.8; }
+  #toolbar {
+    background: #075e54;
+    padding: 0 20px 10px;
+    display: flex;
+    gap: 10px;
+    align-items: center;
+  }
+  #toolbar button {
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: none;
+    padding: 5px 12px;
+    border-radius: 4px;
+    font-size: 12px;
+    cursor: pointer;
+  }
+  #toolbar button:hover { background: rgba(255,255,255,0.25); }
+  #toolbar .source-tag {
+    font-size: 11px;
+    color: rgba(255,255,255,0.7);
+    margin-left: auto;
+  }
+
+  #messages {
+    flex: 1;
+    overflow-y: auto;
+    padding: 16px 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .msg {
+    max-width: 75%;
+    padding: 8px 12px;
+    border-radius: 8px;
+    font-size: 15px;
+    line-height: 1.45;
+    word-wrap: break-word;
+    white-space: pre-wrap;
+  }
+  .msg.bot {
+    align-self: flex-start;
+    background: #fff;
+    color: #111;
+    border-bottom-left-radius: 2px;
+  }
+  .msg.user {
+    align-self: flex-end;
+    background: #dcf8c6;
+    color: #111;
+    border-bottom-right-radius: 2px;
+  }
+  .msg audio {
+    display: block;
+    margin-top: 6px;
+    max-width: 100%;
+  }
+  .msg .transcript {
+    font-size: 12px;
+    color: #666;
+    margin-top: 4px;
+    font-style: italic;
+  }
+  .msg .escalate-tag {
+    display: inline-block;
+    background: #e74c3c;
+    color: #fff;
+    font-size: 10px;
+    padding: 1px 6px;
+    border-radius: 3px;
+    margin-top: 4px;
+  }
+
+  #status-bar {
+    align-self: center;
+    padding: 8px 16px;
+    font-size: 14px;
+    color: #888;
+    display: none;
+  }
+
+  #input-area {
+    background: #f0f2f5;
+    padding: 14px 16px;
+    display: flex;
+    gap: 12px;
+    align-items: center;
+    justify-content: center;
+    border-top: 1px solid #ddd;
+  }
+
+  /* Text input for fallback typing */
+  #text-input-area {
+    display: flex;
+    gap: 8px;
+    flex: 1;
+  }
+  #text-input-area input {
+    flex: 1;
+    padding: 10px 14px;
+    border: 1px solid #ccc;
+    border-radius: 24px;
+    font-size: 15px;
+    outline: none;
+  }
+  #text-input-area input:focus { border-color: #075e54; }
+  #text-input-area button {
+    background: #075e54;
+    color: #fff;
+    border: none;
+    padding: 10px 16px;
+    border-radius: 24px;
+    font-size: 14px;
+    cursor: pointer;
+  }
+
+  #mic-btn {
+    width: 60px;
+    height: 60px;
+    border-radius: 50%;
+    border: none;
+    background: #075e54;
+    color: #fff;
+    font-size: 24px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.2s;
+  }
+  #mic-btn:hover { background: #064e46; transform: scale(1.05); }
+  #mic-btn.recording {
+    background: #e74c3c;
+    animation: pulse 1s infinite;
+  }
+  #mic-btn:disabled { opacity: 0.4; cursor: not-allowed; animation: none; }
+
+  @keyframes pulse {
+    0%, 100% { transform: scale(1); }
+    50% { transform: scale(1.1); }
+  }
+
+  #mode-toggle {
+    font-size: 11px;
+    color: #888;
+    cursor: pointer;
+    text-decoration: underline;
+    padding: 4px 0;
+    text-align: center;
+  }
+</style>
+</head>
+<body>
+
+<header>
+  <div>
+    <h1>bhAI Voice Chat</h1>
+    <div class="meta" id="backend-label">loading...</div>
+  </div>
+</header>
+<div id="toolbar">
+  <button onclick="resetChat()">Reset</button>
+  <span class="source-tag" id="source-tag"></span>
+</div>
+
+<div id="messages">
+  <div id="status-bar"></div>
+</div>
+
+<div id="mode-toggle" onclick="toggleMode()">switch to typing</div>
+
+<div id="input-area">
+  <button id="mic-btn" onclick="toggleRecording()">
+    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+      <path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/>
+      <path d="M19 10v2a7 7 0 0 1-14 0v-2"/>
+      <line x1="12" y1="19" x2="12" y2="23"/>
+      <line x1="8" y1="23" x2="16" y2="23"/>
+    </svg>
+  </button>
+  <div id="text-input-area" style="display:none;">
+    <input type="text" id="msg-input" placeholder="Type a message..." autocomplete="off">
+    <button onclick="sendText()">Send</button>
+  </div>
+</div>
+
+<script>
+const messagesEl = document.getElementById('messages');
+const statusBar = document.getElementById('status-bar');
+const micBtn = document.getElementById('mic-btn');
+const sourceTag = document.getElementById('source-tag');
+const backendLabel = document.getElementById('backend-label');
+const textArea = document.getElementById('text-input-area');
+const msgInput = document.getElementById('msg-input');
+
+let mediaRecorder = null;
+let audioChunks = [];
+let isRecording = false;
+let voiceMode = true;
+let nudgeTimer = null;
+let conversationClosed = false;
+
+function resetNudgeTimer() {
+  if (conversationClosed) return;
+  if (nudgeTimer) clearTimeout(nudgeTimer);
+  nudgeTimer = setTimeout(sendNudge, 60000);
+  console.log('[nudge] timer reset, will fire in 60s');
+}
+
+async function sendNudge() {
+  console.log('[nudge] firing...');
+  try {
+    const res = await fetch('/nudge', { method: 'POST' });
+    if (res.headers.get('content-type')?.includes('audio/')) {
+      const audioBlob = await res.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const transcript = decodeURIComponent(res.headers.get('X-Transcript') || '');
+      addMessage('bot', transcript, audioUrl);
+      console.log('[nudge] sent:', transcript.slice(0, 50));
+    } else {
+      const data = await res.json();
+      if (data.reply) addMessage('bot', data.reply, null);
+      console.log('[nudge] text fallback:', (data.reply || '').slice(0, 50));
+    }
+    // Another nudge if still no response
+    nudgeTimer = setTimeout(sendNudge, 90000);
+  } catch (err) {
+    console.error('[nudge] failed:', err);
+  }
+}
+
+msgInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter') sendText();
+});
+
+function toggleMode() {
+  voiceMode = !voiceMode;
+  micBtn.style.display = voiceMode ? 'flex' : 'none';
+  textArea.style.display = voiceMode ? 'none' : 'flex';
+  document.getElementById('mode-toggle').textContent =
+    voiceMode ? 'switch to typing' : 'switch to voice';
+  if (!voiceMode) msgInput.focus();
+}
+
+function showStatus(text) {
+  statusBar.textContent = text;
+  statusBar.style.display = text ? 'block' : 'none';
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+}
+
+function addMessage(role, content, audioUrl, extras) {
+  const div = document.createElement('div');
+  div.className = 'msg ' + (role === 'user' ? 'user' : 'bot');
+
+  let html = '';
+
+  // Audio player
+  if (audioUrl) {
+    html += '<audio controls src="' + audioUrl + '"></audio>';
+  }
+
+  // Transcript text
+  if (content) {
+    html += '<div class="transcript">' + content + '</div>';
+  }
+
+  if (extras && extras.escalate) {
+    html += '<br><span class="escalate-tag">ESCALATE</span>';
+  }
+
+  div.innerHTML = html;
+  messagesEl.insertBefore(div, statusBar);
+  messagesEl.scrollTop = messagesEl.scrollHeight;
+
+  // Auto-play bot audio
+  if (audioUrl && role === 'bot') {
+    const audio = div.querySelector('audio');
+    if (audio) audio.play().catch(() => {});
+  }
+}
+
+async function toggleRecording() {
+  if (isRecording) {
+    stopRecording();
+  } else {
+    startRecording();
+  }
+}
+
+async function startRecording() {
+  try {
+    const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    mediaRecorder = new MediaRecorder(stream, { mimeType: 'audio/webm;codecs=opus' });
+    audioChunks = [];
+
+    mediaRecorder.ondataavailable = e => {
+      if (e.data.size > 0) audioChunks.push(e.data);
+    };
+
+    mediaRecorder.onstop = async () => {
+      stream.getTracks().forEach(t => t.stop());
+      const blob = new Blob(audioChunks, { type: 'audio/webm' });
+      await sendAudio(blob);
+    };
+
+    mediaRecorder.start();
+    isRecording = true;
+    micBtn.classList.add('recording');
+    showStatus('Recording... tap mic to stop');
+  } catch (err) {
+    alert('Mic access denied. Please allow microphone access.');
+  }
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state === 'recording') {
+    mediaRecorder.stop();
+  }
+  isRecording = false;
+  micBtn.classList.remove('recording');
+  showStatus('');
+}
+
+async function sendAudio(blob) {
+  // Show user's audio
+  const userAudioUrl = URL.createObjectURL(blob);
+  addMessage('user', null, userAudioUrl);
+
+  micBtn.disabled = true;
+  showStatus('bhAI soch rahi hai...');
+  if (nudgeTimer) clearTimeout(nudgeTimer); // pause nudge while processing
+
+  try {
+    const formData = new FormData();
+    formData.append('audio', blob, 'recording.webm');
+
+    const res = await fetch('/chat', { method: 'POST', body: formData });
+    const transcript = decodeURIComponent(res.headers.get('X-Transcript') || '');
+    const reply = decodeURIComponent(res.headers.get('X-Reply') || '');
+    const source = decodeURIComponent(res.headers.get('X-Source') || '');
+    const escalate = res.headers.get('X-Escalate') === 'true';
+
+    if (res.headers.get('content-type')?.includes('audio/')) {
+      const audioBlob = await res.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+
+      // Update user message with transcript
+      const userMsgs = document.querySelectorAll('.msg.user');
+      const lastUser = userMsgs[userMsgs.length - 1];
+      if (lastUser && transcript) {
+        let transcriptEl = lastUser.querySelector('.transcript');
+        if (!transcriptEl) {
+          transcriptEl = document.createElement('div');
+          transcriptEl.className = 'transcript';
+          lastUser.appendChild(transcriptEl);
+        }
+        transcriptEl.textContent = transcript;
+      }
+
+      addMessage('bot', reply, audioUrl, { escalate });
+      sourceTag.textContent = source ? 'source: ' + source : '';
+      if (source === 'closing') conversationClosed = true;
+    } else {
+      // JSON response (TTS failed, or error)
+      try {
+        const data = await res.json();
+        if (data.error) {
+          addMessage('bot', 'Error: ' + data.error, null);
+        } else {
+          addMessage('bot', data.reply || data.transcript, null, { escalate: data.escalate });
+          sourceTag.textContent = data.source ? 'source: ' + data.source : '';
+          if (data.source === 'closing') conversationClosed = true;
+        }
+      } catch (parseErr) {
+        const text = await res.text().catch(() => 'Unknown error');
+        addMessage('bot', 'Server error (' + res.status + '): ' + text, null);
+      }
+    }
+  } catch (err) {
+    addMessage('bot', 'Network error: ' + err.message, null);
+  } finally {
+    showStatus('');
+    micBtn.disabled = false;
+    resetNudgeTimer();
+  }
+}
+
+async function sendText() {
+  const text = msgInput.value.trim();
+  if (!text) return;
+  msgInput.value = '';
+
+  addMessage('user', text, null);
+  micBtn.disabled = true;
+  showStatus('bhAI soch rahi hai...');
+  if (nudgeTimer) clearTimeout(nudgeTimer); // pause nudge while processing
+
+  try {
+    const params = new URLSearchParams({ message: text });
+    const res = await fetch('/chat-text?' + params, { method: 'POST' });
+    const reply = decodeURIComponent(res.headers.get('X-Reply') || '');
+    const source = decodeURIComponent(res.headers.get('X-Source') || '');
+    const escalate = res.headers.get('X-Escalate') === 'true';
+
+    if (res.headers.get('content-type')?.includes('audio/')) {
+      const audioBlob = await res.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      addMessage('bot', reply, audioUrl, { escalate });
+      sourceTag.textContent = source ? 'source: ' + source : '';
+      if (source === 'closing') conversationClosed = true;
+    } else {
+      try {
+        const data = await res.json();
+        if (data.error) {
+          addMessage('bot', 'Error: ' + data.error, null);
+        } else {
+          addMessage('bot', data.reply, null, { escalate: data.escalate });
+          sourceTag.textContent = data.source ? 'source: ' + data.source : '';
+          if (data.source === 'closing') conversationClosed = true;
+        }
+      } catch (parseErr) {
+        const text = await res.text().catch(() => 'Unknown error');
+        addMessage('bot', 'Server error (' + res.status + '): ' + text, null);
+      }
+    }
+  } catch (err) {
+    addMessage('bot', 'Network error: ' + err.message, null);
+  } finally {
+    showStatus('');
+    micBtn.disabled = false;
+    msgInput.focus();
+    resetNudgeTimer();
+  }
+}
+
+async function resetChat() {
+  if (!confirm('Reset conversation? This clears all messages and memory.')) return;
+  await fetch('/reset', { method: 'POST' });
+  document.querySelectorAll('.msg').forEach(el => el.remove());
+  conversationClosed = false;
+  sourceTag.textContent = '';
+  await initConversation();
+}
+
+async function loadHistory() {
+  try {
+    const res = await fetch('/history');
+    const data = await res.json();
+    if (data.messages && data.messages.length > 0) {
+      data.messages.forEach(m => addMessage(m.role, m.content, null));
+      return true;
+    }
+  } catch (err) {
+    console.error('Failed to load history:', err);
+  }
+  return false;
+}
+
+async function initConversation() {
+  showStatus('bhAI is saying hi...');
+  try {
+    const res = await fetch('/init', { method: 'POST' });
+
+    if (res.headers.get('content-type')?.includes('audio/')) {
+      const audioBlob = await res.blob();
+      const audioUrl = URL.createObjectURL(audioBlob);
+      const transcript = decodeURIComponent(res.headers.get('X-Transcript') || '');
+      addMessage('bot', transcript, audioUrl);
+    } else {
+      const data = await res.json();
+      if (data.reply) {
+        addMessage('bot', data.reply, null);
+      }
+    }
+  } catch (err) {
+    console.error('Failed to init:', err);
+  } finally {
+    showStatus('');
+  }
+}
+
+async function boot() {
+  try {
+    const res = await fetch('/health');
+    const data = await res.json();
+    backendLabel.textContent = 'LLM: ' + data.llm_backend + ' | TTS: ' + data.tts_backend;
+  } catch (e) {
+    backendLabel.textContent = 'offline';
+  }
+
+  const hasHistory = await loadHistory();
+  if (!hasHistory) {
+    await initConversation();
+  }
+  resetNudgeTimer();
+}
+
+boot();
+</script>
+</body>
+</html>
