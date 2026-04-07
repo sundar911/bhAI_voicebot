@@ -14,6 +14,8 @@ import uuid
 from pathlib import Path
 from urllib.parse import quote
 
+from typing import List
+
 from fastapi import FastAPI, File, UploadFile
 from fastapi.responses import FileResponse, JSONResponse
 
@@ -304,36 +306,44 @@ def reset_conversation():
 
 
 @app.post("/chat")
-def chat(audio: UploadFile = File(...)):
+def chat(audio: List[UploadFile] = File(...)):
     """
-    Full voice pipeline: receive audio → STT → LLM → TTS → return audio.
-    Also accepts text via X-Text-Message header (fallback for typing).
+    Full voice pipeline: receive audio(s) → STT → LLM → TTS → return audio.
+    Accepts multiple audio files (consecutive voice notes batched by frontend).
     """
     config = _get_config()
     store = _get_store()
     faq_cache = _get_faq_cache()
 
-    # ── STT ──────────────────────────────────────────────────────────
+    # ── STT (transcribe all audio files, concatenate transcripts) ────
     ensure_dir(AUDIO_DIR)
-    run_id = uuid.uuid4().hex[:12]
-    inbound_path = AUDIO_DIR / f"{run_id}_inbound.webm"
+    all_transcripts = []
 
-    try:
-        with open(inbound_path, "wb") as f:
-            f.write(audio.file.read())
+    for audio_file in audio:
+        run_id = uuid.uuid4().hex[:12]
+        inbound_path = AUDIO_DIR / f"{run_id}_inbound.webm"
 
-        stt_work_dir = AUDIO_DIR / run_id
-        ensure_dir(stt_work_dir)
-        stt = SarvamSTT(config, work_dir=stt_work_dir)
-        stt_result = stt.transcribe(inbound_path)
-        transcript = stt_result["text"].strip()
-        logger.info("STT transcript: %s", transcript)
-    except Exception as e:
-        logger.error("STT failed: %s", e)
-        return JSONResponse({"error": f"STT failed: {e}"}, status_code=500)
+        try:
+            with open(inbound_path, "wb") as f:
+                f.write(audio_file.file.read())
 
+            stt_work_dir = AUDIO_DIR / run_id
+            ensure_dir(stt_work_dir)
+            stt = SarvamSTT(config, work_dir=stt_work_dir)
+            stt_result = stt.transcribe(inbound_path)
+            text = stt_result["text"].strip()
+            if text:
+                all_transcripts.append(text)
+                logger.info("STT transcript (%d/%d): %s", len(all_transcripts), len(audio), text)
+        except Exception as e:
+            logger.error("STT failed for %s: %s", audio_file.filename, e)
+
+    transcript = " ".join(all_transcripts)
     if not transcript:
         return JSONResponse({"error": "Could not transcribe audio"}, status_code=400)
+
+    if len(audio) > 1:
+        logger.info("Combined %d voice notes: %s", len(audio), transcript[:100])
 
     # ── Session + save ───────────────────────────────────────────────
     session_id, is_new_session = store.get_or_create_session(PHONE)

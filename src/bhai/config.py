@@ -62,6 +62,9 @@ class Config:
     elevenlabs_speed: float = 1.0
     tts_backend: str = "sarvam"  # "sarvam" or "elevenlabs"
 
+    # System prompt version — loaded from src/bhai/llm/prompts/{version}.md
+    prompt_version: str = "current"
+
     # Resilience
     ack_enabled: bool = True  # Send immediate ack on voice notes
     retry_max_attempts: int = 3  # Per-call retry attempts
@@ -122,6 +125,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         elevenlabs_style=float(os.getenv("ELEVENLABS_STYLE", "0.4")),
         elevenlabs_speed=float(os.getenv("ELEVENLABS_SPEED", "1.0")),
         tts_backend=os.getenv("TTS_BACKEND", "sarvam"),
+        prompt_version=os.getenv("PROMPT_VERSION", "current"),
         ack_enabled=os.getenv("ACK_ENABLED", "true").lower() == "true",
         retry_max_attempts=int(os.getenv("RETRY_MAX_ATTEMPTS", "3")),
         queue_max_attempts=int(os.getenv("QUEUE_MAX_ATTEMPTS", "5")),

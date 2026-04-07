@@ -224,12 +224,14 @@ let isRecording = false;
 let voiceMode = true;
 let nudgeTimer = null;
 let conversationClosed = false;
+let isBotProcessing = false;
+let queuedBlobs = []; // voice notes recorded while bot is still responding
 
 function resetNudgeTimer() {
   if (conversationClosed) return;
   if (nudgeTimer) clearTimeout(nudgeTimer);
-  nudgeTimer = setTimeout(sendNudge, 60000);
-  console.log('[nudge] timer reset, will fire in 60s');
+  nudgeTimer = setTimeout(sendNudge, 3600000); // 1 hour
+  console.log('[nudge] timer reset, will fire in 1hr');
 }
 
 async function sendNudge() {
@@ -248,7 +250,7 @@ async function sendNudge() {
       console.log('[nudge] text fallback:', (data.reply || '').slice(0, 50));
     }
     // Another nudge if still no response
-    nudgeTimer = setTimeout(sendNudge, 90000);
+    nudgeTimer = setTimeout(sendNudge, 3600000); // 1 hour for subsequent
   } catch (err) {
     console.error('[nudge] failed:', err);
   }
@@ -325,7 +327,15 @@ async function startRecording() {
     mediaRecorder.onstop = async () => {
       stream.getTracks().forEach(t => t.stop());
       const blob = new Blob(audioChunks, { type: 'audio/webm' });
-      await sendAudio(blob);
+      if (isBotProcessing) {
+        // Bot is still responding to previous message — queue this one
+        queuedBlobs.push(blob);
+        const userAudioUrl = URL.createObjectURL(blob);
+        addMessage('user', '(queued — will be sent with next batch)', userAudioUrl);
+        console.log('[queue] voice note queued, total:', queuedBlobs.length);
+      } else {
+        await sendAudio(blob);
+      }
     };
 
     mediaRecorder.start();
@@ -351,13 +361,18 @@ async function sendAudio(blob) {
   const userAudioUrl = URL.createObjectURL(blob);
   addMessage('user', null, userAudioUrl);
 
-  micBtn.disabled = true;
+  // Include any queued blobs from consecutive recordings
+  const allBlobs = [blob, ...queuedBlobs];
+  queuedBlobs = [];
+
+  isBotProcessing = true;
+  micBtn.disabled = false; // keep mic enabled so user CAN queue more
   showStatus('bhAI soch rahi hai...');
   if (nudgeTimer) clearTimeout(nudgeTimer); // pause nudge while processing
 
   try {
     const formData = new FormData();
-    formData.append('audio', blob, 'recording.webm');
+    allBlobs.forEach((b, i) => formData.append('audio', b, `recording_${i}.webm`));
 
     const res = await fetch('/chat', { method: 'POST', body: formData });
     const transcript = decodeURIComponent(res.headers.get('X-Transcript') || '');
@@ -404,9 +419,18 @@ async function sendAudio(blob) {
   } catch (err) {
     addMessage('bot', 'Network error: ' + err.message, null);
   } finally {
+    isBotProcessing = false;
     showStatus('');
     micBtn.disabled = false;
     resetNudgeTimer();
+
+    // If user queued more voice notes while we were processing, send them now
+    if (queuedBlobs.length > 0) {
+      console.log('[queue] processing', queuedBlobs.length, 'queued voice notes');
+      const combined = new Blob(queuedBlobs, { type: 'audio/webm' });
+      queuedBlobs = [];
+      await sendAudio(combined);
+    }
   }
 }
 

@@ -17,7 +17,7 @@
 
 ## Haal-chaal
 - [Recent events user has mentioned, e.g., "Bete ki tabiyat kharab thi last month"]
-- [Impact team updates this as things change]
+- [Impact team changes excel sheet in the backend if anything happens and we monitor it and check in with the user when things change.]
 
 ## Baat ka andaaz
 - [Shy / talkative / funny / direct]

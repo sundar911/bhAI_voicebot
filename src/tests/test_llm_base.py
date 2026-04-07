@@ -140,10 +140,11 @@ def test_parse_emotion_segments_missing_text_key():
 # ── _build_system_prompt ──────────────────────────────────────────────
 
 
-def test_system_prompt_contains_pilot_mode(stub_llm):
-    """Pilot mode prompt contains friendship-only instructions."""
+def test_system_prompt_loads_from_version(stub_llm):
+    """System prompt loads from prompts/{version}.md and mentions भाई."""
     prompt = stub_llm._build_system_prompt("hr_admin")
-    assert "पायलट" in prompt or "दोस्ती" in prompt
+    assert len(prompt) > 500  # non-trivial prompt content
+    assert "भाई" in prompt or "BHAI" in prompt
 
 
 def test_system_prompt_includes_user_profile(stub_llm):

@@ -19,6 +19,8 @@ Voice Input → STT → LLM (with knowledge base) → TTS → Voice Output
                          knowledge domains
 ```
 
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the full end-to-end pipeline documentation.
+
 ## Quick Start
 
 ### Prerequisites
