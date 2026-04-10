@@ -134,9 +134,18 @@ class BaseLLM(ABC):
         memory_summary: str = "",
         extracted_facts: str = "",
     ) -> str:
-        """Build system prompt from versioned template + user context."""
+        """Build system prompt from versioned template + user context + KB."""
         version = getattr(self.config, "prompt_version", "current")
         prompt = self._load_prompt_template(version)
+
+        # Inject knowledge base: helpdesk (documents) + hr_admin (yojanas)
+        helpdesk_kb = self._load_domain_context("helpdesk")
+        if helpdesk_kb:
+            prompt += f"\n\n=== Helpdesk Knowledge Base (documents, IDs) ===\n{helpdesk_kb}"
+
+        govt_schemes = _read_file(self.kb_dir / "hr_admin" / "govt_schemes.md")
+        if govt_schemes:
+            prompt += f"\n\n=== Government Schemes (Yojanas) Knowledge Base ===\n{govt_schemes}"
 
         # Append user-specific context (only if available)
         if user_profile:
