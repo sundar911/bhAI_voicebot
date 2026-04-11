@@ -50,47 +50,6 @@ PORT = 8002
 HTML_PATH = Path(__file__).parent / "chat.html"
 AUDIO_DIR = INFERENCE_OUTPUTS_DIR / "web_chat"
 
-# Conversation arc phases based on user message count
-_PHASES = {
-    (1, 5): (
-        "[बातचीत Phase 1: पहचान — नाम, खाना-पीना, हल्की-फुल्की बातें। "
-        "अपनी शख़्सियत बताओ, user के बारे में जानो।]"
-    ),
-    (6, 10): (
-        "[बातचीत Phase 2: रोज़मर्रा — कहाँ रहते हो, office कैसे जाते हो, "
-        "लोकल/ऑटो, कितना टाइम लगता है, काम की timing।]"
-    ),
-    (11, 15): (
-        "[बातचीत Phase 3: परिवार — घर में कौन-कौन, बच्चे, school, "
-        "घर पहुँचकर क्या करते हो।]"
-    ),
-    (16, 19): (
-        "[बातचीत Phase 4: मज़ा — Bollywood, Sunday plan, सपने, superpower, "
-        "सबसे ख़ुशी वाली याद।]"
-    ),
-}
-_CLOSING_PHASE = 20
-_CLOSING_MSG = (
-    "आपसे बात करके बहुत अच्छा लगा {name}! यह एक pilot था — "
-    "आगे मैं आपको सरकारी योजनाओं, helpdesk, और Tiny Miracles की "
-    "और भी चीज़ों में मदद कर पाऊँगी। फिर मिलेंगे!"
-)
-
-
-def _get_phase_directive(user_msg_count: int) -> str:
-    """Return conversation phase directive based on how many messages the user has sent."""
-    for (lo, hi), directive in _PHASES.items():
-        if lo <= user_msg_count <= hi:
-            return directive
-    if user_msg_count >= _CLOSING_PHASE:
-        return (
-            "[यह आख़िरी जवाब है। User को धन्यवाद दो pilot में हिस्सा लेने के लिए। "
-            "बोलो कि आगे सरकारी योजनाओं, helpdesk, और Tiny Miracles की "
-            "चीज़ों में मदद आएगी। गर्मजोशी से विदा करो।]"
-        )
-    return ""
-
-
 INTRO_MESSAGE = (
     "अरे हाय! मैं भाई हूँ — विधी की आवाज़ में बोलती हूँ। "
     "मुझसे आराम से बातें कर सकते हो — हाल-चाल, खाना, बच्चे, कुछ भी। "
@@ -365,10 +324,6 @@ def chat(audio: List[UploadFile] = File(...)):
             logger.error("TTS failed: %s", e)
             return JSONResponse({"transcript": transcript, "reply": response_text, "source": "faq", "tts_failed": True})
 
-    # ── Turn count ────────────────────────────────────────────────
-    user_msg_count = store.count_user_messages(PHONE)
-    is_closing = user_msg_count >= _CLOSING_PHASE
-
     # ── LLM ──────────────────────────────────────────────────────────
     try:
         llm = create_llm(config)
@@ -400,21 +355,15 @@ def chat(audio: List[UploadFile] = File(...)):
         logger.error("LLM failed: %s", e)
         return JSONResponse({"error": f"LLM failed: {e}", "transcript": transcript}, status_code=500)
 
-    # ── Append closing if this is the last turn ────────────────────
-    if is_closing:
-        closing = _CLOSING_MSG.format(name="")
-        response_text = response_text + " " + closing
-
     # ── Save + summarize ─────────────────────────────────────────────
     store.save_message(PHONE, "assistant", response_text, session_id)
     _try_summarize(store, config, memory_summary, memory)
 
     # ── TTS ──────────────────────────────────────────────────────────
-    source = "closing" if is_closing else "llm"
     try:
         audio_path = _synthesize(response_text, config)
         logger.info("Full pipeline done: STT→LLM→TTS, %d chars", len(response_text))
-        return _audio_response(audio_path, Transcript=transcript, Reply=response_text, Escalate=str(escalate).lower(), Source=source)
+        return _audio_response(audio_path, Transcript=transcript, Reply=response_text, Escalate=str(escalate).lower(), Source="llm")
     except Exception as e:
         logger.error("TTS failed: %s", e)
         return JSONResponse({
@@ -444,11 +393,6 @@ def chat_text(message: str = ""):
     session_id, is_new_session = store.get_or_create_session(PHONE)
     is_first_ever = store.is_first_ever_message(PHONE)
     store.save_message(PHONE, "user", transcript, session_id)
-
-    # Closing check
-    user_msg_count = store.count_user_messages(PHONE)
-
-    is_closing = user_msg_count >= _CLOSING_PHASE
 
     faq_match = faq_cache.match(transcript)
     if faq_match:
@@ -482,19 +426,14 @@ def chat_text(message: str = ""):
     except Exception as e:
         return JSONResponse({"error": f"LLM failed: {e}"}, status_code=500)
 
-    if is_closing:
-        closing = _CLOSING_MSG.format(name="")
-        response_text = response_text + " " + closing
-
     store.save_message(PHONE, "assistant", response_text, session_id)
     _try_summarize(store, config, memory_summary, memory)
 
-    source = "closing" if is_closing else "llm"
     try:
         audio_path = _synthesize(response_text, config)
-        return _audio_response(audio_path, Transcript=transcript, Reply=response_text, Escalate=str(escalate).lower(), Source=source)
+        return _audio_response(audio_path, Transcript=transcript, Reply=response_text, Escalate=str(escalate).lower(), Source="llm")
     except Exception:
-        return JSONResponse({"reply": response_text, "escalate": escalate, "source": source, "tts_failed": True})
+        return JSONResponse({"reply": response_text, "escalate": escalate, "source": "llm", "tts_failed": True})
 
 
 def _try_summarize(store, config, memory_summary="", memory=None):
