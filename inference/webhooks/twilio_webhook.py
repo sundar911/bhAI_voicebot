@@ -18,6 +18,7 @@ import asyncio
 import hashlib
 import logging
 import random
+import re
 import sys
 import time
 from contextlib import asynccontextmanager
@@ -122,6 +123,63 @@ def _split_for_tts(text: str) -> list:
         chunks.append(remaining[: cut + 1].strip())
         remaining = remaining[cut + 1:].strip()
     return chunks
+
+
+# ── Phone number extraction (send as text, not voice) ────────────────
+_PHONE_RE = re.compile(r"(?:\+91[\s\-]?)?(\d[\d\s\-]{8,12}\d)")
+
+# Known contacts to label nicely in the text message
+_KNOWN_CONTACTS = {
+    "9321125042": "Vijay (BC)",
+    "7738561086": "Priti (MIDC)",
+    "7400426103": "Veena (MIDC – ESIC)",
+    "9773964985": "Bharati (BC – ESIC)",
+}
+
+
+def _extract_phone_numbers(text: str):
+    """Extract phone numbers from text, return (voice_text, text_message_or_None).
+
+    Strips numbers from voice text so TTS doesn't mangle them.
+    Returns a formatted text message with the numbers if any were found.
+    """
+    matches = _PHONE_RE.findall(text)
+    # Normalize: strip spaces/dashes, keep only digits
+    numbers = []
+    for m in matches:
+        digits = re.sub(r"[\s\-]", "", m)
+        if len(digits) == 10 and digits not in numbers:
+            numbers.append(digits)
+
+    if not numbers:
+        return text, None
+
+    # Strip numbers from the voice text
+    voice_text = text
+    for num in numbers:
+        # Remove various formats: "9321125042", "93211 25042", "+91-9321125042"
+        voice_text = re.sub(
+            r"\+?91[\s\-]?" + re.escape(num) + r"|"
+            + re.escape(num[:5]) + r"[\s\-]?" + re.escape(num[5:]) + r"|"
+            + re.escape(num),
+            "",
+            voice_text,
+        )
+    # Clean up artifacts: "– " with nothing after, double spaces, trailing dashes
+    voice_text = re.sub(r"\s*[–\-]\s*(?=[,।\.\s]|$)", "", voice_text)
+    voice_text = re.sub(r"\s{2,}", " ", voice_text).strip()
+
+    # Build text message
+    lines = ["📞 Contact:"]
+    for num in numbers:
+        label = _KNOWN_CONTACTS.get(num, "")
+        if label:
+            lines.append(f"{label} – {num}")
+        else:
+            lines.append(num)
+    text_msg = "\n".join(lines)
+
+    return voice_text, text_msg
 
 
 # ── Singletons (lazy-initialized) ─────────────────────────────────────
@@ -399,13 +457,16 @@ def process_message(
     # ── Summarization (every N user messages) ──────────────────────
     _try_summarize(phone, phone_id, store, config, memory_summary=("" if faq_match else (memory_summary or "")), memory=store.get_memory(phone) if not faq_match else None)
 
+    # ── Extract phone numbers (send as text, not voice) ─────────
+    voice_text, contact_text_msg = _extract_phone_numbers(response_text)
+
     # ── TTS ────────────────────────────────────────────────────────
     ensure_dir(AUDIO_SERVE_DIR)
     response_filename = f"{run_id}_response.ogg"
     response_serve_path = AUDIO_SERVE_DIR / response_filename
 
     try:
-        chunks = _split_for_tts(response_text)
+        chunks = _split_for_tts(voice_text)
 
         if len(chunks) == 1:
             # Single chunk — synthesize directly
@@ -452,6 +513,17 @@ def process_message(
         )
         logger.info("Response sent to user=%s sid=%s",
                     phone_id, send_result.get("sid"))
+
+        # Send contact numbers as a follow-up text message
+        if contact_text_msg:
+            try:
+                twilio_client.send_text_message(
+                    to_number=sender,
+                    body=contact_text_msg,
+                )
+                logger.info("Contact text sent to user=%s", phone_id)
+            except Exception as text_err:
+                logger.error("Contact text failed for user=%s: %s", phone_id, text_err)
 
     except Exception as e:
         # TTS failed — no text fallback; ack already acknowledged receipt
