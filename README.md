@@ -100,7 +100,8 @@ bhAI_voice_bot/
 ├── knowledge_base/        # Domain knowledge (editable by TM team)
 │   ├── shared/            # Cross-domain (escalation, style)
 │   ├── hr_admin/          # HR-specific policies
-│   └── users/             # Per-user profiles (200+ artisans)
+│   ├── helpdesk/          # Govt schemes (Aadhaar, PAN, ESIC, etc.)
+│   └── users/             # Per-user profiles (216 artisans)
 │
 ├── data/                  # Audio data and transcriptions
 │   ├── sharepoint_sync/   # Auto-synced audio from SharePoint
@@ -190,7 +191,7 @@ uv run python inference/web/chat_server.py
 ## Tech Stack
 
 - **STT**: Sarvam AI (saaras:v3) — statistically validated as best across 7 models on 175 Hindi recordings
-- **LLM**: Sarvam (sarvam-105b, default), OpenAI (gpt-4o-mini), or Claude (haiku) — configurable via `LLM_BACKEND`
+- **LLM**: Claude Sonnet (pilot default), Sarvam (sarvam-105b), or OpenAI (gpt-4o-mini) — configurable via `LLM_BACKEND`
 - **TTS**: Sarvam AI (manisha voice) or ElevenLabs (voice cloning)
 - **Security**: Fernet encryption for PII at rest, Twilio signature verification
 - **Framework**: Python, FastAPI, pydub

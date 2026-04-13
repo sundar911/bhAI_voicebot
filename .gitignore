@@ -98,3 +98,9 @@ htmlcov/
 
 # Sync logs
 data/sharepoint_sync/sync.log
+
+
+# Twilio/Railway logs (may contain secrets)
+wa_twilio_logs.csv
+wa_messaging_failure_logs.json
+railway_logs.json

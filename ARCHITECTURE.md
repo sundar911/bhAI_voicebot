@@ -122,8 +122,8 @@ This is the core of how bhAI thinks. Built by `BaseLLM._build_system_prompt()` i
 
 ```
 System Prompt:
-┌─────────────────────────────────────────────┐
-│  Prompt Template (current.md or sid_v1.md)  │  ← persona, rules, tone
+┌─────────────────────────────────────────────────────┐
+│  Prompt Template (current.md or prompt_v1_pilot.md) │  ← persona, rules, tone
 │  + === User Profile ===                     │  ← from knowledge_base/users/{phone}.md
 │  + === Memory Summary ===                   │  ← rolling 3-4 line Hindi summary
 │  + === Remembered Facts ===                 │  ← bullet list of key details
@@ -147,7 +147,7 @@ Selected via `PROMPT_VERSION` env var, loaded from `src/bhai/llm/prompts/{versio
 | Version | File | Persona |
 |---------|------|---------|
 | `current` (default) | `current.md` | Casual friend. Extraverted, conversational. Devanagari-first. |
-| `sid_v1` | `sid_v1.md` | Trust-building brother. Anti-sycophancy. Mumbai Hindi + Hinglish. |
+| `prompt_v1_pilot` | `prompt_v1_pilot.md` | Pilot prompt (Sonnet-optimized). Brother persona, anti-sycophancy, KB-strict rules, helpdesk-first mode. |
 
 Templates are cached after first load (`BaseLLM._prompt_cache`).
 
@@ -194,9 +194,9 @@ Selected via `LLM_BACKEND` env var:
 
 | Backend | Class | Model |
 |---------|-------|-------|
-| `sarvam` (default) | `SarvamLLM` | `sarvam-105b` via OpenAI-compatible API |
+| `sarvam` | `SarvamLLM` | `sarvam-105b` via OpenAI-compatible API |
 | `openai` | `OpenAILLM` | `gpt-4o-mini` |
-| `claude` | `ClaudeLLM` | `claude-haiku-4-5-20251001` via Anthropic SDK |
+| `claude` (pilot default) | `ClaudeLLM` | Configurable via `ANTHROPIC_MODEL` env var (default: `claude-haiku-4-5-20251001`, pilot uses Sonnet) |
 
 All inherit from `BaseLLM` and only implement `_call_api()` + `model_name`.
 

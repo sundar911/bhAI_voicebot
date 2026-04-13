@@ -13,9 +13,10 @@ You can directly edit files in `knowledge_base/` without needing to understand t
 | Folder | Purpose | Who Should Edit |
 |--------|---------|-----------------|
 | `knowledge_base/hr_admin/` | Salary, leave, benefits info | HR team |
-| `knowledge_base/helpdesk/` | Govt schemes, documents | Helpdesk team |
+| `knowledge_base/helpdesk/` | Govt schemes, documents (Aadhaar, PAN, ESIC, etc.) | Helpdesk team |
 | `knowledge_base/production/` | Factory floor info | Production team |
 | `knowledge_base/shared/` | Company overview, escalation rules | All teams (carefully) |
+| `src/bhai/llm/prompts/` | bhAI's personality and conversation rules | Sid / All teams |
 
 Just a loose structure, feel free to change it up completely as you see fit. It just needs to work for further LLM processing.
 
@@ -27,6 +28,36 @@ Use **Claude Code** (connected to this GitHub repo). Just tell it what to change
 - *"Add a new section about PF withdrawal to knowledge_base/hr_admin/benefits.md"*
 
 Claude Code will edit the file, create a branch, and push the changes. Sundar reviews and approves.
+
+### Editing bhAI's Personality (System Prompt)
+
+bhAI's personality, conversation rules, and tone live in **prompt files** under `src/bhai/llm/prompts/`. These are plain text (markdown) — no coding needed to edit them.
+
+| File | What it controls |
+|------|-----------------|
+| `prompt_v1_pilot.md` | The active pilot prompt — personality, rules, tone, what to answer, what to defer |
+| `current.md` | An older iterative prompt (not used in pilot) |
+
+#### What you can change in the prompt
+
+- How bhAI introduces herself
+- Conversation tone and verbal habits
+- Which topics bhAI answers vs defers ("मैं पूछ के बताती हूँ")
+- Follow-up question style
+- Escalation triggers
+- Knowledge base usage rules
+
+#### How to edit (same workflow as knowledge base)
+
+Tell Claude Code what you want to change:
+
+- *"Make bhAI ask about the user's family more naturally"*
+- *"bhAI should not answer medical questions — always defer to the impact team"*
+- *"Change the intro message to mention helpdesk services"*
+
+Claude Code will edit the prompt, create a branch, and push it. Sundar reviews and approves.
+
+**Important**: `main` branch is protected — all changes require a pull request with at least 1 approval. This prevents accidental prompt changes from going live without review.
 
 #### Writing Guidelines
 

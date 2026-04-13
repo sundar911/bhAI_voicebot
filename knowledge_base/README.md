@@ -16,8 +16,13 @@ knowledge_base/
 │   ├── payroll.md          # Salary, deductions, bonuses
 │   └── benefits.md         # Support programs, health, childcare
 │
-├── helpdesk/               # Helpdesk domain (FUTURE)
-│                           # Govt schemes, document help
+├── helpdesk/               # Helpdesk domain (ACTIVE)
+│   ├── aadhaar.md          # Aadhaar card procedures
+│   ├── esic.md             # ESIC registration/claims
+│   ├── pan_card.md         # PAN card application
+│   ├── voter_id.md         # Voter ID procedures
+│   ├── ration_card.md      # Ration card help
+│   └── marriage_certificate.md
 │
 ├── production/             # Production domain (FUTURE)
 │                           # Factory floor, machines, chai/breakfast
@@ -60,8 +65,13 @@ Claude Code will edit the file, create a branch, and push the changes. Sundar wi
 4. Calendar me mark hoga automatically
 ```
 
+### Editing bhAI's Personality
+
+bhAI's personality and conversation rules live in `src/bhai/llm/prompts/` (not in this folder). You can edit those too — see [CONTRIBUTING.md](../CONTRIBUTING.md#editing-bhais-personality-system-prompt) for instructions.
+
 ### Important Notes
 
 - **shared/** files are used by ALL domains - edit carefully
 - **Domain folders** (hr_admin, helpdesk, production) are specific to each use case
+- All changes go through a pull request — `main` branch is protected (1 approval required)
 - Changes take effect on next bot restart
