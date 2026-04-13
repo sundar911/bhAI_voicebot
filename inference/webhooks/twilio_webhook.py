@@ -95,6 +95,35 @@ ACK_MESSAGES = [
     "एक minute, समझ रही हूँ...",
 ]
 
+# ── TTS chunking (prevents ElevenLabs slow-mo on long Hindi text) ────
+MAX_TTS_CHARS = 300
+
+
+def _split_for_tts(text: str) -> list:
+    """Split text into TTS-safe chunks at sentence boundaries."""
+    if len(text) <= MAX_TTS_CHARS:
+        return [text]
+    chunks = []
+    remaining = text
+    while remaining:
+        if len(remaining) <= MAX_TTS_CHARS:
+            chunks.append(remaining)
+            break
+        window = remaining[:MAX_TTS_CHARS]
+        cut = -1
+        for sep in ["।", "!", "?", "\n"]:
+            idx = window.rfind(sep)
+            if idx > MAX_TTS_CHARS // 3:
+                cut = max(cut, idx)
+        if cut == -1:
+            cut = window.rfind(" ")
+        if cut <= 0:
+            cut = MAX_TTS_CHARS - 1
+        chunks.append(remaining[: cut + 1].strip())
+        remaining = remaining[cut + 1:].strip()
+    return chunks
+
+
 # ── Singletons (lazy-initialized) ─────────────────────────────────────
 
 _store: ConversationStore | None = None
@@ -376,20 +405,40 @@ def process_message(
     response_serve_path = AUDIO_SERVE_DIR / response_filename
 
     try:
-        if config.tts_backend == "elevenlabs":
-            from src.bhai.tts.elevenlabs_tts import ElevenLabsTTS
-            tts = ElevenLabsTTS(config)
-            segments = llm_result.get("segments") if llm_result else None
-            if segments:
-                tts.synthesize_with_emotions(segments, response_serve_path)
+        chunks = _split_for_tts(response_text)
+
+        if len(chunks) == 1:
+            # Single chunk — synthesize directly
+            if config.tts_backend == "elevenlabs":
+                from src.bhai.tts.elevenlabs_tts import ElevenLabsTTS
+                tts = ElevenLabsTTS(config)
+                tts.synthesize(chunks[0], response_serve_path)
             else:
-                tts.synthesize(response_text, response_serve_path)
+                from src.bhai.tts.sarvam_tts import SarvamTTS
+                tts = SarvamTTS(config)
+                tts_raw_path = run_dir / "tts_raw_output.wav"
+                tts.synthesize(chunks[0], tts_raw_path)
+                convert_to_ogg_opus(tts_raw_path, response_serve_path)
         else:
-            from src.bhai.tts.sarvam_tts import SarvamTTS
-            tts = SarvamTTS(config)
-            tts_raw_path = run_dir / "tts_raw_output.wav"
-            tts.synthesize(response_text, tts_raw_path)
-            convert_to_ogg_opus(tts_raw_path, response_serve_path)
+            # Multiple chunks — synthesize each, concatenate audio
+            from pydub import AudioSegment as PydubSegment
+            combined = PydubSegment.empty()
+            for i, chunk in enumerate(chunks):
+                chunk_path = AUDIO_SERVE_DIR / f"{run_id}_chunk{i}.ogg"
+                if config.tts_backend == "elevenlabs":
+                    from src.bhai.tts.elevenlabs_tts import ElevenLabsTTS
+                    tts = ElevenLabsTTS(config)
+                    tts.synthesize(chunk, chunk_path)
+                else:
+                    from src.bhai.tts.sarvam_tts import SarvamTTS
+                    tts = SarvamTTS(config)
+                    tts_raw = run_dir / f"tts_chunk{i}_raw.wav"
+                    tts.synthesize(chunk, tts_raw)
+                    convert_to_ogg_opus(tts_raw, chunk_path)
+                combined += PydubSegment.from_ogg(str(chunk_path))
+                chunk_path.unlink(missing_ok=True)
+            combined.export(str(response_serve_path), format="ogg", codec="libopus")
+            logger.info("TTS: concatenated %d chunks for user=%s", len(chunks), phone_id)
 
         logger.info("TTS complete for user=%s, backend=%s",
                     phone_id, config.tts_backend)
