@@ -633,6 +633,197 @@ async def health():
     return {"status": "healthy", "service": "bhai-twilio-webhook"}
 
 
+# ── Pilot monitoring dashboard ───────────────────────────────────────
+
+import os as _os
+_DASHBOARD_KEY = _os.getenv("DASHBOARD_SECRET", "bhai-pilot-2026")
+
+
+def _check_dashboard_key(key: str):
+    if key != _DASHBOARD_KEY:
+        from fastapi.responses import JSONResponse as _JR
+        return _JR({"error": "unauthorized"}, status_code=401)
+    return None
+
+
+@app.get("/dashboard")
+async def dashboard(key: str = ""):
+    """Pilot metrics — message counts, response times, failures. No content."""
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    store = _get_store()
+    conn = store._conn
+
+    # Get all users (excluding test users)
+    phones = [
+        r[0] for r in conn.execute(
+            "SELECT DISTINCT phone FROM messages WHERE phone NOT IN ('web_test_user')"
+        ).fetchall()
+    ]
+
+    users = []
+    total_msgs = 0
+    total_response_times = []
+    total_failures = 0
+
+    for phone in phones:
+        rows = conn.execute(
+            "SELECT role, timestamp FROM messages WHERE phone = ? ORDER BY timestamp",
+            (phone,),
+        ).fetchall()
+
+        msg_count = len(rows)
+        total_msgs += msg_count
+        user_msgs = [r for r in rows if r[0] == "user"]
+        asst_msgs = [r for r in rows if r[0] == "assistant"]
+
+        # Calculate response times and failures
+        response_times = []
+        failures = 0
+        for i, (role, ts) in enumerate(rows):
+            if role == "user":
+                # Find next assistant message
+                next_asst = None
+                for j in range(i + 1, len(rows)):
+                    if rows[j][0] == "assistant":
+                        next_asst = rows[j]
+                        break
+                if next_asst:
+                    from datetime import datetime
+                    try:
+                        user_time = datetime.fromisoformat(ts)
+                        asst_time = datetime.fromisoformat(next_asst[1])
+                        gap = (asst_time - user_time).total_seconds()
+                        if gap < 120:
+                            response_times.append(gap)
+                        else:
+                            failures += 1
+                    except Exception:
+                        pass
+                else:
+                    failures += 1
+
+        total_failures += failures
+        total_response_times.extend(response_times)
+
+        avg_rt = round(sum(response_times) / len(response_times), 1) if response_times else None
+        phone_hash = hashlib.sha256(phone.encode()).hexdigest()[:12]
+
+        users.append({
+            "phone_hash": phone_hash,
+            "message_count": msg_count,
+            "user_messages": len(user_msgs),
+            "bot_messages": len(asst_msgs),
+            "first_message": rows[0][1] if rows else None,
+            "last_active": rows[-1][1] if rows else None,
+            "avg_response_time_s": avg_rt,
+            "failed_responses": failures,
+        })
+
+    avg_total = round(sum(total_response_times) / len(total_response_times), 1) if total_response_times else None
+
+    return {
+        "users": users,
+        "totals": {
+            "total_messages": total_msgs,
+            "total_users": len(phones),
+            "avg_response_time_s": avg_total,
+            "total_failures": total_failures,
+        },
+    }
+
+
+@app.get("/debug/{phone_hash}")
+async def debug_user(phone_hash: str, key: str = ""):
+    """Debug a specific user — timestamps only, no content."""
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    store = _get_store()
+    conn = store._conn
+
+    # Find the phone that matches this hash
+    phones = [
+        r[0] for r in conn.execute("SELECT DISTINCT phone FROM messages").fetchall()
+    ]
+    target_phone = None
+    for phone in phones:
+        if hashlib.sha256(phone.encode()).hexdigest()[:12] == phone_hash:
+            target_phone = phone
+            break
+
+    if not target_phone:
+        return {"error": "user not found"}
+
+    rows = conn.execute(
+        "SELECT role, timestamp, session_id FROM messages WHERE phone = ? ORDER BY timestamp",
+        (target_phone,),
+    ).fetchall()
+
+    timeline = []
+    for i, (role, ts, session_id) in enumerate(rows):
+        entry = {"role": role, "timestamp": ts, "session_id": session_id}
+        if role == "user":
+            # Check if reply came
+            got_reply = False
+            reply_time = None
+            for j in range(i + 1, len(rows)):
+                if rows[j][0] == "assistant":
+                    got_reply = True
+                    try:
+                        from datetime import datetime
+                        gap = (datetime.fromisoformat(rows[j][1]) - datetime.fromisoformat(ts)).total_seconds()
+                        reply_time = round(gap, 1)
+                    except Exception:
+                        pass
+                    break
+            entry["got_reply"] = got_reply
+            entry["reply_time_s"] = reply_time
+        timeline.append(entry)
+
+    return {"phone_hash": phone_hash, "total_messages": len(rows), "timeline": timeline}
+
+
+@app.get("/conversations/{phone_hash}")
+async def conversations(phone_hash: str, key: str = ""):
+    """Full decrypted transcripts. Access is logged."""
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    logger.warning("TRANSCRIPT ACCESS for user=%s by key holder", phone_hash)
+
+    store = _get_store()
+    conn = store._conn
+
+    # Find the phone
+    phones = [
+        r[0] for r in conn.execute("SELECT DISTINCT phone FROM messages").fetchall()
+    ]
+    target_phone = None
+    for phone in phones:
+        if hashlib.sha256(phone.encode()).hexdigest()[:12] == phone_hash:
+            target_phone = phone
+            break
+
+    if not target_phone:
+        return {"error": "user not found"}
+
+    messages = store.get_recent_messages(target_phone, limit=200)
+
+    return {
+        "phone_hash": phone_hash,
+        "message_count": len(messages),
+        "messages": [
+            {"role": m["role"], "content": m["content"], "timestamp": m["timestamp"]}
+            for m in messages
+        ],
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
