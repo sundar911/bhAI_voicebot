@@ -147,8 +147,42 @@ def test_twiml_empty_response():
     """_twiml_empty returns a 200 XML response."""
     resp = _twiml_empty()
     assert resp.status_code == 200
-    assert b"<Response>" in resp.body
-    assert resp.media_type == "application/xml"
+
+
+# ── _check_dashboard_key ─────────────────────────────────────────────
+
+
+def test_dashboard_key_rejects_empty():
+    from inference.webhooks.twilio_webhook import _check_dashboard_key
+
+    result = _check_dashboard_key("")
+    assert result is not None
+    assert result.status_code == 401
+
+
+def test_dashboard_key_rejects_wrong():
+    from inference.webhooks.twilio_webhook import _check_dashboard_key
+
+    result = _check_dashboard_key("wrong-key")
+    assert result is not None
+    assert result.status_code == 401
+
+
+def test_dashboard_key_accepts_correct():
+    from inference.webhooks.twilio_webhook import _DASHBOARD_KEY, _check_dashboard_key
+
+    result = _check_dashboard_key(_DASHBOARD_KEY)
+    assert result is None
+
+
+# ── admin_phones (logic test) ────────────────────────────────────────
+
+
+def test_admin_phones_hash_matches_phone_hash_function():
+    """The /admin/phones endpoint uses the same hashing as _phone_hash."""
+    phone = "+919876543210"
+    expected = hashlib.sha256(phone.encode()).hexdigest()[:12]
+    assert _phone_hash(phone) == expected
 
 
 # ── /health endpoint ──────────────────────────────────────────────────

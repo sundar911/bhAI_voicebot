@@ -32,22 +32,27 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from src.bhai.audio_utils import ensure_dir, convert_to_ogg_opus
-from src.bhai.config import load_config, INFERENCE_OUTPUTS_DIR, DATA_DIR, KNOWLEDGE_BASE_DIR
+from src.bhai.audio_utils import convert_to_ogg_opus, ensure_dir
+from src.bhai.config import (
+    DATA_DIR,
+    INFERENCE_OUTPUTS_DIR,
+    KNOWLEDGE_BASE_DIR,
+    load_config,
+)
 from src.bhai.integrations.twilio_client import TwilioWhatsAppClient
+from src.bhai.llm import create_llm
 from src.bhai.memory.store import ConversationStore
 from src.bhai.memory.summarizer import (
-    should_summarize,
     build_summarize_request,
-    parse_summary,
     merge_facts,
+    parse_summary,
+    should_summarize,
 )
 from src.bhai.resilience.faq_cache import FAQCache
 from src.bhai.resilience.queue import RequestQueue
 from src.bhai.resilience.worker import RetryWorker
 from src.bhai.security.webhook_auth import verify_twilio_signature
 from src.bhai.stt.sarvam_stt import SarvamSTT
-from src.bhai.llm import create_llm
 
 # ── Logging (no PII) ──────────────────────────────────────────────────
 
@@ -119,7 +124,7 @@ def _split_for_tts(text: str) -> list:
         if cut <= 0:
             cut = MAX_TTS_CHARS - 1
         chunks.append(remaining[: cut + 1].strip())
-        remaining = remaining[cut + 1:].strip()
+        remaining = remaining[cut + 1 :].strip()
     return chunks
 
 
@@ -157,8 +162,13 @@ def _extract_phone_numbers(text: str):
     for num in numbers:
         # Remove various formats: "9321125042", "93211 25042", "+91-9321125042"
         voice_text = re.sub(
-            r"\+?91[\s\-]?" + re.escape(num) + r"|"
-            + re.escape(num[:5]) + r"[\s\-]?" + re.escape(num[5:]) + r"|"
+            r"\+?91[\s\-]?"
+            + re.escape(num)
+            + r"|"
+            + re.escape(num[:5])
+            + r"[\s\-]?"
+            + re.escape(num[5:])
+            + r"|"
             + re.escape(num),
             "",
             voice_text,
@@ -242,6 +252,7 @@ def _twiml_empty() -> Response:
 
 # ── App lifecycle (start retry worker) ────────────────────────────────
 
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the retry worker on app startup, stop on shutdown."""
@@ -266,6 +277,7 @@ app = FastAPI(title="bhAI Twilio WhatsApp Webhook", lifespan=lifespan)
 
 # ── Audio serving (with path traversal protection) ────────────────────
 
+
 @app.get("/audio/{filename}")
 async def serve_audio(filename: str):
     resolved = (AUDIO_SERVE_DIR / filename).resolve()
@@ -282,6 +294,7 @@ async def serve_audio(filename: str):
 
 
 # ── Background processing (the pipeline with degradation) ─────────────
+
 
 def process_message(
     sender: str,
@@ -313,8 +326,13 @@ def process_message(
     # ── Session management ─────────────────────────────────────────
     session_id, is_new_session = store.get_or_create_session(phone)
     is_first_ever = store.is_first_ever_message(phone)
-    logger.info("Session for user=%s: session=%s new=%s first_ever=%s",
-                phone_id, session_id, is_new_session, is_first_ever)
+    logger.info(
+        "Session for user=%s: session=%s new=%s first_ever=%s",
+        phone_id,
+        session_id,
+        is_new_session,
+        is_first_ever,
+    )
 
     run_id = f"twilio_{int(time.time())}"
     run_dir = INFERENCE_OUTPUTS_DIR / run_id
@@ -344,8 +362,9 @@ def process_message(
             stt = SarvamSTT(config, work_dir=work_dir)
             stt_result = stt.transcribe(inbound_path)
             transcript = stt_result["text"]
-            logger.info("STT complete for user=%s, length=%d chars",
-                        phone_id, len(transcript))
+            logger.info(
+                "STT complete for user=%s, length=%d chars", phone_id, len(transcript)
+            )
         except Exception as e:
             logger.error("STT failed for user=%s: %s", phone_id, e)
             # Queue for retry from STT stage
@@ -362,12 +381,18 @@ def process_message(
             return
     else:
         transcript = body_text
-        logger.info("Text message from user=%s, length=%d chars",
-                    phone_id, len(transcript))
+        logger.info(
+            "Text message from user=%s, length=%d chars", phone_id, len(transcript)
+        )
 
     # Save user message
-    store.save_message(phone, "user", transcript, session_id,
-                       audio_path=str(run_dir) if is_audio else None)
+    store.save_message(
+        phone,
+        "user",
+        transcript,
+        session_id,
+        audio_path=str(run_dir) if is_audio else None,
+    )
 
     # ── Onboarding: detect pure greeting on first-ever message ────────
     _greeting_word = _detect_greeting(transcript) if is_first_ever else None
@@ -387,15 +412,17 @@ def process_message(
             "segments": [{"text": intro, "emotion": "happy"}],
             "escalate": False,
         }
-        logger.info("Onboarding greeting branch for user=%s (greeting=%s)",
-                    phone_id, _greeting_word)
+        logger.info(
+            "Onboarding greeting branch for user=%s (greeting=%s)",
+            phone_id,
+            _greeting_word,
+        )
     else:
         faq_match = faq_cache.match(transcript)
 
         if faq_match:
             response_text = faq_cache.format_response(faq_match)
-            logger.info("FAQ cache hit for user=%s: '%s'",
-                        phone_id, faq_match.question)
+            logger.info("FAQ cache hit for user=%s: '%s'", phone_id, faq_match.question)
         else:
             # ── LLM ────────────────────────────────────────────────────
             try:
@@ -422,8 +449,12 @@ def process_message(
                     is_new_session=is_new_session,
                 )
                 response_text = llm_result["text"]
-                logger.info("LLM response for user=%s, length=%d chars, escalate=%s",
-                            phone_id, len(response_text), llm_result["escalate"])
+                logger.info(
+                    "LLM response for user=%s, length=%d chars, escalate=%s",
+                    phone_id,
+                    len(response_text),
+                    llm_result["escalate"],
+                )
 
                 # First-ever message that was a real question — answer first, then intro
                 if is_first_ever:
@@ -453,7 +484,14 @@ def process_message(
     store.save_message(phone, "assistant", response_text, session_id)
 
     # ── Summarization (every N user messages) ──────────────────────
-    _try_summarize(phone, phone_id, store, config, memory_summary=("" if faq_match else (memory_summary or "")), memory=store.get_memory(phone) if not faq_match else None)
+    _try_summarize(
+        phone,
+        phone_id,
+        store,
+        config,
+        memory_summary=("" if faq_match else (memory_summary or "")),
+        memory=store.get_memory(phone) if not faq_match else None,
+    )
 
     # ── Extract phone numbers (send as text, not voice) ─────────
     voice_text, contact_text_msg = _extract_phone_numbers(response_text)
@@ -470,10 +508,12 @@ def process_message(
             # Single chunk — synthesize directly
             if config.tts_backend == "elevenlabs":
                 from src.bhai.tts.elevenlabs_tts import ElevenLabsTTS
+
                 tts = ElevenLabsTTS(config)
                 tts.synthesize(chunks[0], response_serve_path)
             else:
                 from src.bhai.tts.sarvam_tts import SarvamTTS
+
                 tts = SarvamTTS(config)
                 tts_raw_path = run_dir / "tts_raw_output.wav"
                 tts.synthesize(chunks[0], tts_raw_path)
@@ -481,15 +521,18 @@ def process_message(
         else:
             # Multiple chunks — synthesize each, concatenate audio
             from pydub import AudioSegment as PydubSegment
+
             combined = PydubSegment.empty()
             for i, chunk in enumerate(chunks):
                 chunk_path = AUDIO_SERVE_DIR / f"{run_id}_chunk{i}.ogg"
                 if config.tts_backend == "elevenlabs":
                     from src.bhai.tts.elevenlabs_tts import ElevenLabsTTS
+
                     tts = ElevenLabsTTS(config)
                     tts.synthesize(chunk, chunk_path)
                 else:
                     from src.bhai.tts.sarvam_tts import SarvamTTS
+
                     tts = SarvamTTS(config)
                     tts_raw = run_dir / f"tts_chunk{i}_raw.wav"
                     tts.synthesize(chunk, tts_raw)
@@ -497,10 +540,13 @@ def process_message(
                 combined += PydubSegment.from_ogg(str(chunk_path))
                 chunk_path.unlink(missing_ok=True)
             combined.export(str(response_serve_path), format="ogg", codec="libopus")
-            logger.info("TTS: concatenated %d chunks for user=%s", len(chunks), phone_id)
+            logger.info(
+                "TTS: concatenated %d chunks for user=%s", len(chunks), phone_id
+            )
 
-        logger.info("TTS complete for user=%s, backend=%s",
-                    phone_id, config.tts_backend)
+        logger.info(
+            "TTS complete for user=%s, backend=%s", phone_id, config.tts_backend
+        )
 
         # Send audio response
         base_url = config.base_url.rstrip("/")
@@ -509,8 +555,7 @@ def process_message(
             to_number=sender,
             media_url=audio_public_url,
         )
-        logger.info("Response sent to user=%s sid=%s",
-                    phone_id, send_result.get("sid"))
+        logger.info("Response sent to user=%s sid=%s", phone_id, send_result.get("sid"))
 
         # Send contact numbers as a follow-up text message
         if contact_text_msg:
@@ -525,8 +570,9 @@ def process_message(
 
     except Exception as e:
         # TTS failed — no text fallback; ack already acknowledged receipt
-        logger.error("TTS failed for user=%s: %s — voice-only mode, no fallback",
-                     phone_id, e)
+        logger.error(
+            "TTS failed for user=%s: %s — voice-only mode, no fallback", phone_id, e
+        )
 
 
 def _try_summarize(phone, phone_id, store, config, memory_summary="", memory=None):
@@ -535,8 +581,9 @@ def _try_summarize(phone, phone_id, store, config, memory_summary="", memory=Non
     if not should_summarize(user_msg_count):
         return
 
-    logger.info("Triggering summarization for user=%s (msg #%d)",
-                phone_id, user_msg_count)
+    logger.info(
+        "Triggering summarization for user=%s (msg #%d)", phone_id, user_msg_count
+    )
     try:
         llm = create_llm(config)
         old_summary = memory_summary
@@ -552,13 +599,15 @@ def _try_summarize(phone, phone_id, store, config, memory_summary="", memory=Non
         existing_facts = memory["facts"] if memory else []
         merged = merge_facts(existing_facts, parsed["facts"])
         store.save_memory(phone, parsed["summary"], merged)
-        logger.info("Summarization complete for user=%s, facts=%d",
-                    phone_id, len(merged))
+        logger.info(
+            "Summarization complete for user=%s, facts=%d", phone_id, len(merged)
+        )
     except Exception as e:
         logger.error("Summarization failed for user=%s: %s", phone_id, e)
 
 
 # ── Main webhook ──────────────────────────────────────────────────────
+
 
 @app.post("/webhook")
 async def webhook(request: Request, background_tasks: BackgroundTasks):
@@ -589,8 +638,13 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
     media_content_type = str(form_data.get("MediaContentType0", ""))
     body_text = str(form_data.get("Body", "")).strip()
 
-    logger.info("Message from user=%s media=%d type=%s has_text=%s",
-                phone_id, num_media, media_content_type, bool(body_text))
+    logger.info(
+        "Message from user=%s media=%d type=%s has_text=%s",
+        phone_id,
+        num_media,
+        media_content_type,
+        bool(body_text),
+    )
 
     # ── Rate limiting (S4) ─────────────────────────────────────────
     if not _check_rate_limit(phone):
@@ -628,6 +682,7 @@ async def webhook(request: Request, background_tasks: BackgroundTasks):
 
 # ── Health check ───────────────────────────────────────────────────────
 
+
 @app.get("/health")
 async def health():
     return {"status": "healthy", "service": "bhai-twilio-webhook"}
@@ -636,12 +691,14 @@ async def health():
 # ── Pilot monitoring dashboard ───────────────────────────────────────
 
 import os as _os
+
 _DASHBOARD_KEY = _os.getenv("DASHBOARD_SECRET", "bhai-pilot-2026")
 
 
 def _check_dashboard_key(key: str):
     if key != _DASHBOARD_KEY:
         from fastapi.responses import JSONResponse as _JR
+
         return _JR({"error": "unauthorized"}, status_code=401)
     return None
 
@@ -658,7 +715,8 @@ async def dashboard(key: str = ""):
 
     # Get all users (excluding test users)
     phones = [
-        r[0] for r in conn.execute(
+        r[0]
+        for r in conn.execute(
             "SELECT DISTINCT phone FROM messages WHERE phone NOT IN ('web_test_user')"
         ).fetchall()
     ]
@@ -692,6 +750,7 @@ async def dashboard(key: str = ""):
                         break
                 if next_asst:
                     from datetime import datetime
+
                     try:
                         user_time = datetime.fromisoformat(ts)
                         asst_time = datetime.fromisoformat(next_asst[1])
@@ -708,21 +767,31 @@ async def dashboard(key: str = ""):
         total_failures += failures
         total_response_times.extend(response_times)
 
-        avg_rt = round(sum(response_times) / len(response_times), 1) if response_times else None
+        avg_rt = (
+            round(sum(response_times) / len(response_times), 1)
+            if response_times
+            else None
+        )
         phone_hash = hashlib.sha256(phone.encode()).hexdigest()[:12]
 
-        users.append({
-            "phone_hash": phone_hash,
-            "message_count": msg_count,
-            "user_messages": len(user_msgs),
-            "bot_messages": len(asst_msgs),
-            "first_message": rows[0][1] if rows else None,
-            "last_active": rows[-1][1] if rows else None,
-            "avg_response_time_s": avg_rt,
-            "failed_responses": failures,
-        })
+        users.append(
+            {
+                "phone_hash": phone_hash,
+                "message_count": msg_count,
+                "user_messages": len(user_msgs),
+                "bot_messages": len(asst_msgs),
+                "first_message": rows[0][1] if rows else None,
+                "last_active": rows[-1][1] if rows else None,
+                "avg_response_time_s": avg_rt,
+                "failed_responses": failures,
+            }
+        )
 
-    avg_total = round(sum(total_response_times) / len(total_response_times), 1) if total_response_times else None
+    avg_total = (
+        round(sum(total_response_times) / len(total_response_times), 1)
+        if total_response_times
+        else None
+    )
 
     return {
         "users": users,
@@ -775,7 +844,11 @@ async def debug_user(phone_hash: str, key: str = ""):
                     got_reply = True
                     try:
                         from datetime import datetime
-                        gap = (datetime.fromisoformat(rows[j][1]) - datetime.fromisoformat(ts)).total_seconds()
+
+                        gap = (
+                            datetime.fromisoformat(rows[j][1])
+                            - datetime.fromisoformat(ts)
+                        ).total_seconds()
                         reply_time = round(gap, 1)
                     except Exception:
                         pass
@@ -849,4 +922,5 @@ async def admin_phones(key: str = ""):
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run(app, host="0.0.0.0", port=8001)
