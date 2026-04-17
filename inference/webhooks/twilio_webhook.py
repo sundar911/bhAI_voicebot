@@ -824,6 +824,29 @@ async def conversations(phone_hash: str, key: str = ""):
     }
 
 
+@app.get("/admin/phones")
+async def admin_phones(key: str = ""):
+    """Hash-to-phone mapping for pilot admin. Access is logged."""
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    logger.warning("ADMIN PHONE ACCESS by key holder")
+
+    store = _get_store()
+    conn = store._conn
+    phones = [
+        r[0] for r in conn.execute("SELECT DISTINCT phone FROM messages").fetchall()
+    ]
+
+    return {
+        "users": [
+            {"phone_hash": hashlib.sha256(p.encode()).hexdigest()[:12], "phone": p}
+            for p in phones
+        ]
+    }
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8001)
