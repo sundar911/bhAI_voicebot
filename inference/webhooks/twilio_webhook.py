@@ -861,8 +861,8 @@ async def debug_user(phone_hash: str, key: str = ""):
 
 
 @app.get("/conversations/{phone_hash}")
-async def conversations(phone_hash: str, key: str = ""):
-    """Full decrypted transcripts. Access is logged."""
+async def conversations(phone_hash: str, key: str = "", format: str = "json"):
+    """Full decrypted transcripts. Access is logged. Use format=html for readable view."""
     auth = _check_dashboard_key(key)
     if auth:
         return auth
@@ -886,6 +886,55 @@ async def conversations(phone_hash: str, key: str = ""):
         return {"error": "user not found"}
 
     messages = store.get_recent_messages(target_phone, limit=200)
+
+    if format == "html":
+        from fastapi.responses import HTMLResponse
+
+        rows = ""
+        last_date = ""
+        for m in messages:
+            ts = m["timestamp"]
+            # Date divider
+            date_part = ts[:10]
+            if date_part != last_date:
+                last_date = date_part
+                rows += f'<div style="text-align:center;margin:18px 0 8px;color:#888;font-size:13px">{date_part}</div>\n'
+            time_part = ts[11:16]
+            content = (
+                m["content"]
+                .replace("&", "&amp;")
+                .replace("<", "&lt;")
+                .replace(">", "&gt;")
+                .replace("\n", "<br>")
+            )
+            if m["role"] == "user":
+                rows += (
+                    f'<div style="display:flex;margin:6px 0">'
+                    f'<div style="background:#f0f0f0;border-radius:12px;padding:10px 14px;max-width:80%;font-size:15px;line-height:1.5">'
+                    f"{content}"
+                    f'<div style="font-size:11px;color:#999;margin-top:4px">{time_part}</div>'
+                    f"</div></div>\n"
+                )
+            else:
+                rows += (
+                    f'<div style="display:flex;justify-content:flex-end;margin:6px 0">'
+                    f'<div style="background:#dcf8c6;border-radius:12px;padding:10px 14px;max-width:80%;font-size:15px;line-height:1.5">'
+                    f"{content}"
+                    f'<div style="font-size:11px;color:#999;margin-top:4px">{time_part} — bhAI</div>'
+                    f"</div></div>\n"
+                )
+
+        html = (
+            f'<!DOCTYPE html><html><head><meta charset="utf-8">'
+            f'<meta name="viewport" content="width=device-width,initial-scale=1">'
+            f"<title>bhAI — {phone_hash}</title></head>"
+            f'<body style="font-family:-apple-system,sans-serif;max-width:600px;margin:0 auto;padding:16px;background:#e5ddd5">'
+            f'<div style="background:#075e54;color:white;padding:14px 16px;border-radius:8px;margin-bottom:12px;font-size:16px;font-weight:600">'
+            f"bhAI Conversations — {phone_hash} ({len(messages)} messages)</div>"
+            f"{rows}"
+            f"</body></html>"
+        )
+        return HTMLResponse(content=html)
 
     return {
         "phone_hash": phone_hash,
