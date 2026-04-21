@@ -936,14 +936,23 @@ async def conversations(phone_hash: str, key: str = "", format: str = "json"):
         )
         return HTMLResponse(content=html)
 
-    return {
-        "phone_hash": phone_hash,
-        "message_count": len(messages),
-        "messages": [
-            {"role": m["role"], "content": m["content"], "timestamp": m["timestamp"]}
-            for m in messages
-        ],
-    }
+    from fastapi.responses import JSONResponse
+
+    return JSONResponse(
+        content={
+            "phone_hash": phone_hash,
+            "message_count": len(messages),
+            "messages": [
+                {
+                    "role": m["role"],
+                    "content": m["content"],
+                    "timestamp": m["timestamp"],
+                }
+                for m in messages
+            ],
+        },
+        media_type="application/json; charset=utf-8",
+    )
 
 
 @app.get("/admin/phones")
