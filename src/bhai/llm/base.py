@@ -282,7 +282,12 @@ class BaseLLM(ABC):
 
     @staticmethod
     def _clean_response(raw_text: str, strip_emotions: bool = False) -> str:
-        """Remove ESCALATE (and optionally EMOTIONS_JSON) lines from text."""
+        """Remove ESCALATE/EMOTIONS_JSON lines and strip markdown formatting.
+
+        Markdown leaks (asterisks, bullet markers) get read literally by TTS
+        ("asterisk asterisk", "dash"). We strip them as a safety net even
+        though the prompt also forbids them.
+        """
         cleaned_lines = []
         for line in raw_text.splitlines():
             if "ESCALATE" in line.upper():
@@ -292,7 +297,36 @@ class BaseLLM(ABC):
             stripped = line.strip()
             if stripped:
                 cleaned_lines.append(stripped)
-        return "\n".join(cleaned_lines).strip()
+        text = "\n".join(cleaned_lines).strip()
+        return BaseLLM._strip_markdown(text)
+
+    @staticmethod
+    def _strip_markdown(text: str) -> str:
+        """Strip markdown so TTS doesn't read it literally.
+
+        Devanagari Hindi text never contains asterisks/backticks, so we
+        can safely scrub them. Leading bullet/numbered list markers and
+        markdown headings are also stripped.
+        """
+        if not text:
+            return text
+        # Headings: # foo, ## foo, ### foo
+        text = re.sub(r"^#+\s+", "", text, flags=re.MULTILINE)
+        # Bullet markers at line start: -, *, • (only at start, not mid-sentence dashes)
+        text = re.sub(r"^[ \t]*[-*•]\s+", "", text, flags=re.MULTILINE)
+        # Numbered list markers: "1. foo", "2) foo"
+        text = re.sub(r"^[ \t]*\d+[\.\)]\s+", "", text, flags=re.MULTILINE)
+        # Horizontal rules: ---, ___, ***
+        text = re.sub(r"^[\s]*[-_*]{3,}[\s]*$", "", text, flags=re.MULTILINE)
+        # All remaining asterisks (used for **bold** / *italic*) — Hindi text has none
+        text = text.replace("*", "")
+        # Backticks (code formatting)
+        text = text.replace("`", "")
+        # Multiple consecutive underscores (markdown emphasis)
+        text = re.sub(r"_{2,}", "", text)
+        # Collapse leftover blank lines
+        text = re.sub(r"\n{3,}", "\n\n", text)
+        return text.strip()
 
     @staticmethod
     def _parse_emotion_segments(raw_text: str) -> Optional[List[dict]]:

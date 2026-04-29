@@ -16,6 +16,8 @@ def test_defaults(monkeypatch):
     monkeypatch.delenv("OPENAI_MODEL", raising=False)
     monkeypatch.delenv("SARVAM_STT_MODEL", raising=False)
     monkeypatch.delenv("TTS_BACKEND", raising=False)
+    monkeypatch.delenv("SARVAM_TTS_VOICE", raising=False)
+    monkeypatch.delenv("SARVAM_TTS_MODEL", raising=False)
 
     # Pass a non-existent path so load_dotenv doesn't re-read the local .env
     cfg = load_config(env_path=Path("/nonexistent/.env"))
@@ -24,7 +26,8 @@ def test_defaults(monkeypatch):
     assert cfg.openai_model == "gpt-4o-mini"
     assert cfg.sarvam_stt_model == "saaras:v3"
     assert cfg.tts_backend == "sarvam"
-    assert cfg.sarvam_tts_voice == "manisha"
+    assert cfg.sarvam_tts_voice == "suhani"
+    assert cfg.sarvam_tts_model == "bulbul:v3"
 
 
 def test_llm_backend_override(monkeypatch):

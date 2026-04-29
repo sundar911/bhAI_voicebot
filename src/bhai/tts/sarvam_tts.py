@@ -66,9 +66,10 @@ class SarvamTTS(BaseTTS):
         }
 
         payload: dict = {
-            "inputs": [text],
+            "text": text,
             "target_language_code": self.config.sarvam_tts_language,
             "speaker": self.config.sarvam_tts_voice,
+            "model": self.config.sarvam_tts_model,
         }
 
         if self.config.sarvam_tts_sample_rate:

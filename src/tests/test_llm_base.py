@@ -107,6 +107,50 @@ def test_clean_response_keeps_emotions_by_default():
     assert "EMOTIONS_JSON" in cleaned
 
 
+# ── _strip_markdown ───────────────────────────────────────────────────
+
+
+def test_strip_markdown_removes_bold_asterisks():
+    """**bold** → bold (TTS reads ** literally as 'asterisk asterisk')."""
+    assert BaseLLM._strip_markdown("**Sukanya Samriddhi**") == "Sukanya Samriddhi"
+
+
+def test_strip_markdown_removes_leading_dash_bullet():
+    """A line starting with '- ' becomes the text without the bullet."""
+    assert BaseLLM._strip_markdown("- पहली बात") == "पहली बात"
+
+
+def test_strip_markdown_removes_leading_asterisk_bullet():
+    assert BaseLLM._strip_markdown("* दूसरी बात") == "दूसरी बात"
+
+
+def test_strip_markdown_removes_numbered_list_marker():
+    assert BaseLLM._strip_markdown("1. पहली बात") == "पहली बात"
+
+
+def test_strip_markdown_removes_heading():
+    assert BaseLLM._strip_markdown("## Schemes") == "Schemes"
+
+
+def test_strip_markdown_removes_backticks():
+    assert BaseLLM._strip_markdown("call `office`") == "call office"
+
+
+def test_strip_markdown_leaves_plain_hindi_unchanged():
+    text = "नमस्ते भाई, सब ठीक है ना?"
+    assert BaseLLM._strip_markdown(text) == text
+
+
+def test_strip_markdown_handles_empty_string():
+    assert BaseLLM._strip_markdown("") == ""
+
+
+def test_strip_markdown_preserves_mid_sentence_dash():
+    """Dashes inside a sentence shouldn't be stripped — only leading bullets."""
+    text = "दोनों बेटियों के लिए — दो योजनाएँ हैं"
+    assert BaseLLM._strip_markdown(text) == text
+
+
 # ── _parse_emotion_segments ───────────────────────────────────────────
 
 

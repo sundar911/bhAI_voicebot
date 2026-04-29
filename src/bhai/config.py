@@ -38,7 +38,8 @@ class Config:
     sarvam_stt_url: str = "https://api.sarvam.ai/speech-to-text"
     sarvam_stt_model: str = "saaras:v3"
     sarvam_tts_url: str = "https://api.sarvam.ai/text-to-speech"
-    sarvam_tts_voice: str = "manisha"
+    sarvam_tts_model: str = "bulbul:v3"
+    sarvam_tts_voice: str = "suhani"
     sarvam_tts_language: str = "hi-IN"
     sarvam_tts_sample_rate: Optional[int] = None
 
@@ -108,7 +109,8 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         sarvam_tts_url=os.getenv(
             "SARVAM_TTS_URL", "https://api.sarvam.ai/text-to-speech"
         ),
-        sarvam_tts_voice=os.getenv("SARVAM_TTS_VOICE", "manisha"),
+        sarvam_tts_model=os.getenv("SARVAM_TTS_MODEL", "bulbul:v3"),
+        sarvam_tts_voice=os.getenv("SARVAM_TTS_VOICE", "suhani"),
         sarvam_tts_language=os.getenv("SARVAM_TTS_LANGUAGE", "hi-IN"),
         sarvam_tts_sample_rate=(
             int(sarvam_tts_sample_rate) if sarvam_tts_sample_rate else None
