@@ -76,6 +76,15 @@ class Config:
     queue_max_attempts: int = 5  # Background queue retry attempts
     faq_cache_threshold: float = 0.6  # Jaccard similarity for FAQ match
 
+    # Proactive nudges (option B follow-ups)
+    nudge_enabled: bool = False  # Master kill switch — must be opted in
+    nudge_phones: str = ""  # Comma-separated phone hashes allowed to receive nudges
+    nudge_morning_hour_ist: int = 10  # Local IST hour for morning check-in
+    nudge_night_hour_ist: int = 21  # Local IST hour for night check-in
+    nudge_window_minutes: int = 30  # Firing window width around each slot
+    nudge_check_interval_seconds: int = 300  # How often the loop wakes
+    nudge_active_user_days: int = 7  # Only nudge users active in last N days
+
     # Azure / SharePoint (for transcription pipeline)
     azure_tenant_id: str = ""
     azure_app_client_id: str = ""
@@ -138,6 +147,15 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         retry_max_attempts=int(os.getenv("RETRY_MAX_ATTEMPTS", "3")),
         queue_max_attempts=int(os.getenv("QUEUE_MAX_ATTEMPTS", "5")),
         faq_cache_threshold=float(os.getenv("FAQ_CACHE_THRESHOLD", "0.6")),
+        nudge_enabled=os.getenv("NUDGE_ENABLED", "false").lower() == "true",
+        nudge_phones=os.getenv("NUDGE_PHONES", ""),
+        nudge_morning_hour_ist=int(os.getenv("NUDGE_MORNING_HOUR_IST", "10")),
+        nudge_night_hour_ist=int(os.getenv("NUDGE_NIGHT_HOUR_IST", "21")),
+        nudge_window_minutes=int(os.getenv("NUDGE_WINDOW_MINUTES", "30")),
+        nudge_check_interval_seconds=int(
+            os.getenv("NUDGE_CHECK_INTERVAL_SECONDS", "300")
+        ),
+        nudge_active_user_days=int(os.getenv("NUDGE_ACTIVE_USER_DAYS", "7")),
         azure_tenant_id=os.getenv("AZURE_TENANT_ID", ""),
         azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),
         sharepoint_hostname=os.getenv(

@@ -150,6 +150,68 @@ def test_get_memory_returns_none_when_absent(store):
     assert store.get_memory("+91_unknown") is None
 
 
+def test_delete_user_wipes_messages_memory_and_nudges(store):
+    """delete_user removes messages, memory, and nudge tracking for one phone."""
+    phone = "tg_8096381904"
+    other = "tg_other"
+
+    store.save_message(phone, "user", "hi", "s1")
+    store.save_message(phone, "assistant", "hello", "s1")
+    store.save_memory(phone, "summary text", ["fact A"])
+    store.record_nudge_sent(phone, "morning")
+
+    # Other user must NOT be touched
+    store.save_message(other, "user", "untouched", "s9")
+    store.record_nudge_sent(other, "night")
+
+    counts = store.delete_user(phone)
+    assert counts["messages_deleted"] == 2
+    assert counts["memory_deleted"] == 1
+    assert counts["nudges_deleted"] == 1
+
+    assert store.count_user_messages(phone) == 0
+    assert store.is_first_ever_message(phone) is True
+    assert store.get_memory(phone) is None
+    assert store.get_last_nudge_sent(phone, "morning") is None
+
+    # Other user still intact
+    assert store.count_user_messages(other) == 1
+    assert store.get_last_nudge_sent(other, "night") is not None
+
+
+def test_record_and_get_last_nudge_sent(store):
+    """record_nudge_sent upserts; get_last_nudge_sent returns the latest timestamp."""
+    phone = "tg_111"
+    assert store.get_last_nudge_sent(phone, "morning") is None
+
+    store.record_nudge_sent(phone, "morning")
+    first = store.get_last_nudge_sent(phone, "morning")
+    assert first is not None
+
+    # Different slot is independent
+    assert store.get_last_nudge_sent(phone, "night") is None
+
+
+def test_list_recently_active_phones(store):
+    """list_recently_active_phones filters by last user message within N days."""
+    active_phone = "tg_active"
+    stale_phone = "tg_stale"
+    # active user — recent message via save_message uses _now_iso()
+    store.save_message(active_phone, "user", "today", "s1")
+    # stale user — manually backdate
+    old_ts = (datetime.now(IST) - timedelta(days=30)).isoformat()
+    store._conn.execute(
+        "INSERT INTO messages (phone, role, content_enc, timestamp, session_id) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (stale_phone, "user", "old", old_ts, "s0"),
+    )
+    store._conn.commit()
+
+    active = store.list_recently_active_phones(days=7)
+    assert active_phone in active
+    assert stale_phone not in active
+
+
 def test_delete_old_messages(store):
     """delete_old_messages removes only messages older than the cutoff."""
     phone = "+91666"

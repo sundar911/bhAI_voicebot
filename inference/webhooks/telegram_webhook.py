@@ -49,6 +49,9 @@ from src.bhai.resilience.queue import RequestQueue
 from src.bhai.resilience.worker import RetryWorker
 from src.bhai.stt.sarvam_stt import SarvamSTT
 
+# Local imports — sit alongside this webhook
+from inference.webhooks.nudges import nudge_loop  # noqa: E402
+
 # ── Logging (no PII) ──────────────────────────────────────────────────
 
 logging.basicConfig(
@@ -226,10 +229,43 @@ def _check_rate_limit(phone: str) -> bool:
 # ── App lifecycle (start retry worker) ────────────────────────────────
 
 
+_nudge_task: asyncio.Task | None = None
+
+
+def _send_nudge(chat_id: int, slot: str, text: str) -> None:
+    """Deliver a generated nudge as a Telegram voice message and log it.
+
+    Used as the `send_fn` callback for the nudge loop. Persists the nudge
+    text to the conversation store as an assistant message so it shows up
+    in /conversations and the LLM sees it in subsequent context.
+    """
+    config = load_config()
+    store = _get_store()
+    phone = f"tg_{chat_id}"
+    phone_id = _phone_hash(phone)
+
+    session_id, _ = store.get_or_create_session(phone)
+    store.save_message(phone, "assistant", text, session_id)
+
+    run_id = f"nudge_{slot}_{int(time.time())}_{chat_id}"
+    run_dir = INFERENCE_OUTPUTS_DIR / run_id
+    telegram_client = TelegramClient(bot_token=config.telegram_bot_token)
+
+    _synthesize_and_send_voice(
+        telegram_client=telegram_client,
+        chat_id=chat_id,
+        text=text,
+        config=config,
+        run_id=run_id,
+        run_dir=run_dir,
+        phone_id=phone_id,
+    )
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start the retry worker on app startup, stop on shutdown."""
-    global _worker_task
+    """Start the retry worker + nudge loop on app startup, stop on shutdown."""
+    global _worker_task, _nudge_task
     config = load_config()
     worker = RetryWorker(
         queue=_get_queue(),
@@ -239,6 +275,15 @@ async def lifespan(app: FastAPI):
     )
     _worker_task = asyncio.create_task(worker.run_forever())
     logger.info("Retry worker started")
+
+    _nudge_task = asyncio.create_task(
+        nudge_loop(
+            config=config,
+            store=_get_store(),
+            send_fn=_send_nudge,
+            phone_hash_fn=_phone_hash,
+        )
+    )
 
     # Verify Telegram bot token at startup (best-effort)
     if config.telegram_bot_token:
@@ -263,6 +308,9 @@ async def lifespan(app: FastAPI):
     if _worker_task:
         _worker_task.cancel()
         logger.info("Retry worker stopped")
+    if _nudge_task:
+        _nudge_task.cancel()
+        logger.info("Nudge loop stopped")
 
 
 app = FastAPI(title="bhAI Telegram Webhook", lifespan=lifespan)
@@ -465,13 +513,39 @@ def process_message(
         memory=store.get_memory(phone) if not faq_match else None,
     )
 
-    # ── Extract phone numbers (send as text, not voice) ─────────
-    voice_text, contact_text_msg = _extract_phone_numbers(response_text)
+    _synthesize_and_send_voice(
+        telegram_client=telegram_client,
+        chat_id=chat_id,
+        text=response_text,
+        config=config,
+        run_id=run_id,
+        run_dir=run_dir,
+        phone_id=phone_id,
+    )
 
-    # ── TTS ────────────────────────────────────────────────────────
+
+def _synthesize_and_send_voice(
+    *,
+    telegram_client: TelegramClient,
+    chat_id: int,
+    text: str,
+    config,
+    run_id: str,
+    run_dir: Path,
+    phone_id: str,
+) -> bool:
+    """Run text through TTS chunking + synthesis and send the OGG to Telegram.
+
+    Phone numbers are stripped from the voice copy and sent as a follow-up
+    text message instead, so TTS doesn't mangle digits.
+
+    Returns True on success, False on failure (failure is logged, not raised).
+    """
+    voice_text, contact_text_msg = _extract_phone_numbers(text)
+
     ensure_dir(AUDIO_RESPONSE_DIR)
-    response_filename = f"{run_id}_response.ogg"
-    response_path = AUDIO_RESPONSE_DIR / response_filename
+    ensure_dir(run_dir)
+    response_path = AUDIO_RESPONSE_DIR / f"{run_id}_response.ogg"
 
     try:
         chunks = _split_for_tts(voice_text)
@@ -518,21 +592,22 @@ def process_message(
             "TTS complete for user=%s, backend=%s", phone_id, config.tts_backend
         )
 
-        # Send voice — uploads bytes directly, no public URL needed
-        send_result = telegram_client.send_voice(chat_id=chat_id, audio_path=response_path)
+        send_result = telegram_client.send_voice(
+            chat_id=chat_id, audio_path=response_path
+        )
         logger.info(
             "Voice sent to user=%s message_id=%s",
             phone_id,
             send_result.get("message_id"),
         )
 
-        # Send contact numbers as a follow-up text message
         if contact_text_msg:
             try:
                 telegram_client.send_text(chat_id=chat_id, body=contact_text_msg)
                 logger.info("Contact text sent to user=%s", phone_id)
             except Exception as text_err:
                 logger.error("Contact text failed for user=%s: %s", phone_id, text_err)
+        return True
 
     except Exception as e:
         logger.error(
@@ -540,6 +615,7 @@ def process_message(
             phone_id,
             e,
         )
+        return False
 
 
 def _try_summarize(phone, phone_id, store, config, memory_summary="", memory=None):
@@ -925,3 +1001,95 @@ async def admin_phones(key: str = ""):
             for p in phones
         ]
     }
+
+
+def _phone_from_hash(phone_hash: str) -> str | None:
+    """Reverse-lookup a phone string from its 12-char SHA256 hash."""
+    store = _get_store()
+    rows = store._conn.execute("SELECT DISTINCT phone FROM messages").fetchall()
+    for (p,) in rows:
+        if hashlib.sha256(p.encode()).hexdigest()[:12] == phone_hash:
+            return p
+    return None
+
+
+@app.post("/admin/reset/{phone_hash}")
+async def admin_reset(phone_hash: str, key: str = ""):
+    """Wipe one user's messages, memory, and nudge tracking.
+
+    After this, the next /start from this user triggers the onboarding
+    intro again. Use sparingly — meant for pilot testing.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    target_phone = _phone_from_hash(phone_hash)
+    if not target_phone:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    store = _get_store()
+    counts = store.delete_user(target_phone)
+    logger.warning(
+        "ADMIN RESET for user=%s by key holder — %s",
+        phone_hash,
+        counts,
+    )
+    return {"phone_hash": phone_hash, **counts}
+
+
+@app.post("/admin/test-nudge/{phone_hash}")
+async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"):
+    """Fire one nudge to one user immediately, ignoring schedule + rate-limit.
+
+    For testing the nudge content and delivery before flipping the loop on.
+    `slot` must be 'morning' or 'night'. Bypasses NUDGE_ENABLED and
+    NUDGE_PHONES gates so you can dry-run any user.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    if slot not in ("morning", "night"):
+        return JSONResponse(
+            {"error": "slot must be 'morning' or 'night'"}, status_code=400
+        )
+
+    target_phone = _phone_from_hash(phone_hash)
+    if not target_phone:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    if not target_phone.startswith("tg_"):
+        return JSONResponse(
+            {"error": "non-Telegram users cannot receive nudges"}, status_code=400
+        )
+
+    try:
+        chat_id = int(target_phone[len("tg_") :])
+    except ValueError:
+        return JSONResponse({"error": "bad chat_id"}, status_code=400)
+
+    config = load_config()
+    store = _get_store()
+
+    from inference.webhooks.nudges import build_and_generate_nudge
+
+    try:
+        text = build_and_generate_nudge(
+            phone=target_phone, slot=slot, store=store, config=config
+        )
+    except Exception as e:
+        logger.exception("Test nudge generation failed: %s", e)
+        return JSONResponse(
+            {"error": f"generation failed: {e}"}, status_code=500
+        )
+
+    if not text:
+        return JSONResponse({"error": "empty nudge text"}, status_code=500)
+
+    logger.warning(
+        "ADMIN TEST NUDGE user=%s slot=%s len=%d", phone_hash, slot, len(text)
+    )
+    _send_nudge(chat_id, slot, text)
+    store.record_nudge_sent(target_phone, slot)
+    return {"phone_hash": phone_hash, "slot": slot, "text": text, "sent": True}

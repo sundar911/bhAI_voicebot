@@ -62,6 +62,13 @@ class ConversationStore:
                 facts_enc TEXT NOT NULL,
                 last_updated TEXT NOT NULL
             );
+
+            CREATE TABLE IF NOT EXISTS nudges (
+                phone TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                last_sent TEXT NOT NULL,
+                PRIMARY KEY(phone, slot)
+            );
         """)
         self._conn.commit()
 
@@ -207,6 +214,38 @@ class ConversationStore:
         )
         self._conn.commit()
 
+    # ── Nudge tracking (per-user, per-slot last-fired timestamps) ─────
+
+    def record_nudge_sent(self, phone: str, slot: str) -> None:
+        """Mark that a nudge for this phone+slot just went out."""
+        self._conn.execute(
+            """INSERT INTO nudges (phone, slot, last_sent)
+               VALUES (?, ?, ?)
+               ON CONFLICT(phone, slot) DO UPDATE SET last_sent = excluded.last_sent""",
+            (phone, slot, _now_iso()),
+        )
+        self._conn.commit()
+
+    def get_last_nudge_sent(self, phone: str, slot: str) -> Optional[datetime]:
+        """When was the last nudge of this slot sent to this phone? None if never."""
+        row = self._conn.execute(
+            "SELECT last_sent FROM nudges WHERE phone = ? AND slot = ?",
+            (phone, slot),
+        ).fetchone()
+        if row:
+            return datetime.fromisoformat(row[0])
+        return None
+
+    def list_recently_active_phones(self, days: int = 7) -> List[str]:
+        """Return phones with at least one user message in the last N days."""
+        cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat()
+        rows = self._conn.execute(
+            """SELECT DISTINCT phone FROM messages
+               WHERE role = 'user' AND timestamp >= ?""",
+            (cutoff,),
+        ).fetchall()
+        return [r[0] for r in rows]
+
     # ── Cleanup ───────────────────────────────────────────────────────
 
     def delete_old_messages(self, days: int) -> int:
@@ -217,6 +256,28 @@ class ConversationStore:
         )
         self._conn.commit()
         return cursor.rowcount
+
+    def delete_user(self, phone: str) -> Dict[str, int]:
+        """Wipe all state for a single user — messages, memory, nudge tracking.
+
+        After this call, `is_first_ever_message(phone)` returns True again
+        and /start will trigger the onboarding intro on the next message.
+        """
+        msg_cur = self._conn.execute(
+            "DELETE FROM messages WHERE phone = ?", (phone,)
+        )
+        mem_cur = self._conn.execute(
+            "DELETE FROM memory WHERE phone = ?", (phone,)
+        )
+        nudge_cur = self._conn.execute(
+            "DELETE FROM nudges WHERE phone = ?", (phone,)
+        )
+        self._conn.commit()
+        return {
+            "messages_deleted": msg_cur.rowcount,
+            "memory_deleted": mem_cur.rowcount,
+            "nudges_deleted": nudge_cur.rowcount,
+        }
 
     def close(self):
         """Close the database connection."""
