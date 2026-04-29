@@ -13,6 +13,7 @@ import pytest
 
 # Import standalone functions directly to avoid triggering the full app lifespan
 from inference.webhooks.telegram_webhook import (
+    _build_intro,
     _check_dashboard_key,
     _check_rate_limit,
     _detect_greeting,
@@ -21,6 +22,7 @@ from inference.webhooks.telegram_webhook import (
     _rate_limit,
     _split_for_tts,
     MAX_TTS_CHARS,
+    RE_ONBOARDING_INSTRUCTION,
 )
 
 
@@ -163,6 +165,44 @@ def test_health_endpoint():
 
     result = asyncio.run(health())
     assert result == {"status": "healthy", "service": "bhai-telegram-webhook"}
+
+
+# ── _build_intro: TTS-backend conditional ────────────────────────────
+
+
+class _StubConfig:
+    def __init__(self, tts_backend: str):
+        self.tts_backend = tts_backend
+
+
+def test_build_intro_omits_vidhi_clause_on_sarvam():
+    """Sarvam voice — the 'Vidhi ki awaaz' line is wrong; drop it."""
+    intro = _build_intro(_StubConfig("sarvam"))
+    assert "विधी की आवाज़" not in intro
+    assert "मैं भाई हूँ" in intro
+    assert "आपका नाम क्या है?" in intro
+
+
+def test_build_intro_includes_vidhi_clause_on_elevenlabs():
+    """ElevenLabs uses Vidhi's cloned voice — clause should reappear."""
+    intro = _build_intro(_StubConfig("elevenlabs"))
+    assert "विधी की आवाज़" in intro
+    assert "मैं भाई हूँ" in intro
+
+
+# ── Re-onboarding instruction ────────────────────────────────────────
+
+
+def test_re_onboarding_instruction_demands_recall_and_followup():
+    """The re-onboarding hint must instruct the LLM to recall + follow up."""
+    text = RE_ONBOARDING_INSTRUCTION
+    assert "Re-onboarding Moment" in text
+    assert "/start" in text
+    # Three core asks the user wanted: nod recall, reference one thing, ask
+    # one follow-up.
+    assert "remember" in text.lower() or "याद" in text or "remember them" in text.lower()
+    assert "follow-up" in text.lower() or "follow up" in text.lower()
+    assert "No markdown" in text or "no markdown" in text.lower()
 
 
 # ── TelegramClient — basic shape (no network) ─────────────────────────

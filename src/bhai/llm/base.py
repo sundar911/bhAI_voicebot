@@ -413,9 +413,14 @@ class BaseLLM(ABC):
         extracted_facts: str = "",
         conversation_history: Optional[List[Dict[str, str]]] = None,
         is_new_session: bool = False,
+        mode_instruction: str = "",
     ) -> Dict[str, Any]:
         """
         Generate response with per-segment emotion annotations and full context.
+
+        `mode_instruction` is an extra block appended to the system prompt for
+        one-off behaviours (re-onboarding on /start, etc.) without forking the
+        whole prompt template. Pass empty string for default behaviour.
 
         Falls back to a single neutral segment if parsing fails.
         Returns dict with text, raw, escalate, and segments.
@@ -426,6 +431,8 @@ class BaseLLM(ABC):
             )
             + EMOTION_INSTRUCTION
         )
+        if mode_instruction:
+            system_prompt += "\n\n" + mode_instruction
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
         )

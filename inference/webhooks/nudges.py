@@ -40,9 +40,10 @@ SLOT_NIGHT = "night"
 QUIET_BEFORE_HOUR = 8
 QUIET_AFTER_HOUR = 23
 
-# Don't nudge if the user has messaged in the last N hours — they're active,
-# we don't need to interrupt with a check-in.
-SKIP_IF_USER_ACTIVE_HOURS = 2
+# Don't nudge if the user has messaged in the last N hours — they're active or
+# only just wrapped up, and a nudge would feel intrusive. 3h gives enough room
+# that the conversation has actually settled before we check in.
+SKIP_IF_USER_ACTIVE_HOURS = 3
 
 # One nudge per slot per 18 hours (prevents double-fire if loop overlaps a window
 # or the process restarts mid-window).
@@ -135,19 +136,31 @@ This is a CHECK-IN, not a request, not a survey, not a reminder. The whole point
 is to feel like a friend who remembers. If you make this feel transactional, you
 have failed.
 
-Hard rules:
+Two cases — pick the right one:
+
+**Case A — Returning user (you have memory/recent conversation history with them):**
+Pick up something CONCRETE from what you remember — a person they mentioned
+(बेटा/बेटी/पति/माँ), a worry, a plan, a feeling. "अरे, बेटी की तबियत कैसी अब?"
+beats "कैसे हो?". Show you actually remember.
+- Morning slot: warm "good morning" energy + the specific reference.
+- Night slot: ease into "how was your day" + the specific reference, OR a
+  reflective check-in tied to what they shared earlier.
+
+**Case B — New user (no prior conversation, empty memory):**
+Just a clean time-of-day greeting. No invented context, no fake familiarity.
+- Morning slot: a warm "Good morning! कैसी हो?" / "सुप्रभात!" — keep it light
+  and inviting. One short sentence.
+- Night slot: "शाम हो गयी — दिन कैसा रहा आज?" / "Good evening! आज का दिन कैसा था?"
+  Ask about their day. Open, no pressure.
+
+Hard rules (both cases):
 - 1-2 sentences MAX. Under 200 Devanagari characters. The voice note should be
   3-8 seconds, not 15.
-- Pick up something CONCRETE from your last conversation if there's anything
-  worth picking up — a person they mentioned (बेटा/बेटी/पति/माँ), a worry, a
-  plan, a feeling. "अरे, बेटी की तबियत कैसी अब?" beats "कैसे हो?".
-- If memory is empty / nothing concrete to reference: just a casual time-of-day
-  hello. NEVER make up details. NEVER pretend to remember something you don't.
+- NEVER make up details. NEVER pretend to remember something you don't.
 - Don't be needy. Don't say "मैं सोच रही थी आपके बारे में" or
   "बहुत दिन हो गए". No guilt-trips.
 - Don't apologize for messaging. Don't ask permission to talk.
-- Ask AT MOST one short question. Often zero questions is right — just a warm
-  observation, leaving space for them to reply if they want.
+- Ask AT MOST one short question.
 - No markdown. No asterisks. No bullets. Plain Devanagari sentences only.
 - Match the user's number language if you mention numbers (Hindi word if they
   use Hindi, English digits if they use English).

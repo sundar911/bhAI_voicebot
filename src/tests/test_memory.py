@@ -150,6 +150,71 @@ def test_get_memory_returns_none_when_absent(store):
     assert store.get_memory("+91_unknown") is None
 
 
+def test_merge_user_moves_messages_memory_and_nudges(store):
+    """merge_user moves Twilio data onto the new Telegram phone identifier."""
+    twilio = "+919321125042"
+    telegram = "tg_8096381904"
+
+    store.save_message(twilio, "user", "बेटा बीमार था", "s1")
+    store.save_message(twilio, "assistant", "अब कैसा है बेटा?", "s1")
+    store.save_memory(twilio, "Talked about son's illness", ["son: Aarav"])
+    store.record_nudge_sent(twilio, "morning")
+
+    counts = store.merge_user(from_phone=twilio, to_phone=telegram)
+    assert counts["messages_migrated"] == 2
+    assert counts["memory_migrated"] == 1
+    assert counts["nudges_migrated"] == 1
+
+    # All data lives under the Telegram phone now
+    msgs = store.get_recent_messages(telegram, limit=10)
+    assert len(msgs) == 2
+    assert "बेटा बीमार था" in msgs[0]["content"]
+
+    mem = store.get_memory(telegram)
+    assert mem is not None
+    assert "son's illness" in mem["summary"]
+    assert "son: Aarav" in mem["facts"]
+
+    assert store.get_last_nudge_sent(telegram, "morning") is not None
+
+    # Source phone is cleaned out
+    assert store.count_user_messages(twilio) == 0
+    assert store.get_memory(twilio) is None
+    assert store.get_last_nudge_sent(twilio, "morning") is None
+
+
+def test_merge_user_overwrites_target_memory_and_nudges_on_conflict(store):
+    """If target already has memory/nudges, merge_user replaces them with source's."""
+    twilio = "+919999999999"
+    telegram = "tg_222"
+
+    # Source data
+    store.save_message(twilio, "user", "old chat", "s1")
+    store.save_memory(twilio, "real summary from twilio", ["fact A"])
+    store.record_nudge_sent(twilio, "night")
+
+    # Target already has stale data
+    store.save_memory(telegram, "stale telegram summary", ["stale fact"])
+    store.record_nudge_sent(telegram, "night")
+
+    store.merge_user(from_phone=twilio, to_phone=telegram)
+
+    mem = store.get_memory(telegram)
+    assert "real summary" in mem["summary"]
+    assert "fact A" in mem["facts"]
+    assert "stale fact" not in mem["facts"]
+
+
+def test_merge_user_same_phone_is_noop(store):
+    """Self-migration is a no-op, not a destructive overwrite."""
+    phone = "tg_777"
+    store.save_message(phone, "user", "hi", "s1")
+
+    counts = store.merge_user(from_phone=phone, to_phone=phone)
+    assert counts == {"messages_migrated": 0, "memory_migrated": 0, "nudges_migrated": 0}
+    assert store.count_user_messages(phone) == 1
+
+
 def test_delete_user_wipes_messages_memory_and_nudges(store):
     """delete_user removes messages, memory, and nudge tracking for one phone."""
     phone = "tg_8096381904"

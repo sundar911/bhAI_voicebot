@@ -257,6 +257,40 @@ class ConversationStore:
         self._conn.commit()
         return cursor.rowcount
 
+    def merge_user(self, from_phone: str, to_phone: str) -> Dict[str, int]:
+        """Move all data from `from_phone` to `to_phone` (Twilio → Telegram migration).
+
+        After this call, `from_phone` has no rows anywhere and `to_phone` owns
+        the merged history, memory, and nudge tracking. Existing rows under
+        `to_phone` are dropped first to avoid PRIMARY KEY conflicts on
+        memory and nudges — assumes the target is empty (e.g. just /start'd).
+        """
+        if from_phone == to_phone:
+            return {"messages_migrated": 0, "memory_migrated": 0, "nudges_migrated": 0}
+
+        msg_cur = self._conn.execute(
+            "UPDATE messages SET phone = ? WHERE phone = ?",
+            (to_phone, from_phone),
+        )
+        # Memory has phone as PRIMARY KEY — clear target before re-pointing source.
+        self._conn.execute("DELETE FROM memory WHERE phone = ?", (to_phone,))
+        mem_cur = self._conn.execute(
+            "UPDATE memory SET phone = ? WHERE phone = ?",
+            (to_phone, from_phone),
+        )
+        # Nudges has (phone, slot) as composite PRIMARY KEY — same fix.
+        self._conn.execute("DELETE FROM nudges WHERE phone = ?", (to_phone,))
+        nudge_cur = self._conn.execute(
+            "UPDATE nudges SET phone = ? WHERE phone = ?",
+            (to_phone, from_phone),
+        )
+        self._conn.commit()
+        return {
+            "messages_migrated": msg_cur.rowcount,
+            "memory_migrated": mem_cur.rowcount,
+            "nudges_migrated": nudge_cur.rowcount,
+        }
+
     def delete_user(self, phone: str) -> Dict[str, int]:
         """Wipe all state for a single user — messages, memory, nudge tracking.
 

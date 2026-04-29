@@ -64,8 +64,13 @@ logger = logging.getLogger("bhai.telegram")
 # ── Onboarding / ice-breaker ──────────────────────────────────────────────
 
 _GREETING_WORDS = {"hi", "hello", "namaste", "hii", "hlo", "hey", "helo", "/start"}
-_INTRO_TEMPLATE = (
-    "अरे हाय! मैं भाई हूँ — विधी की आवाज़ में बोलती हूँ पर विधी नहीं हूँ। "
+
+# The Vidhi-voice clause only makes sense when ElevenLabs (Vidhi clone) is the
+# TTS backend. With Sarvam (synthetic voice), it's a confusing claim — we'd be
+# saying we sound like Vidhi when we don't. Conditionalised in `_build_intro`.
+_INTRO_VIDHI_CLAUSE = "विधी की आवाज़ में बोलती हूँ पर विधी नहीं हूँ। "
+_INTRO_OPENER = "अरे हाय! मैं भाई हूँ — "
+_INTRO_BODY = (
     "मुझसे कुछ भी पूछो — मैं कहाँ रहती हूँ, मुझे किसने बनाया — "
     "और मैं भी आपके बारे में जानना चाहती हूँ! आपका नाम क्या है?"
 )
@@ -80,8 +85,31 @@ def _detect_greeting(text: str) -> str | None:
     return first_word if first_word in _GREETING_WORDS else None
 
 
-def _build_intro(greeting: str = "hi") -> str:
-    return _INTRO_TEMPLATE
+def _build_intro(config) -> str:
+    """Onboarding intro for first-ever messages. Drops the Vidhi-voice line on Sarvam."""
+    if config.tts_backend == "elevenlabs":
+        return _INTRO_OPENER + _INTRO_VIDHI_CLAUSE + _INTRO_BODY
+    return _INTRO_OPENER + _INTRO_BODY
+
+
+# Used when a user with prior conversation history (e.g. migrated from Twilio)
+# sends /start on Telegram. The LLM uses memory + recent history to re-engage,
+# rather than launching into a generic intro or treating it as a fresh greeting.
+RE_ONBOARDING_INSTRUCTION = (
+    "=== Re-onboarding Moment ===\n"
+    "User has just sent /start. They are NOT new — you have prior conversation "
+    "history with them (likely from WhatsApp/Twilio, now migrated to Telegram). "
+    "Do all THREE of these in 1-2 short Devanagari sentences (≤ 280 chars total):\n"
+    "1. ONE-line nod that you remember them — no full re-introduction needed. "
+    "Use their name if you know it (\"अरे [नाम]!\" beats a generic hi).\n"
+    "2. Reference ONE specific thing from your memory/recent history — a person "
+    "they mentioned, a worry, a plan, a topic. Show you remember.\n"
+    "3. ONE warm follow-up question rooted in that specific thing — not a "
+    "generic \"how are you\".\n"
+    "If memory/history is sparse, keep it short and warm — never make up details. "
+    "No markdown. No bullets. No \"how can I help you today\" energy. "
+    "Plain Devanagari sentences only.\n"
+)
 
 
 def _phone_hash(phone: str) -> str:
@@ -419,8 +447,9 @@ def process_message(
         audio_path=str(run_dir) if is_audio else None,
     )
 
-    # ── Onboarding: detect pure greeting on first-ever message ────────
-    _greeting_word = _detect_greeting(transcript) if is_first_ever else None
+    # ── Onboarding: detect greetings (always — /start can re-onboard returning users) ──
+    _greeting_word = _detect_greeting(transcript)
+    is_re_onboarding = (not is_first_ever) and _greeting_word == "/start"
 
     # ── FAQ cache check ────────────────────────────────────────────
     faq_match = None
@@ -429,7 +458,7 @@ def process_message(
     memory_summary = ""
 
     if is_first_ever and _greeting_word:
-        intro = _build_intro(_greeting_word)
+        intro = _build_intro(config)
         response_text = intro
         llm_result = {
             "text": intro,
@@ -442,7 +471,8 @@ def process_message(
             _greeting_word,
         )
     else:
-        faq_match = faq_cache.match(transcript)
+        # Skip FAQ for re-onboarding — we want the LLM with full memory context.
+        faq_match = None if is_re_onboarding else faq_cache.match(transcript)
 
         if faq_match:
             response_text = faq_cache.format_response(faq_match)
@@ -462,6 +492,12 @@ def process_message(
 
                 recent = store.get_recent_messages(phone, limit=8)
 
+                mode_instruction = (
+                    RE_ONBOARDING_INSTRUCTION if is_re_onboarding else ""
+                )
+                if is_re_onboarding:
+                    logger.info("Re-onboarding branch for user=%s on /start", phone_id)
+
                 llm_result = llm.generate_with_emotions(
                     transcript,
                     domain="hr_admin",
@@ -469,7 +505,8 @@ def process_message(
                     memory_summary=memory_summary,
                     extracted_facts=extracted_facts,
                     conversation_history=recent,
-                    is_new_session=is_new_session,
+                    is_new_session=is_new_session or is_re_onboarding,
+                    mode_instruction=mode_instruction,
                 )
                 response_text = llm_result["text"]
                 logger.info(
@@ -480,7 +517,7 @@ def process_message(
                 )
 
                 if is_first_ever:
-                    intro = _build_intro()
+                    intro = _build_intro(config)
                     response_text = llm_result["text"] + " " + intro
                     segs = list(
                         llm_result.get("segments")
@@ -1036,6 +1073,48 @@ async def admin_reset(phone_hash: str, key: str = ""):
         counts,
     )
     return {"phone_hash": phone_hash, **counts}
+
+
+@app.post("/admin/migrate")
+async def admin_migrate(
+    key: str = "",
+    from_phone: str = "",
+    to_phone: str = "",
+):
+    """Move all of one user's data to a new phone identifier.
+
+    Use this when a pilot user who chatted on Twilio/WhatsApp moves to
+    Telegram — call once with the original phone (e.g. "+919321125042")
+    and the new tg_<chat_id> identifier. After migration, /start on
+    Telegram triggers the re-onboarding branch (recap + follow-up) using
+    the imported memory and history.
+
+    Both `from_phone` and `to_phone` are required as query params.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    if not from_phone or not to_phone:
+        return JSONResponse(
+            {"error": "from_phone and to_phone are both required"}, status_code=400
+        )
+    if from_phone == to_phone:
+        return JSONResponse(
+            {"error": "from_phone and to_phone must differ"}, status_code=400
+        )
+
+    store = _get_store()
+    counts = store.merge_user(from_phone=from_phone, to_phone=to_phone)
+    from_hash = hashlib.sha256(from_phone.encode()).hexdigest()[:12]
+    to_hash = hashlib.sha256(to_phone.encode()).hexdigest()[:12]
+    logger.warning(
+        "ADMIN MIGRATE from=%s → to=%s by key holder — %s",
+        from_hash,
+        to_hash,
+        counts,
+    )
+    return {"from_hash": from_hash, "to_hash": to_hash, **counts}
 
 
 @app.post("/admin/test-nudge/{phone_hash}")
