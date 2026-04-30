@@ -170,10 +170,12 @@ break the English whitelist (WhatsApp, AC, BC office). Sid's original prompt ass
 we overrode that instruction in `sid_v1.md` to output directly in Devanagari.
 
 # TTS backends
-- **Sarvam AI** (default) — manisha voice, `hi-IN`
-- **ElevenLabs** — voice cloning support, emotion tagging via `src/bhai/tts/emotion_tagger.py`
+- **Sarvam AI** (default) — `bulbul:v3` model, `suhani` voice, `hi-IN`. Configurable via `SARVAM_TTS_MODEL` and `SARVAM_TTS_VOICE`.
+- **ElevenLabs** — voice cloning (Vidhi), emotion tagging via `src/bhai/tts/emotion_tagger.py`
 
-Selected via `TTS_BACKEND` env var (defaults to `sarvam`).
+Selected via `TTS_BACKEND` env var (defaults to `sarvam`). LLM output is run through `BaseLLM._strip_markdown()` (`src/bhai/llm/base.py:304-329`) before TTS so headings/bullets/asterisks don't get spoken aloud.
+
+Intro message has a Vidhi-clause that's only included for ElevenLabs (Sarvam voices don't sound like Vidhi, so the claim would be false).
 
 # Memory system
 `src/bhai/memory/` provides encrypted conversation memory:
@@ -181,35 +183,60 @@ Selected via `TTS_BACKEND` env var (defaults to `sarvam`).
 - `summarizer.py` — conversation summarization for context window management
 All PII encrypted at rest with Fernet (`BHAI_ENCRYPTION_KEY`).
 
-# Resilience
-`src/bhai/resilience/` handles production reliability:
-- `faq_cache.py` — caches frequent questions for fast responses
-- `queue.py` — request queue for handling load
-- `retry.py` — retry logic with backoff for API failures
-- `worker.py` — background worker for async processing
+# Resilience (legacy, not exercised under Telegram)
+`src/bhai/resilience/` was built for the Twilio entry point. Under the current Telegram entry point, `telegram_webhook.py` does NOT enqueue failed requests — failures fall through to text-message fallbacks instead.
+- `faq_cache.py` — still active; FAQ cache used by both entry points
+- `queue.py`, `retry.py`, `worker.py` — orphaned; only kept because `worker.py` imports `TwilioWhatsAppClient`
 
 # Security
 `src/bhai/security/` handles:
-- `crypto.py` — Fernet encryption/decryption for PII at rest
-- `webhook_auth.py` — Twilio signature verification, path traversal protection, rate limiting
+- `crypto.py` — Fernet encryption/decryption for PII at rest. Used everywhere (active).
+- `webhook_auth.py` — Twilio signature verification. **Dead code** under Telegram; kept for the legacy `twilio_webhook.py`.
 
 Religion, caste, disability, and loan info are NEVER sent to any API.
 
-# Twilio/WhatsApp
-Webhook server runs on port 8001 (not 8000 — Django occupies 8000). ngrok must target 8001.
+# Telegram (entry point)
+Active webhook is `inference/webhooks/telegram_webhook.py` exposing `POST /telegram/webhook`. Auth via `X-Telegram-Bot-Api-Secret-Token` header compared to `TELEGRAM_WEBHOOK_SECRET`. Users keyed as `tg_{chat_id}` in the DB. Voice notes uploaded via `sendVoice` multipart — no public audio URL needed. Local dev: `uv run uvicorn inference.webhooks.telegram_webhook:app --port 8001`.
+
+Legacy: `twilio_webhook.py`, `integrations/twilio_client.py`, `security/webhook_auth.py` are dead code retained only because `resilience/worker.py` imports `TwilioWhatsAppClient`. Candidate for cleanup.
+
+# Admin endpoints (key-gated via DASHBOARD_SECRET)
+- `GET /dashboard`, `/conversations/{hash}`, `/debug/{hash}`, `/admin/phones` — pilot monitoring (used by `/pilot-report`)
+- `POST /admin/reset/{hash}` — wipe a user's messages, memory, nudges
+- `POST /admin/migrate?from_phone=...&to_phone=...` — Twilio→Telegram identity merge
+- `POST /admin/test-nudge/{hash}` — fire one nudge immediately
+- See ARCHITECTURE.md §12 for details.
+
+# Proactive nudges
+Twice-daily LLM-generated outreach. Slots: morning 10:00–10:30 IST, night 21:00–21:30 IST. Quiet hours 23:00–08:00. Skips users active in last 3h, inactive 7+ days, or same slot fired within 18h. Implementation in `inference/webhooks/nudges.py`, started in FastAPI lifespan. Tracked in `nudges` table of `conversations.db`. See ARCHITECTURE.md §14.
+
+# Re-onboarding for migrated users
+When a user with prior history sends `/start`, bhAI gets a special prompt instruction to nod recognition, cite one memory detail, and ask a warm follow-up. Triggered after `POST /admin/migrate` re-keys their data from `whatsapp:+91...` to `tg_{chat_id}`. See ARCHITECTURE.md §15.
+
+# Deployment
+Deployed on Railway, auto-deploys from `main`. Project root on Railway is `/app/`. SQLite DBs (`conversations.db`, `request_queue.db`) live on a Railway volume mounted at `/app/data` — data persists across deploys. Audio files in `inference/outputs/` are ephemeral. User profiles in `knowledge_base/users/` are gitignored and NOT in production — `load_user_profile()` returns "" for every user; bhAI learns names purely from conversation. See ARCHITECTURE.md §13 for the full layout.
 
 # CI/CD
 GitHub Actions (`.github/workflows/ci.yml`) runs on push/PR to `main` and `develop`:
 - **test** job: `uv run pytest --cov=src/bhai` + `black --check` + `isort --check-only`
 - **lint** job: `uv run mypy src/bhai/ --ignore-missing-imports`
 
-75 tests in `src/tests/` — all pass without API keys (mocked, temp DBs, Fernet fixture).
-Test modules: `test_config`, `test_crypto`, `test_retry`, `test_faq_cache`, `test_memory`, `test_llm_base`, `test_webhook`.
+140 tests in `src/tests/` — all pass without API keys (mocked, temp DBs, Fernet fixture).
+Test modules: `test_config`, `test_crypto`, `test_retry`, `test_faq_cache`, `test_memory`, `test_llm_base`, `test_webhook`, `test_nudges`, `test_telegram_webhook`.
 
 Note: there's a legacy `tests/` dir at root — ignore it, active tests are in `src/tests/`.
 
 # User profiles
-`knowledge_base/users/` contains 200+ per-artisan profiles (phone-number-named `.md` files) plus `_template.md`. These give bhAI context about who it's talking to. Auto-generated via `scripts/extract_profiles.py`.
+Per-artisan context files, phone-number-named (`+91XXXXXXXXXX.md`), Fernet-encrypted at rest. Decrypted at read time and injected into the system prompt as `=== User Profile ===` via `BaseLLM.load_user_profile(phone)`.
+
+**Content is allowlist-only** (`scripts/extract_profiles.py`): first name, workshop, work type, employer type, family size, children count/age, education, E-Shram status, skills. Religion, caste, disability, loans, income, health are NEVER read from the HR Excel source.
+
+**Storage design** (intended, in-flight migration):
+- Profiles live on the Railway volume at `/app/data/users/` — NOT shipped with code, NOT in git
+- Only users who have actually interacted with bhAI get a profile (not every TM employee)
+- Local dev fallback: `knowledge_base/users/` (gitignored)
+
+**Current state (pre-migration)**: profiles only exist on Sundar's local machine. In production, `load_user_profile()` returns `""` for every user — bhAI learns names and context purely from conversation history. See `tmp/pilot_profiles_migration_prompt.md` for the planned fix.
 
 # Full pipeline documentation
 See `ARCHITECTURE.md` for the complete end-to-end flow: WhatsApp voice note → webhook → STT → FAQ/LLM → TTS → delivery, including system prompt construction, memory injection, escalation, and retry queue.

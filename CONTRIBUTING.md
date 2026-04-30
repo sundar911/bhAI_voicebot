@@ -129,16 +129,17 @@ src/bhai/
 ├── memory/                      # Conversation memory (encrypted)
 │   ├── store.py                 # Per-user message persistence
 │   └── summarizer.py            # Context window summarization
-├── resilience/                  # Production reliability
-│   ├── faq_cache.py             # FAQ matching (Jaccard similarity)
-│   ├── queue.py                 # Request queue (SQLite-backed)
-│   ├── retry.py                 # Retry with exponential backoff
-│   └── worker.py                # Background retry worker
+├── resilience/                  # Reliability (legacy — built for Twilio entry point)
+│   ├── faq_cache.py             # FAQ matching (Jaccard similarity) — still active
+│   ├── queue.py                 # Request queue — orphaned under Telegram
+│   ├── retry.py                 # Retry with exponential backoff — orphaned
+│   └── worker.py                # Background retry worker — orphaned
 ├── security/                    # Security
-│   ├── crypto.py                # Fernet encryption/decryption
-│   └── webhook_auth.py          # Twilio sig verify, rate limiting
+│   ├── crypto.py                # Fernet encryption/decryption — active
+│   └── webhook_auth.py          # Twilio sig verify — legacy (not used by Telegram)
 └── integrations/                # External integrations
-    ├── twilio_client.py         # WhatsApp via Twilio
+    ├── telegram_client.py       # Active: Telegram bot client (sendVoice, getFile, setWebhook)
+    ├── twilio_client.py         # Legacy: kept only because resilience/worker.py imports it
     └── sharepoint.py            # SharePoint Graph API
 ```
 
@@ -184,7 +185,7 @@ Use clear, descriptive messages:
 ### Testing
 
 ```bash
-# Run all 75 tests
+# Run all tests
 uv run pytest
 
 # Run specific test file

@@ -13,7 +13,7 @@ bhAI is a voice-first assistant that:
 ## Architecture
 
 ```
-Voice Input → STT → LLM (with knowledge base) → TTS → Voice Output
+Telegram Voice → STT → LLM (with knowledge base) → TTS → Telegram Voice
                               ↓
                     [HR-Admin | Helpdesk | Production]
                          knowledge domains
@@ -50,22 +50,30 @@ cp .env.example .env
 Create a `.env` file with:
 
 ```env
-# LLM Backend: "sarvam" (default), "openai", or "claude"
-LLM_BACKEND=sarvam
+# LLM Backend: "sarvam", "openai", or "claude" (pilot default)
+LLM_BACKEND=claude
 
-# Sarvam AI (required for STT/TTS; also used for LLM when LLM_BACKEND=sarvam)
+# Sarvam AI (required for STT/TTS)
 SARVAM_API_KEY=...
 SARVAM_STT_MODEL=saaras:v3
-SARVAM_TTS_VOICE=manisha
+SARVAM_TTS_MODEL=bulbul:v3
+SARVAM_TTS_VOICE=suhani
+
+# Telegram bot (entry point — replaces Twilio/WhatsApp)
+TELEGRAM_BOT_TOKEN=...
+TELEGRAM_WEBHOOK_SECRET=...
+
+# Claude (default LLM for pilot)
+ANTHROPIC_API_KEY=sk-ant-...
 
 # OpenAI (only needed when LLM_BACKEND=openai)
 # OPENAI_API_KEY=sk-...
 
-# Claude (only needed when LLM_BACKEND=claude)
-# ANTHROPIC_API_KEY=sk-ant-...
-
 # Encryption (required for conversation memory)
 BHAI_ENCRYPTION_KEY=...
+
+# Admin/dashboard auth (default: bhai-pilot-2026)
+DASHBOARD_SECRET=...
 ```
 
 See `.env.example` for all available options.
@@ -95,13 +103,13 @@ bhAI_voice_bot/
 │   ├── security/          # Encryption (Fernet), webhook auth, rate limiting
 │   └── integrations/      # External integrations (WhatsApp, SharePoint)
 │
-├── src/tests/             # Test suite (75 tests — config, crypto, retry, etc.)
+├── src/tests/             # Test suite (79 tests — config, crypto, retry, etc.)
 │
 ├── knowledge_base/        # Domain knowledge (editable by TM team)
 │   ├── shared/            # Cross-domain (escalation, style)
 │   ├── hr_admin/          # HR-specific policies
 │   ├── helpdesk/          # Govt schemes (Aadhaar, PAN, ESIC, etc.)
-│   └── users/             # Per-user profiles (216 artisans)
+│   └── users/             # Per-user profiles (gitignored — see ARCHITECTURE.md §13)
 │
 ├── data/                  # Audio data and transcriptions
 │   ├── sharepoint_sync/   # Auto-synced audio from SharePoint
@@ -115,7 +123,10 @@ bhAI_voice_bot/
 ├── inference/             # Production inference
 │   ├── scripts/           # CLI tools
 │   ├── web/               # Dev web chat UI (localhost:8002)
-│   └── webhooks/          # WhatsApp/Twilio integration
+│   └── webhooks/          # Telegram bot entry + nudges loop
+│       ├── telegram_webhook.py  # Active entry point
+│       ├── nudges.py            # Twice-daily proactive messages
+│       └── twilio_webhook.py    # Legacy (Twilio era; not used)
 │
 ├── scripts/               # Utility scripts (SharePoint sync, cleanup, profiles)
 │
@@ -145,7 +156,7 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on contributing to this pr
 ### Running Tests
 
 ```bash
-# Run all 75 tests
+# Run all tests
 uv run pytest
 
 # Run with coverage
@@ -173,12 +184,17 @@ python3 benchmarking/scripts/error_analysis.py --domain helpdesk
 
 See [benchmarking/BENCHMARKING.md](benchmarking/BENCHMARKING.md) for full methodology and results.
 
-### WhatsApp Integration
+### Telegram Bot (production entry point)
 
 ```bash
-# Start Twilio webhook server (port 8001 — Django uses 8000)
-uv run uvicorn inference.webhooks.twilio_webhook:app --host 0.0.0.0 --port 8001
+# Start the Telegram webhook server locally
+uv run uvicorn inference.webhooks.telegram_webhook:app --host 0.0.0.0 --port 8001
+
+# Register the webhook with Telegram (production deploy uses Railway's public URL)
+# Pass the X-Telegram-Bot-Api-Secret-Token via TELEGRAM_WEBHOOK_SECRET in .env
 ```
+
+The bot replaces the old Twilio/WhatsApp integration. See [ARCHITECTURE.md §1](ARCHITECTURE.md#1-webhook-entry-point) for the request flow.
 
 ### Dev Web Chat
 
@@ -192,9 +208,11 @@ uv run python inference/web/chat_server.py
 
 - **STT**: Sarvam AI (saaras:v3) — statistically validated as best across 7 models on 175 Hindi recordings
 - **LLM**: Claude Sonnet (pilot default), Sarvam (sarvam-105b), or OpenAI (gpt-4o-mini) — configurable via `LLM_BACKEND`
-- **TTS**: Sarvam AI (manisha voice) or ElevenLabs (voice cloning)
-- **Security**: Fernet encryption for PII at rest, Twilio signature verification
+- **TTS**: Sarvam AI (`bulbul:v3`, suhani voice) or ElevenLabs (voice cloning)
+- **Messaging**: Telegram bot (replaces Twilio/WhatsApp)
+- **Security**: Fernet encryption for PII at rest, Telegram secret-token webhook auth
 - **Framework**: Python, FastAPI, pydub
+- **Deployment**: Railway (auto-deploys from `main`). Data persists on a volume mounted at `/app/data` — see [ARCHITECTURE.md §13](ARCHITECTURE.md#13-deployment--data-persistence).
 
 ## License
 
