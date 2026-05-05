@@ -52,6 +52,11 @@ class Config:
     # Telegram Bot
     telegram_bot_token: str = ""  # from @BotFather
     telegram_webhook_secret: str = ""  # for X-Telegram-Bot-Api-Secret-Token header
+    # Public URL the webhook is reachable at. Resolved at runtime: explicit
+    # WEBHOOK_PUBLIC_URL wins, else Railway's auto-injected RAILWAY_PUBLIC_DOMAIN.
+    webhook_public_url: str = ""
+    railway_public_domain: str = ""
+    webhook_watchdog_interval_seconds: int = 600  # 10 min
 
     # Claude / Anthropic (only needed when llm_backend="claude")
     anthropic_api_key: str = ""
@@ -130,6 +135,11 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         base_url=os.getenv("BASE_URL", ""),
         telegram_bot_token=os.getenv("TELEGRAM_BOT_TOKEN", ""),
         telegram_webhook_secret=os.getenv("TELEGRAM_WEBHOOK_SECRET", ""),
+        webhook_public_url=os.getenv("WEBHOOK_PUBLIC_URL", ""),
+        railway_public_domain=os.getenv("RAILWAY_PUBLIC_DOMAIN", ""),
+        webhook_watchdog_interval_seconds=int(
+            os.getenv("WEBHOOK_WATCHDOG_INTERVAL_SECONDS", "600")
+        ),
         anthropic_api_key=os.getenv("ANTHROPIC_API_KEY", ""),
         anthropic_model=os.getenv("ANTHROPIC_MODEL", "claude-haiku-4-5-20251001"),
         elevenlabs_api_key=os.getenv("ELEVENLABS_API_KEY", ""),

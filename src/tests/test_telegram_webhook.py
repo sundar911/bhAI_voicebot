@@ -8,6 +8,7 @@ without starting the full FastAPI app or any external services.
 import asyncio
 import hashlib
 import time
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -17,9 +18,11 @@ from inference.webhooks.telegram_webhook import (
     _check_dashboard_key,
     _check_rate_limit,
     _detect_greeting,
+    _ensure_webhook_registered,
     _extract_phone_numbers,
     _phone_hash,
     _rate_limit,
+    _resolve_public_url,
     _split_for_tts,
     MAX_TTS_CHARS,
     RE_ONBOARDING_INSTRUCTION,
@@ -221,3 +224,138 @@ def test_telegram_client_builds_api_urls():
     client = TelegramClient(bot_token="123:ABC")
     assert client.api_base == "https://api.telegram.org/bot123:ABC"
     assert client.file_base == "https://api.telegram.org/file/bot123:ABC"
+
+
+# ── Public URL resolution ────────────────────────────────────────────
+
+
+class _UrlConfig:
+    def __init__(self, webhook_public_url="", railway_public_domain=""):
+        self.webhook_public_url = webhook_public_url
+        self.railway_public_domain = railway_public_domain
+
+
+def test_resolve_public_url_prefers_explicit_over_railway():
+    """WEBHOOK_PUBLIC_URL wins when both are set."""
+    cfg = _UrlConfig(
+        webhook_public_url="https://custom.example.com",
+        railway_public_domain="bhaivoicebot-production.up.railway.app",
+    )
+    assert _resolve_public_url(cfg) == "https://custom.example.com"
+
+
+def test_resolve_public_url_uses_railway_domain_when_no_override():
+    """RAILWAY_PUBLIC_DOMAIN is auto-injected — use it directly with https://."""
+    cfg = _UrlConfig(railway_public_domain="bhaivoicebot-production.up.railway.app")
+    assert (
+        _resolve_public_url(cfg) == "https://bhaivoicebot-production.up.railway.app"
+    )
+
+
+def test_resolve_public_url_strips_trailing_slash():
+    """Defensive: callers append /telegram/webhook so trailing slash would double-up."""
+    cfg = _UrlConfig(webhook_public_url="https://custom.example.com/")
+    assert _resolve_public_url(cfg) == "https://custom.example.com"
+
+
+def test_resolve_public_url_returns_none_when_unconfigured():
+    cfg = _UrlConfig()
+    assert _resolve_public_url(cfg) is None
+
+
+# ── _ensure_webhook_registered ────────────────────────────────────────
+
+
+@pytest.fixture(autouse=True)
+def _reset_webhook_backoff_state():
+    """Clear module-level backoff state between tests."""
+    import inference.webhooks.telegram_webhook as mod
+
+    mod._webhook_register_failures = 0
+    mod._webhook_backoff_until = 0.0
+    yield
+    mod._webhook_register_failures = 0
+    mod._webhook_backoff_until = 0.0
+
+
+def _mock_client_with_url(current_url: str, last_error_message: str | None = None):
+    client = MagicMock()
+    result = {"url": current_url}
+    if last_error_message:
+        result["last_error_message"] = last_error_message
+    client.get_webhook_info.return_value = {"ok": True, "result": result}
+    client.set_webhook.return_value = {"ok": True, "result": True}
+    return client
+
+
+def test_ensure_webhook_skips_when_already_correct():
+    """No-op when Telegram already points at the expected URL."""
+    expected = "https://bot.example.com/telegram/webhook"
+    client = _mock_client_with_url(expected)
+
+    acted = _ensure_webhook_registered(client, expected, secret_token="s3cret")
+
+    assert acted is False
+    client.set_webhook.assert_not_called()
+
+
+def test_ensure_webhook_re_registers_when_url_empty():
+    """The actual outage we hit — `url: ""` — gets self-healed."""
+    expected = "https://bot.example.com/telegram/webhook"
+    client = _mock_client_with_url("")
+
+    acted = _ensure_webhook_registered(client, expected, secret_token="s3cret")
+
+    assert acted is True
+    client.set_webhook.assert_called_once_with(
+        url=expected,
+        secret_token="s3cret",
+        allowed_updates=["message", "edited_message"],
+    )
+
+
+def test_ensure_webhook_re_registers_when_url_drifts():
+    """If somebody pointed Telegram at a stale URL, we correct it."""
+    expected = "https://bot.example.com/telegram/webhook"
+    client = _mock_client_with_url("https://stale.example.com/telegram/webhook")
+
+    acted = _ensure_webhook_registered(client, expected, secret_token=None)
+
+    assert acted is True
+    client.set_webhook.assert_called_once()
+    kwargs = client.set_webhook.call_args.kwargs
+    assert kwargs["url"] == expected
+    assert kwargs["secret_token"] is None  # explicit none → not registered with secret
+
+
+def test_ensure_webhook_re_registers_when_last_error_present():
+    """Even if URL matches, a recent last_error_message means Telegram is failing
+    to deliver — re-register anyway as a defensive recovery."""
+    expected = "https://bot.example.com/telegram/webhook"
+    client = _mock_client_with_url(expected, last_error_message="403 Forbidden")
+
+    acted = _ensure_webhook_registered(client, expected, secret_token="s3cret")
+
+    assert acted is True
+    client.set_webhook.assert_called_once()
+
+
+def test_ensure_webhook_backs_off_after_repeated_failures():
+    """3 consecutive setWebhook failures → 1h backoff window."""
+    import inference.webhooks.telegram_webhook as mod
+
+    expected = "https://bot.example.com/telegram/webhook"
+    client = _mock_client_with_url("")
+    client.set_webhook.side_effect = RuntimeError("Telegram API down")
+
+    for _ in range(3):
+        _ensure_webhook_registered(client, expected, secret_token=None)
+
+    assert mod._webhook_register_failures == 3
+    assert mod._webhook_backoff_until > time.time()
+
+    # Next call within backoff window does nothing — get_webhook_info not even hit
+    client.get_webhook_info.reset_mock()
+    acted = _ensure_webhook_registered(client, expected, secret_token=None)
+    assert acted is False
+    client.get_webhook_info.assert_not_called()

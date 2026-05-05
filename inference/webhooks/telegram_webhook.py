@@ -258,6 +258,141 @@ def _check_rate_limit(phone: str) -> bool:
 
 
 _nudge_task: asyncio.Task | None = None
+_webhook_watchdog_task: asyncio.Task | None = None
+
+# Module-level state for the watchdog backoff. After 3 consecutive setWebhook
+# failures, we stop trying for 1 hour to avoid hammering the Telegram API.
+_webhook_register_failures = 0
+_webhook_backoff_until: float = 0.0
+_WEBHOOK_MAX_FAILURES = 3
+_WEBHOOK_BACKOFF_SECONDS = 3600
+
+
+def _resolve_public_url(config) -> str | None:
+    """Pick the public URL the webhook should be reachable at.
+
+    Resolution order:
+    1. WEBHOOK_PUBLIC_URL — explicit override (custom domain, ngrok, etc.)
+    2. RAILWAY_PUBLIC_DOMAIN — Railway auto-injects this; use https:// scheme
+    3. None — caller should skip auto-heal
+    """
+    if config.webhook_public_url:
+        return config.webhook_public_url.rstrip("/")
+    if config.railway_public_domain:
+        domain = config.railway_public_domain.strip().lstrip("https://").lstrip("http://")
+        return f"https://{domain}".rstrip("/")
+    return None
+
+
+def _ensure_webhook_registered(
+    client: TelegramClient,
+    expected_url: str,
+    secret_token: str | None,
+) -> bool:
+    """Make sure Telegram is pointing its webhook at us. Returns True if a
+    re-registration was performed (or attempted), False if no action was needed.
+
+    Backs off after consecutive failures so we don't flood the Telegram API
+    when their service is having a bad day.
+    """
+    global _webhook_register_failures, _webhook_backoff_until
+
+    now = time.time()
+    if now < _webhook_backoff_until:
+        return False  # in backoff window, skip silently
+
+    try:
+        info = client.get_webhook_info()
+    except Exception as e:
+        logger.warning("Webhook watchdog: getWebhookInfo failed: %s", e)
+        return False
+
+    result = info.get("result", {}) if isinstance(info, dict) else {}
+    current_url = result.get("url", "")
+    last_error = result.get("last_error_message")
+
+    if current_url == expected_url and not last_error:
+        return False  # already correct
+
+    logger.warning(
+        "Webhook drift detected — was=%r expected=%r last_error=%r — re-registering",
+        current_url,
+        expected_url,
+        last_error,
+    )
+    try:
+        client.set_webhook(
+            url=expected_url,
+            secret_token=secret_token or None,
+            allowed_updates=["message", "edited_message"],
+        )
+    except Exception as e:
+        _webhook_register_failures += 1
+        logger.error(
+            "Webhook setWebhook failed (%d/%d): %s",
+            _webhook_register_failures,
+            _WEBHOOK_MAX_FAILURES,
+            e,
+        )
+        if _webhook_register_failures >= _WEBHOOK_MAX_FAILURES:
+            _webhook_backoff_until = now + _WEBHOOK_BACKOFF_SECONDS
+            logger.error(
+                "Webhook watchdog: %d consecutive failures, backing off for %ds",
+                _webhook_register_failures,
+                _WEBHOOK_BACKOFF_SECONDS,
+            )
+        return True  # we tried
+
+    _webhook_register_failures = 0
+    logger.warning(
+        "Webhook re-registered: %s (secret=%s)",
+        expected_url,
+        "set" if secret_token else "(none)",
+    )
+    return True
+
+
+async def _webhook_watchdog_loop(config) -> None:
+    """Periodically verify the webhook is still pointed at us; re-register if not.
+
+    Runs `_ensure_webhook_registered` every `webhook_watchdog_interval_seconds`
+    in a thread executor so the blocking HTTP calls don't stall the event loop.
+    """
+    expected_base = _resolve_public_url(config)
+    if not expected_base:
+        logger.warning(
+            "Webhook watchdog: neither WEBHOOK_PUBLIC_URL nor "
+            "RAILWAY_PUBLIC_DOMAIN set — auto-heal disabled."
+        )
+        return
+    if not config.telegram_bot_token:
+        logger.warning("Webhook watchdog: TELEGRAM_BOT_TOKEN missing — disabled.")
+        return
+
+    expected_url = f"{expected_base}/telegram/webhook"
+    interval = max(60, config.webhook_watchdog_interval_seconds)
+    logger.info(
+        "Webhook watchdog starting (target=%s, interval=%ds)",
+        expected_url,
+        interval,
+    )
+
+    client = TelegramClient(bot_token=config.telegram_bot_token)
+    loop = asyncio.get_running_loop()
+    while True:
+        try:
+            await loop.run_in_executor(
+                None,
+                _ensure_webhook_registered,
+                client,
+                expected_url,
+                config.telegram_webhook_secret,
+            )
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            logger.exception("Webhook watchdog tick failed: %s", e)
+        await asyncio.sleep(interval)
 
 
 def _send_nudge(chat_id: int, slot: str, text: str) -> None:
@@ -292,8 +427,8 @@ def _send_nudge(chat_id: int, slot: str, text: str) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Start the retry worker + nudge loop on app startup, stop on shutdown."""
-    global _worker_task, _nudge_task
+    """Start the retry worker + nudge loop + webhook watchdog on app startup."""
+    global _worker_task, _nudge_task, _webhook_watchdog_task
     config = load_config()
     worker = RetryWorker(
         queue=_get_queue(),
@@ -327,10 +462,22 @@ async def lifespan(app: FastAPI):
                 )
             else:
                 logger.warning("Telegram getMe returned: %s", me)
+
+            # Self-heal the webhook on every startup. Closes the gap left by
+            # any stale --delete or polling experiment that cleared the URL.
+            expected_base = _resolve_public_url(config)
+            if expected_base:
+                _ensure_webhook_registered(
+                    client,
+                    expected_url=f"{expected_base}/telegram/webhook",
+                    secret_token=config.telegram_webhook_secret,
+                )
         except Exception as e:
-            logger.warning("Telegram getMe check failed: %s", e)
+            logger.warning("Telegram getMe / webhook check failed: %s", e)
     else:
         logger.warning("TELEGRAM_BOT_TOKEN not set — webhook will not work")
+
+    _webhook_watchdog_task = asyncio.create_task(_webhook_watchdog_loop(config))
 
     yield
     if _worker_task:
@@ -339,6 +486,9 @@ async def lifespan(app: FastAPI):
     if _nudge_task:
         _nudge_task.cancel()
         logger.info("Nudge loop stopped")
+    if _webhook_watchdog_task:
+        _webhook_watchdog_task.cancel()
+        logger.info("Webhook watchdog stopped")
 
 
 app = FastAPI(title="bhAI Telegram Webhook", lifespan=lifespan)
