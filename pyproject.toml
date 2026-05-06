@@ -70,7 +70,7 @@ ignore_missing_imports = true
 disable_error_code = ["no-any-return", "import-untyped"]
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["src/tests"]
 python_files = ["test_*.py"]
 pythonpath = ["."]
 asyncio_mode = "auto"
