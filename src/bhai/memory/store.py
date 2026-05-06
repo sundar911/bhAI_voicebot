@@ -69,6 +69,12 @@ class ConversationStore:
                 last_sent TEXT NOT NULL,
                 PRIMARY KEY(phone, slot)
             );
+
+            CREATE TABLE IF NOT EXISTS nudge_prefs (
+                phone TEXT PRIMARY KEY,
+                throttle_hours INTEGER NOT NULL,
+                updated_at TEXT NOT NULL
+            );
         """)
         self._conn.commit()
 
@@ -236,6 +242,47 @@ class ConversationStore:
             return datetime.fromisoformat(row[0])
         return None
 
+    def get_last_any_nudge_sent(self, phone: str) -> Optional[datetime]:
+        """When was the most recent nudge of ANY slot sent to this phone?
+
+        Used by per-user throttling: when a user has a `throttle_hours` override,
+        we treat any nudge in either slot as the gating event.
+        """
+        row = self._conn.execute(
+            "SELECT MAX(last_sent) FROM nudges WHERE phone = ?", (phone,)
+        ).fetchone()
+        if row and row[0]:
+            return datetime.fromisoformat(row[0])
+        return None
+
+    def set_throttle_hours(self, phone: str, hours: int) -> None:
+        """Set a per-user throttle: bhAI will only nudge this phone every N hours.
+
+        When set, this overrides the default per-slot 18h gap. Pass `hours=0` (or
+        a negative value) to clear any existing throttle for this phone.
+        """
+        if hours <= 0:
+            self._conn.execute("DELETE FROM nudge_prefs WHERE phone = ?", (phone,))
+        else:
+            self._conn.execute(
+                """INSERT INTO nudge_prefs (phone, throttle_hours, updated_at)
+                   VALUES (?, ?, ?)
+                   ON CONFLICT(phone) DO UPDATE SET
+                       throttle_hours = excluded.throttle_hours,
+                       updated_at = excluded.updated_at""",
+                (phone, hours, _now_iso()),
+            )
+        self._conn.commit()
+
+    def get_throttle_hours(self, phone: str) -> Optional[int]:
+        """Per-user throttle override in hours, or None if not set."""
+        row = self._conn.execute(
+            "SELECT throttle_hours FROM nudge_prefs WHERE phone = ?", (phone,)
+        ).fetchone()
+        if row:
+            return int(row[0])
+        return None
+
     def list_recently_active_phones(self, days: int = 7) -> List[str]:
         """Return phones with at least one user message in the last N days."""
         cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat()
@@ -297,15 +344,9 @@ class ConversationStore:
         After this call, `is_first_ever_message(phone)` returns True again
         and /start will trigger the onboarding intro on the next message.
         """
-        msg_cur = self._conn.execute(
-            "DELETE FROM messages WHERE phone = ?", (phone,)
-        )
-        mem_cur = self._conn.execute(
-            "DELETE FROM memory WHERE phone = ?", (phone,)
-        )
-        nudge_cur = self._conn.execute(
-            "DELETE FROM nudges WHERE phone = ?", (phone,)
-        )
+        msg_cur = self._conn.execute("DELETE FROM messages WHERE phone = ?", (phone,))
+        mem_cur = self._conn.execute("DELETE FROM memory WHERE phone = ?", (phone,))
+        nudge_cur = self._conn.execute("DELETE FROM nudges WHERE phone = ?", (phone,))
         self._conn.commit()
         return {
             "messages_deleted": msg_cur.rowcount,

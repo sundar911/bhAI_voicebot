@@ -211,7 +211,11 @@ def test_merge_user_same_phone_is_noop(store):
     store.save_message(phone, "user", "hi", "s1")
 
     counts = store.merge_user(from_phone=phone, to_phone=phone)
-    assert counts == {"messages_migrated": 0, "memory_migrated": 0, "nudges_migrated": 0}
+    assert counts == {
+        "messages_migrated": 0,
+        "memory_migrated": 0,
+        "nudges_migrated": 0,
+    }
     assert store.count_user_messages(phone) == 1
 
 
@@ -255,6 +259,43 @@ def test_record_and_get_last_nudge_sent(store):
 
     # Different slot is independent
     assert store.get_last_nudge_sent(phone, "night") is None
+
+
+def test_get_last_any_nudge_sent_returns_max_across_slots(store):
+    """get_last_any_nudge_sent returns the most recent nudge regardless of slot."""
+    phone = "tg_any"
+    assert store.get_last_any_nudge_sent(phone) is None
+
+    store.record_nudge_sent(phone, "morning")
+    after_morning = store.get_last_any_nudge_sent(phone)
+    assert after_morning is not None
+
+    store.record_nudge_sent(phone, "night")
+    after_night = store.get_last_any_nudge_sent(phone)
+    assert after_night is not None
+    # Night was recorded later, so any-slot max should advance.
+    assert after_night >= after_morning
+
+
+def test_throttle_hours_set_get_clear(store):
+    """set_throttle_hours upserts; passing 0 or negative clears the row."""
+    phone = "tg_throttle"
+    assert store.get_throttle_hours(phone) is None
+
+    store.set_throttle_hours(phone, 48)
+    assert store.get_throttle_hours(phone) == 48
+
+    # Upsert overwrites
+    store.set_throttle_hours(phone, 72)
+    assert store.get_throttle_hours(phone) == 72
+
+    # Zero clears
+    store.set_throttle_hours(phone, 0)
+    assert store.get_throttle_hours(phone) is None
+
+    # Negative also clears (idempotent on already-empty row)
+    store.set_throttle_hours(phone, -5)
+    assert store.get_throttle_hours(phone) is None
 
 
 def test_list_recently_active_phones(store):

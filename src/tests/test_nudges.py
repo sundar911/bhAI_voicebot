@@ -13,10 +13,10 @@ import pytest
 
 from inference.webhooks.nudges import (
     MIN_GAP_BETWEEN_SAME_SLOT_HOURS,
+    NUDGE_INSTRUCTION,
     SKIP_IF_USER_ACTIVE_HOURS,
     SLOT_MORNING,
     SLOT_NIGHT,
-    NUDGE_INSTRUCTION,
     build_nudge_prompts,
     current_slot,
     is_wildcard_allowlist,
@@ -154,6 +154,93 @@ def test_should_nudge_rejects_unknown_slot():
     )
 
 
+# ── per-user throttle override ────────────────────────────────────────
+
+
+def test_should_nudge_throttle_skips_within_window():
+    """When throttle is set, ANY-slot nudge inside the window blocks new nudge."""
+    now = _ist(hour=10)
+    # User asked for once-every-2-days; night nudge fired 12h ago.
+    assert (
+        should_nudge_user(
+            now_ist=now,
+            slot=SLOT_MORNING,
+            last_user_message_at=None,
+            last_nudge_at=None,  # no prior morning nudge
+            throttle_hours=48,
+            last_any_nudge_at=now - timedelta(hours=12),
+        )
+        is False
+    )
+
+
+def test_should_nudge_throttle_allows_outside_window():
+    """When throttle is set and last nudge was outside window, fire."""
+    now = _ist(hour=10)
+    assert (
+        should_nudge_user(
+            now_ist=now,
+            slot=SLOT_MORNING,
+            last_user_message_at=None,
+            last_nudge_at=None,
+            throttle_hours=48,
+            last_any_nudge_at=now - timedelta(hours=49),
+        )
+        is True
+    )
+
+
+def test_should_nudge_throttle_overrides_default_slot_gap():
+    """Throttle replaces the per-slot gap — so a same-slot 2h-old nudge that
+    would normally block is irrelevant when throttle uses any-slot timing."""
+    now = _ist(hour=10)
+    # Same-slot fired 2h ago (would normally block at 18h),
+    # but the user has a 48h throttle and any-slot last was 49h ago → fire.
+    assert (
+        should_nudge_user(
+            now_ist=now,
+            slot=SLOT_MORNING,
+            last_user_message_at=None,
+            last_nudge_at=now - timedelta(hours=2),
+            throttle_hours=48,
+            last_any_nudge_at=now - timedelta(hours=49),
+        )
+        is True
+    )
+
+
+def test_should_nudge_no_throttle_uses_default_gap():
+    """Absent throttle, falls back to MIN_GAP_BETWEEN_SAME_SLOT_HOURS check."""
+    now = _ist(hour=10)
+    assert (
+        should_nudge_user(
+            now_ist=now,
+            slot=SLOT_MORNING,
+            last_user_message_at=None,
+            last_nudge_at=now - timedelta(hours=2),
+            throttle_hours=None,
+            last_any_nudge_at=None,
+        )
+        is False
+    )
+
+
+def test_should_nudge_throttle_zero_treated_as_no_throttle():
+    """throttle_hours=0 is a no-op (cleared); falls back to default logic."""
+    now = _ist(hour=10)
+    assert (
+        should_nudge_user(
+            now_ist=now,
+            slot=SLOT_MORNING,
+            last_user_message_at=None,
+            last_nudge_at=now - timedelta(hours=MIN_GAP_BETWEEN_SAME_SLOT_HOURS + 1),
+            throttle_hours=0,
+            last_any_nudge_at=now - timedelta(hours=1),
+        )
+        is True
+    )
+
+
 # ── parse_allowlist ───────────────────────────────────────────────────
 
 
@@ -235,9 +322,7 @@ def test_select_nudge_candidates_unknown_hash_in_allowlist_is_noop():
 def _stub_llm():
     """Minimal LLM stub — only `_build_system_prompt` is consulted by build_nudge_prompts."""
     llm = MagicMock()
-    llm._build_system_prompt = MagicMock(
-        return_value="<<SYSTEM PROMPT BODY>>"
-    )
+    llm._build_system_prompt = MagicMock(return_value="<<SYSTEM PROMPT BODY>>")
     return llm
 
 

@@ -28,6 +28,8 @@ ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+# Local imports — sit alongside this webhook
+from inference.webhooks.nudges import nudge_loop  # noqa: E402
 from src.bhai.audio_utils import convert_to_ogg_opus, ensure_dir
 from src.bhai.config import (
     DATA_DIR,
@@ -48,9 +50,6 @@ from src.bhai.resilience.faq_cache import FAQCache
 from src.bhai.resilience.queue import RequestQueue
 from src.bhai.resilience.worker import RetryWorker
 from src.bhai.stt.sarvam_stt import SarvamSTT
-
-# Local imports — sit alongside this webhook
-from inference.webhooks.nudges import nudge_loop  # noqa: E402
 
 # ── Logging (no PII) ──────────────────────────────────────────────────
 
@@ -101,13 +100,13 @@ RE_ONBOARDING_INSTRUCTION = (
     "history with them (likely from WhatsApp/Twilio, now migrated to Telegram). "
     "Do all THREE of these in 1-2 short Devanagari sentences (≤ 280 chars total):\n"
     "1. ONE-line nod that you remember them — no full re-introduction needed. "
-    "Use their name if you know it (\"अरे [नाम]!\" beats a generic hi).\n"
+    'Use their name if you know it ("अरे [नाम]!" beats a generic hi).\n'
     "2. Reference ONE specific thing from your memory/recent history — a person "
     "they mentioned, a worry, a plan, a topic. Show you remember.\n"
     "3. ONE warm follow-up question rooted in that specific thing — not a "
-    "generic \"how are you\".\n"
+    'generic "how are you".\n'
     "If memory/history is sparse, keep it short and warm — never make up details. "
-    "No markdown. No bullets. No \"how can I help you today\" energy. "
+    'No markdown. No bullets. No "how can I help you today" energy. '
     "Plain Devanagari sentences only.\n"
 )
 
@@ -279,7 +278,9 @@ def _resolve_public_url(config) -> str | None:
     if config.webhook_public_url:
         return config.webhook_public_url.rstrip("/")
     if config.railway_public_domain:
-        domain = config.railway_public_domain.strip().lstrip("https://").lstrip("http://")
+        domain = (
+            config.railway_public_domain.strip().lstrip("https://").lstrip("http://")
+        )
         return f"https://{domain}".rstrip("/")
     return None
 
@@ -642,9 +643,7 @@ def process_message(
 
                 recent = store.get_recent_messages(phone, limit=8)
 
-                mode_instruction = (
-                    RE_ONBOARDING_INSTRUCTION if is_re_onboarding else ""
-                )
+                mode_instruction = RE_ONBOARDING_INSTRUCTION if is_re_onboarding else ""
                 if is_re_onboarding:
                     logger.info("Re-onboarding branch for user=%s on /start", phone_id)
 
@@ -1200,6 +1199,43 @@ def _phone_from_hash(phone_hash: str) -> str | None:
     return None
 
 
+@app.get("/admin/memory/{phone_hash}")
+async def admin_memory(phone_hash: str, key: str = ""):
+    """Inspect rolling summary + extracted facts for one user. Access is logged.
+
+    Used to verify that the summarizer captured key context (e.g. that a user
+    does stitching, has a specific child situation, etc.) — particularly
+    after a /admin/migrate, where prior conversation history is re-keyed
+    but the rolling memory may still reflect the old session-window only.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    target_phone = _phone_from_hash(phone_hash)
+    if not target_phone:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    logger.warning("ADMIN MEMORY ACCESS for user=%s by key holder", phone_hash)
+
+    store = _get_store()
+    memory = store.get_memory(target_phone)
+    if memory is None:
+        return {
+            "phone_hash": phone_hash,
+            "summary": None,
+            "facts": [],
+            "last_updated": None,
+        }
+
+    return {
+        "phone_hash": phone_hash,
+        "summary": memory["summary"],
+        "facts": memory["facts"],
+        "last_updated": memory["last_updated"],
+    }
+
+
 @app.post("/admin/reset/{phone_hash}")
 async def admin_reset(phone_hash: str, key: str = ""):
     """Wipe one user's messages, memory, and nudge tracking.
@@ -1267,6 +1303,42 @@ async def admin_migrate(
     return {"from_hash": from_hash, "to_hash": to_hash, **counts}
 
 
+@app.post("/admin/throttle-nudge/{phone_hash}")
+async def admin_throttle_nudge(phone_hash: str, key: str = "", hours: int = 0):
+    """Set or clear a per-user nudge throttle.
+
+    When `hours` > 0, bhAI will only nudge this user if no nudge of any slot
+    fired within the last `hours` hours. Use `hours=48` for "once every 2 days"
+    (the User N case — they explicitly asked for less frequent contact).
+
+    Pass `hours=0` (or negative) to clear an existing throttle and return the
+    user to the default twice-daily schedule.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    target_phone = _phone_from_hash(phone_hash)
+    if not target_phone:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    store = _get_store()
+    store.set_throttle_hours(target_phone, hours)
+    current = store.get_throttle_hours(target_phone)
+
+    logger.warning(
+        "ADMIN THROTTLE-NUDGE for user=%s hours=%s (effective=%s) by key holder",
+        phone_hash,
+        hours,
+        current,
+    )
+    return {
+        "phone_hash": phone_hash,
+        "throttle_hours": current,
+        "cleared": current is None,
+    }
+
+
 @app.post("/admin/test-nudge/{phone_hash}")
 async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"):
     """Fire one nudge to one user immediately, ignoring schedule + rate-limit.
@@ -1309,9 +1381,7 @@ async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"
         )
     except Exception as e:
         logger.exception("Test nudge generation failed: %s", e)
-        return JSONResponse(
-            {"error": f"generation failed: {e}"}, status_code=500
-        )
+        return JSONResponse({"error": f"generation failed: {e}"}, status_code=500)
 
     if not text:
         return JSONResponse({"error": "empty nudge text"}, status_code=500)

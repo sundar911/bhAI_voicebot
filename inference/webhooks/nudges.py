@@ -20,7 +20,9 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime, time as dtime, timedelta, timezone
+from datetime import datetime
+from datetime import time as dtime
+from datetime import timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional
 
 from src.bhai.config import Config
@@ -88,21 +90,34 @@ def should_nudge_user(
     slot: str,
     last_user_message_at: Optional[datetime],
     last_nudge_at: Optional[datetime],
+    throttle_hours: Optional[int] = None,
+    last_any_nudge_at: Optional[datetime] = None,
 ) -> bool:
     """Pure check: should we send a `slot` nudge to this user right now?
 
     - Skip if they messaged us in the last SKIP_IF_USER_ACTIVE_HOURS — don't
       interrupt an active conversation.
-    - Skip if we've already nudged this slot in the last
+    - If `throttle_hours` is set: skip if ANY nudge fired within `throttle_hours`
+      (covers users who explicitly asked for less frequent contact).
+    - Otherwise: skip if we've already nudged this slot in the last
       MIN_GAP_BETWEEN_SAME_SLOT_HOURS — once a window per day.
     """
     if last_user_message_at is not None:
         if now_ist - last_user_message_at < timedelta(hours=SKIP_IF_USER_ACTIVE_HOURS):
             return False
 
-    if last_nudge_at is not None:
-        if now_ist - last_nudge_at < timedelta(hours=MIN_GAP_BETWEEN_SAME_SLOT_HOURS):
-            return False
+    if throttle_hours is not None and throttle_hours > 0:
+        # User has explicitly requested less frequent nudges. Treat any nudge
+        # in either slot as the gating event.
+        if last_any_nudge_at is not None:
+            if now_ist - last_any_nudge_at < timedelta(hours=throttle_hours):
+                return False
+    else:
+        if last_nudge_at is not None:
+            if now_ist - last_nudge_at < timedelta(
+                hours=MIN_GAP_BETWEEN_SAME_SLOT_HOURS
+            ):
+                return False
 
     # Slot name must be one we know about.
     return slot in (SLOT_MORNING, SLOT_NIGHT)
@@ -233,10 +248,7 @@ def build_nudge_prompts(
     else:
         parts.append("(No prior conversation — keep it a casual hello.)\n")
 
-    parts.append(
-        f"Time slot: {_slot_time_hint(slot)}.\n"
-        "Generate the nudge now."
-    )
+    parts.append(f"Time slot: {_slot_time_hint(slot)}.\n" "Generate the nudge now.")
     return system_prompt, "\n".join(parts)
 
 
@@ -342,9 +354,7 @@ def _run_one_nudge_pass(
     if not candidates:
         return
 
-    logger.info(
-        "Nudge pass: slot=%s candidates=%d", slot, len(candidates)
-    )
+    logger.info("Nudge pass: slot=%s candidates=%d", slot, len(candidates))
 
     for phone in candidates:
         try:
@@ -380,12 +390,18 @@ def _maybe_nudge_one(
 
     last_msg_time = store._get_last_message_time(phone)
     last_nudge_time = store.get_last_nudge_sent(phone, slot)
+    throttle_hours = store.get_throttle_hours(phone)
+    last_any_nudge_time = (
+        store.get_last_any_nudge_sent(phone) if throttle_hours else None
+    )
 
     if not should_nudge_user(
         now_ist=now_ist,
         slot=slot,
         last_user_message_at=last_msg_time,
         last_nudge_at=last_nudge_time,
+        throttle_hours=throttle_hours,
+        last_any_nudge_at=last_any_nudge_time,
     ):
         return
 
@@ -398,16 +414,12 @@ def _maybe_nudge_one(
         logger.warning("Bad chat_id for nudge: user=%s", phone_id)
         return
 
-    text = build_and_generate_nudge(
-        phone=phone, slot=slot, store=store, config=config
-    )
+    text = build_and_generate_nudge(phone=phone, slot=slot, store=store, config=config)
     if not text:
         logger.warning("Empty nudge generated for user=%s — skipping", phone_id)
         return
 
-    logger.info(
-        "Sending nudge to user=%s slot=%s len=%d", phone_id, slot, len(text)
-    )
+    logger.info("Sending nudge to user=%s slot=%s len=%d", phone_id, slot, len(text))
     send_fn(chat_id, slot, text)
     store.record_nudge_sent(phone, slot)
 
