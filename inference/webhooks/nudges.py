@@ -108,11 +108,44 @@ def should_nudge_user(
     return slot in (SLOT_MORNING, SLOT_NIGHT)
 
 
+WILDCARD_ALL = "*"
+
+
 def parse_allowlist(raw: str) -> List[str]:
-    """Comma/whitespace-separated phone-hash allowlist → cleaned list."""
+    """Comma/whitespace-separated phone-hash allowlist → cleaned list.
+
+    Returns empty list for empty/blank input. The wildcard ``*`` is NOT
+    treated as a hash here — callers should detect it explicitly via
+    `is_wildcard_allowlist()` before consulting this list.
+    """
     if not raw:
         return []
     return [p.strip() for p in raw.replace("\n", ",").split(",") if p.strip()]
+
+
+def is_wildcard_allowlist(raw: str) -> bool:
+    """True iff `NUDGE_PHONES` is set to the `*` sentinel (= every active user)."""
+    return (raw or "").strip() == WILDCARD_ALL
+
+
+def select_nudge_candidates(
+    active_phones: List[str],
+    nudge_phones_raw: str,
+    phone_hash_fn: Callable[[str], str],
+) -> List[str]:
+    """Filter the active-users list down to those eligible for a nudge.
+
+    - `NUDGE_PHONES=*` → every active user is a candidate (auto-includes new
+      pilot users without an env var update).
+    - `NUDGE_PHONES=hash1,hash2` → only the listed phone hashes.
+    - `NUDGE_PHONES=` (empty) → nobody (defensive default).
+    """
+    if is_wildcard_allowlist(nudge_phones_raw):
+        return list(active_phones)
+    allowlist = set(parse_allowlist(nudge_phones_raw))
+    if not allowlist:
+        return []
+    return [p for p in active_phones if phone_hash_fn(p) in allowlist]
 
 
 # ── Prompt construction ──────────────────────────────────────────────
@@ -250,11 +283,15 @@ async def nudge_loop(
         phone_hash_fn: maps a `tg_<chat_id>` phone string to its 12-char hash.
     """
     interval = max(60, config.nudge_check_interval_seconds)
+    if is_wildcard_allowlist(config.nudge_phones):
+        allowlist_desc = "all-active-users"
+    else:
+        allowlist_desc = str(len(parse_allowlist(config.nudge_phones)))
     logger.info(
-        "Nudge loop starting (enabled=%s, interval=%ds, allowlist_size=%d)",
+        "Nudge loop starting (enabled=%s, interval=%ds, allowlist=%s)",
         config.nudge_enabled,
         interval,
-        len(parse_allowlist(config.nudge_phones)),
+        allowlist_desc,
     )
 
     loop = asyncio.get_running_loop()
@@ -295,15 +332,13 @@ def _run_one_nudge_pass(
     if slot is None:
         return  # not in a firing window
 
-    allowlist = set(parse_allowlist(config.nudge_phones))
-    if not allowlist:
-        return  # no one opted in
-
     active_phones = store.list_recently_active_phones(
         days=config.nudge_active_user_days
     )
 
-    candidates = [p for p in active_phones if phone_hash_fn(p) in allowlist]
+    candidates = select_nudge_candidates(
+        active_phones, config.nudge_phones, phone_hash_fn
+    )
     if not candidates:
         return
 

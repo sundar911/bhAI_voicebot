@@ -19,7 +19,9 @@ from inference.webhooks.nudges import (
     NUDGE_INSTRUCTION,
     build_nudge_prompts,
     current_slot,
+    is_wildcard_allowlist,
     parse_allowlist,
+    select_nudge_candidates,
     should_nudge_user,
 )
 
@@ -173,6 +175,58 @@ def test_parse_allowlist_strips_whitespace_and_newlines():
 
 def test_parse_allowlist_drops_empties():
     assert parse_allowlist("aaa,,bbb,") == ["aaa", "bbb"]
+
+
+# ── Wildcard + candidate selection ────────────────────────────────────
+
+
+def _identity_hash(phone: str) -> str:
+    """Stub `phone_hash_fn` for tests — returns the phone string itself
+    so allowlist comparisons are easy to read."""
+    return phone
+
+
+def test_is_wildcard_allowlist_recognises_star():
+    assert is_wildcard_allowlist("*") is True
+    assert is_wildcard_allowlist(" * ") is True
+
+
+def test_is_wildcard_allowlist_rejects_other_inputs():
+    assert is_wildcard_allowlist("") is False
+    assert is_wildcard_allowlist("aaa,bbb") is False
+    assert is_wildcard_allowlist("**") is False  # not the sentinel
+
+
+def test_select_nudge_candidates_wildcard_returns_all_active():
+    """With NUDGE_PHONES=*, every active user becomes a candidate."""
+    active = ["tg_111", "tg_222", "tg_333"]
+    assert select_nudge_candidates(active, "*", _identity_hash) == active
+
+
+def test_select_nudge_candidates_wildcard_with_no_active_returns_empty():
+    """Wildcard doesn't conjure candidates from nothing — still gated by
+    `list_recently_active_phones`."""
+    assert select_nudge_candidates([], "*", _identity_hash) == []
+
+
+def test_select_nudge_candidates_explicit_list_filters_correctly():
+    active = ["tg_111", "tg_222", "tg_333"]
+    result = select_nudge_candidates(active, "tg_111,tg_333", _identity_hash)
+    assert result == ["tg_111", "tg_333"]
+
+
+def test_select_nudge_candidates_empty_allowlist_returns_empty():
+    """Defensive default — blank NUDGE_PHONES = nobody nudged."""
+    active = ["tg_111", "tg_222"]
+    assert select_nudge_candidates(active, "", _identity_hash) == []
+
+
+def test_select_nudge_candidates_unknown_hash_in_allowlist_is_noop():
+    """Stale hashes in the allowlist that don't match any active user are
+    silently skipped (no error)."""
+    active = ["tg_111"]
+    result = select_nudge_candidates(active, "tg_111,tg_DOES_NOT_EXIST", _identity_hash)
+    assert result == ["tg_111"]
 
 
 # ── build_nudge_prompts ───────────────────────────────────────────────
