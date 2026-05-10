@@ -1303,6 +1303,69 @@ async def admin_migrate(
     return {"from_hash": from_hash, "to_hash": to_hash, **counts}
 
 
+@app.post("/admin/send-message/{phone_hash}")
+async def admin_send_message(phone_hash: str, key: str = "", text: str = ""):
+    """Send a literal text message to a user, bypassing the LLM.
+
+    Use this for trust-repair / correction messages where bhAI's normal
+    generation pipeline (which can hallucinate) must NOT be in the loop.
+    The message is sent verbatim and saved into the conversation history
+    as an `assistant` message so future LLM context sees it.
+
+    Telegram-only. The text is delivered via Telegram's sendMessage API,
+    not as a voice note — the use cases for this endpoint are short
+    corrections, not natural conversation turns.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    if not text or not text.strip():
+        return JSONResponse(
+            {"error": "text query param is required and cannot be empty"},
+            status_code=400,
+        )
+
+    target_phone = _phone_from_hash(phone_hash)
+    if not target_phone:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    if not target_phone.startswith("tg_"):
+        return JSONResponse(
+            {"error": "non-Telegram users not supported by this endpoint"},
+            status_code=400,
+        )
+
+    try:
+        chat_id = int(target_phone[len("tg_") :])
+    except ValueError:
+        return JSONResponse({"error": "bad chat_id"}, status_code=400)
+
+    config = load_config()
+    telegram_client = TelegramClient(bot_token=config.telegram_bot_token)
+    try:
+        result = telegram_client.send_text(chat_id, text)
+    except Exception as e:
+        logger.exception("ADMIN SEND-MESSAGE failed for user=%s: %s", phone_hash, e)
+        return JSONResponse({"error": f"telegram send failed: {e}"}, status_code=502)
+
+    store = _get_store()
+    session_id, _ = store.get_or_create_session(target_phone)
+    store.save_message(target_phone, "assistant", text, session_id)
+
+    logger.warning(
+        "ADMIN SEND-MESSAGE to user=%s chars=%d by key holder",
+        phone_hash,
+        len(text),
+    )
+    return {
+        "phone_hash": phone_hash,
+        "chars": len(text),
+        "telegram_message_id": result.get("message_id"),
+        "ok": result.get("ok", False),
+    }
+
+
 @app.post("/admin/throttle-nudge/{phone_hash}")
 async def admin_throttle_nudge(phone_hash: str, key: str = "", hours: int = 0):
     """Set or clear a per-user nudge throttle.

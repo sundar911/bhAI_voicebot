@@ -14,6 +14,8 @@ import pytest
 
 # Import standalone functions directly to avoid triggering the full app lifespan
 from inference.webhooks.telegram_webhook import (
+    MAX_TTS_CHARS,
+    RE_ONBOARDING_INSTRUCTION,
     _build_intro,
     _check_dashboard_key,
     _check_rate_limit,
@@ -24,8 +26,6 @@ from inference.webhooks.telegram_webhook import (
     _rate_limit,
     _resolve_public_url,
     _split_for_tts,
-    MAX_TTS_CHARS,
-    RE_ONBOARDING_INSTRUCTION,
 )
 
 
@@ -203,7 +203,9 @@ def test_re_onboarding_instruction_demands_recall_and_followup():
     assert "/start" in text
     # Three core asks the user wanted: nod recall, reference one thing, ask
     # one follow-up.
-    assert "remember" in text.lower() or "याद" in text or "remember them" in text.lower()
+    assert (
+        "remember" in text.lower() or "याद" in text or "remember them" in text.lower()
+    )
     assert "follow-up" in text.lower() or "follow up" in text.lower()
     assert "No markdown" in text or "no markdown" in text.lower()
 
@@ -247,9 +249,7 @@ def test_resolve_public_url_prefers_explicit_over_railway():
 def test_resolve_public_url_uses_railway_domain_when_no_override():
     """RAILWAY_PUBLIC_DOMAIN is auto-injected — use it directly with https://."""
     cfg = _UrlConfig(railway_public_domain="bhaivoicebot-production.up.railway.app")
-    assert (
-        _resolve_public_url(cfg) == "https://bhaivoicebot-production.up.railway.app"
-    )
+    assert _resolve_public_url(cfg) == "https://bhaivoicebot-production.up.railway.app"
 
 
 def test_resolve_public_url_strips_trailing_slash():
@@ -359,3 +359,44 @@ def test_ensure_webhook_backs_off_after_repeated_failures():
     acted = _ensure_webhook_registered(client, expected, secret_token=None)
     assert acted is False
     client.get_webhook_info.assert_not_called()
+
+
+# ── /admin/send-message validation ───────────────────────────────────
+
+
+def test_admin_send_message_rejects_bad_key():
+    """Wrong dashboard key returns 401 without touching Telegram."""
+    from inference.webhooks.telegram_webhook import admin_send_message
+
+    result = asyncio.run(
+        admin_send_message(phone_hash="abc123def456", key="wrong", text="hi")
+    )
+    assert result.status_code == 401
+
+
+def test_admin_send_message_rejects_empty_text():
+    """Empty text payload returns 400 with a clear error."""
+    from inference.webhooks.telegram_webhook import (
+        _DASHBOARD_KEY,
+        admin_send_message,
+    )
+
+    result = asyncio.run(
+        admin_send_message(phone_hash="abc123def456", key=_DASHBOARD_KEY, text="")
+    )
+    assert result.status_code == 400
+
+
+def test_admin_send_message_rejects_whitespace_only_text():
+    """Whitespace-only text is treated as empty (no accidentally-blank corrections)."""
+    from inference.webhooks.telegram_webhook import (
+        _DASHBOARD_KEY,
+        admin_send_message,
+    )
+
+    result = asyncio.run(
+        admin_send_message(
+            phone_hash="abc123def456", key=_DASHBOARD_KEY, text="   \n  "
+        )
+    )
+    assert result.status_code == 400
