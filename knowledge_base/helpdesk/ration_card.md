@@ -1,5 +1,8 @@
 # Ration Card
 
+## Keywords
+Ration card, राशन card, राशनकार्ड, AAY, BPL, APL, PHH, yellow card, white card, orange card, PDS, Fair Price Shop, FPS, ONORC, e-Ration, Antyodaya, mahafood, food grains, food subsidy, अन्न, खाद्य
+
 ## Common Questions & Answers
 
 ### "Who can apply?"
@@ -33,6 +36,42 @@ Yes, an official may visit your home for verification.
 
 ### "Can I update offline?"
 Yes, visit your nearest Ration Office to submit the update request and documents.
+
+### "Ration card kya hota hai?"
+Ek official government document jo households ko issue hota hai, jisse Fair Price Shops (FPS) se subsidized food grains aur essential commodities mil sakti hain (PDS — Public Distribution System).
+
+### "Aadhaar linking compulsory hai?"
+Haan, har family member ka Aadhaar linked hona zaroori hai PDS benefits continue rakhne ke liye.
+
+### "ONORC kya hai?"
+One Nation One Ration Card — Aadhaar-linked Ration Card use karke aap India mein kahin bhi kisi bhi Fair Price Shop se ration le sakte ho. Migrant workers ke liye useful.
+
+### "Family member kaise add karu?"
+Application submit karo with member ka Aadhaar + birth certificate (newborn ke liye) ya marriage certificate (spouse ke liye) + head of family ka Ration Card copy.
+
+### "Naam kaise hatau?"
+Application with reason (death, marriage, migration) + supporting docs (death certificate, marriage certificate). Submit ration office mein ya online.
+
+### "Khoya hua to?"
+Duplicate Ration Card ke liye apply karo ration office mein ya online — FIR copy (zaroori ho to) aur identity proof ke saath.
+
+### "Doosre state mein transfer kaise?"
+Current state mein card surrender karo, surrender certificate lo. Phir destination state mein new application karo with surrender certificate aur address proof.
+
+### "Ration mein kya kya milta hai?"
+Wheat, rice, sugar, kerosene, dal — subsidized rates pe. Items state-by-state vary karte hain. Quantity card type (AAY/PHH/APL) aur family member count pe depend karti hai.
+
+### "Ration shop deny kare to?"
+Food Supply Officer ya District Supply Officer ke saath complaint file karo, ya state ke grievance portal / toll-free helpline pe call karo.
+
+### "Single unmarried log alag card le sakte hain?"
+Haan — alag residence proof ke saath individual Ration Card apply ho sakta hai.
+
+### "e-Ration Card download kaise?"
+State ke food & civil supplies portal pe login karo (Maharashtra: rcms.mahafood.gov.in) — Ration Card number ya mobile/Aadhaar se e-copy download.
+
+### "Address proof ke liye chal sakta hai?"
+Haan, Ration Card most government aur private services mein valid address proof ke roop mein accept hota hai.
 
 ## Required Documents
 

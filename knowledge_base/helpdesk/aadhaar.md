@@ -1,5 +1,8 @@
 # Aadhaar Card
 
+## Keywords
+Aadhaar, आधार, UIDAI, e-Aadhaar, mAadhaar, Seva Kendra, biometric, fingerprint, iris, address change, name correction, DOB correction, mobile link, OTP, enrolment ID, EID, VID, अधार card
+
 ## Common Questions & Answers
 
 ### "How to update Aadhaar?"
@@ -39,6 +42,30 @@ Linking is mandatory for tax filing. Do it on the Income Tax portal. For bank li
 
 ### "Is my mobile number linked?"
 Visit UIDAI's website → Aadhaar Services → Verify Aadhaar Number to check.
+
+### "Bachhe ka Aadhaar kaise banta hai?"
+Parent ek Aadhaar Seva Kendra mein bachhe ka birth certificate aur ek parent ka Aadhaar lekar enrol kara sakte hain. Bachhe ke biometrics 5 saal aur 15 saal ki age pe update karwane padte hain.
+
+### "Biometric (fingerprint/iris) work nahin kar rahi to?"
+Aadhaar Seva Kendra jaake biometric update / re-capture karwana padega.
+
+### "Aadhaar number khud change ho sakta hai?"
+Nahin — Aadhaar number ek baar issue ho jaane ke baad permanent hota hai, change nahin hota. Naam, address, DOB jaisi details update ho sakti hain, par number wahi rahega.
+
+### "Mobile number Aadhaar se linked nahin hai, OTP kaise milega?"
+Pehle Aadhaar Seva Kendra jaake mobile number link/update karwana padega. OTP-based services uske baad kaam karenge.
+
+### "Gender correction kar sakti hu?"
+Haan, valid supporting documents ke saath gender update ho sakta hai (lifetime mein ek baar).
+
+### "Bank account Aadhaar se link hai ya nahin, kaise check karu?"
+UIDAI website → Aadhaar Services → Check Aadhaar-Bank Account Linking Status pe dekh sakti ho.
+
+### "School ya college admission ke liye Aadhaar zaroori hai?"
+Aadhaar mandatory nahin hai admission ke liye, par kai institutions ID proof ke liye maangte hain.
+
+### "e-Aadhaar download kaise karu?"
+UIDAI website → Download Aadhaar → Aadhaar / VID / Enrolment ID daalo → OTP authenticate karo. Color ya black-and-white print — दोनों valid hain.
 
 ## Required Documents
 

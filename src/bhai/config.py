@@ -81,6 +81,16 @@ class Config:
     queue_max_attempts: int = 5  # Background queue retry attempts
     faq_cache_threshold: float = 0.6  # Jaccard similarity for FAQ match
 
+    # KB router — selects which helpdesk/*.md files to inject per turn
+    # instead of stuffing the entire KB into every system prompt.
+    # Backend "haiku" uses Claude Haiku 4.5 with prompt caching (recommended;
+    # falls back to keyword if ANTHROPIC_API_KEY is missing or the call errors).
+    # Backend "keyword" uses the pure-Python KBRouter (sync, no API).
+    kb_router_enabled: bool = True
+    kb_router_backend: str = "haiku"  # "haiku" | "keyword"
+    kb_router_top_n: int = 3
+    kb_router_threshold: float = 0.25  # used only by the keyword backend
+
     # Proactive nudges (option B follow-ups)
     nudge_enabled: bool = False  # Master kill switch — must be opted in
     nudge_phones: str = ""  # Comma-separated phone hashes allowed to receive nudges
@@ -157,6 +167,10 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         retry_max_attempts=int(os.getenv("RETRY_MAX_ATTEMPTS", "3")),
         queue_max_attempts=int(os.getenv("QUEUE_MAX_ATTEMPTS", "5")),
         faq_cache_threshold=float(os.getenv("FAQ_CACHE_THRESHOLD", "0.6")),
+        kb_router_enabled=os.getenv("KB_ROUTER_ENABLED", "true").lower() == "true",
+        kb_router_backend=os.getenv("KB_ROUTER_BACKEND", "haiku"),
+        kb_router_top_n=int(os.getenv("KB_ROUTER_TOP_N", "3")),
+        kb_router_threshold=float(os.getenv("KB_ROUTER_THRESHOLD", "0.25")),
         nudge_enabled=os.getenv("NUDGE_ENABLED", "false").lower() == "true",
         nudge_phones=os.getenv("NUDGE_PHONES", ""),
         nudge_morning_hour_ist=int(os.getenv("NUDGE_MORNING_HOUR_IST", "10")),

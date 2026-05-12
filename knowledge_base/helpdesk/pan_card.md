@@ -1,5 +1,8 @@
 # PAN Card
 
+## Keywords
+PAN, e-PAN, NSDL, UTIITSL, income tax PAN, Aadhaar e-KYC, PAN-Aadhaar link, duplicate PAN, PAN correction, minor PAN, instant PAN, PAN photo
+
 ## Common Questions & Answers
 
 ### "Who can apply?"
@@ -31,6 +34,33 @@ Approximately ₹110 for Indian address, ₹1020 for foreign address.
 
 ### "Is e-PAN available?"
 Yes, e-PAN (digital PAN) can be downloaded from NSDL or UTIITSL portal after your application is processed.
+
+### "Aadhaar use karke PAN apply ho sakta hai?"
+Haan — NSDL ya UTIITSL portal pe Aadhaar-based application kar sakti ho. Mobile Aadhaar se linked hai to e-KYC aur e-sign ho jata hai, physical documents nahin chahiye. **Instant e-PAN** Aadhaar ke through 10 minute mein generate ho sakta hai (Income Tax e-filing portal).
+
+### "Aadhaar zaroori hai PAN apply karne ke liye?"
+Govt ke rules ke according Aadhaar mandatory hai PAN application ke liye. Driving license / passport / voter ID se bhi apply ho sakta hai, par baad mein Aadhaar linking compulsory hai.
+
+### "Mobile Aadhaar se linked nahin hai, PAN apply ho sakta hai?"
+Haan, par physical documents submit karne padenge aur application sign karna padega. Aadhaar e-KYC use nahin hoga.
+
+### "PAN-Aadhaar link kyun zaroori hai?"
+Duplicate PANs prevent karne ke liye, income tax compliance ke liye, aur financial transactions ke liye. Linking nahin ki to PAN inoperative ho sakta hai.
+
+### "Minor ka PAN ban sakta hai?"
+Haan — parent ya guardian apply kar sakte hain. Bachhe ka birth certificate aur parent ka identity proof chahiye. Koi minimum age nahin hai.
+
+### "PAN address change kaise karu?"
+NSDL / UTIITSL portal pe correction request submit karo, naye address ka proof (Aadhaar, utility bill) ke saath. Updated card mil jaayega.
+
+### "PAN khoya to misuse se kaise bachu?"
+FIR ya complaint file karo, duplicate PAN ke liye apply karo, aur bank ya income tax department ko inform karo agar zaroori ho.
+
+### "PAN kab mandatory hota hai?"
+Bank account kholne ke liye, ITR file karne ke liye, ₹10 lakh se zyada ki property buy/sell, ₹50,000 se zyada deposits, mutual funds / shares mein investment, aur loans / credit cards ke liye.
+
+### "Fee aur time kya hai?"
+₹93 (India address), ₹864 (foreign address). Instant e-PAN — free. Card 7-15 working days mein deliver hota hai.
 
 ## Required Documents
 

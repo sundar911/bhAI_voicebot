@@ -1,5 +1,8 @@
 # Voter ID
 
+## Keywords
+Voter ID, Election card, EPIC, e-EPIC, NVSP, voter list, electoral roll, Form 6, Form 8, Form 6B, polling booth, Election Commission, voter registration, मतदान card, मतदाता, Voter Helpline App
+
 ## Common Questions & Answers
 
 ### "Who can vote?"
@@ -28,6 +31,36 @@ Your polling booth is mentioned on your Voter ID or can be found online at the E
 
 ### "Is voting a must?"
 No, but it is a key right and responsibility in a democracy.
+
+### "Naya Voter ID kahan apply karu?"
+Online: NVSP portal — voters.eci.gov.in / nvsp.in / Voter Helpline App. Offline: nazdeeki Electoral Registration Office ya CSC center.
+
+### "Min age kya hai?"
+18 saal, qualifying date 1 January us saal ki.
+
+### "Documents kya chahiye?"
+Identity proof (Aadhaar, Passport, Driving License), address proof, aur age proof (first-time voters ke liye). Mobile number bhi chahiye OTP aur tracking ke liye.
+
+### "Aadhaar-Voter ID link kaise karu?"
+NVSP portal, Voter Helpline App ke through, ya Form 6B submit karke. Linking encouraged hai par fully mandatory nahin.
+
+### "Galat naam ya age theek karne ke liye konsa form?"
+Form 8 — corrections (naam, photo, address, age) ke liye. Online ya offline submit kar sakti ho with valid proof.
+
+### "Address change kar diya, purana Voter ID use kar sakti hu?"
+Nahin — naye constituency ke liye Form 6 submit karke address update karna padega. Naya Voter ID milega.
+
+### "Process kitna time leta hai?"
+Document verification ke baad 2-4 weeks.
+
+### "e-EPIC download kaise karu?"
+NVSP portal pe login karke e-EPIC (Electronic Voter ID) download kar sakti ho.
+
+### "Voter ID home delivery hota hai ya pickup karna padta hai?"
+Usually registered address pe post se aata hai, par kabhi kabhi Election Office se collect bhi karna padta hai.
+
+### "CSC se apply karne mein fee?"
+Voter registration generally free hai. CSC ek chhoti service fee (₹20-30) le sakta hai.
 
 ## Required Documents
 

@@ -1,5 +1,8 @@
 # ESIC (Employee State Insurance Corporation)
 
+## Keywords
+ESIC, ESI, ESI hospital, employee insurance, dispensary, ESIC card, ESI card, sickness benefit, maternity benefit, disability benefit, IP number, ESIC contribution, employee state insurance
+
 ## General Information
 
 ### "How does ESIC work?"

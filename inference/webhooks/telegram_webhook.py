@@ -46,7 +46,6 @@ from src.bhai.memory.summarizer import (
     parse_summary,
     should_summarize,
 )
-from src.bhai.resilience.faq_cache import FAQCache
 from src.bhai.resilience.queue import RequestQueue
 from src.bhai.resilience.worker import RetryWorker
 from src.bhai.stt.sarvam_stt import SarvamSTT
@@ -205,7 +204,6 @@ def _extract_phone_numbers(text: str):
 
 _store: ConversationStore | None = None
 _queue: RequestQueue | None = None
-_faq_cache: FAQCache | None = None
 _worker_task: asyncio.Task | None = None
 
 AUDIO_RESPONSE_DIR = INFERENCE_OUTPUTS_DIR / "telegram_audio"
@@ -232,13 +230,6 @@ def _get_queue() -> RequestQueue:
         _queue = RequestQueue(db_path)
         logger.info("Request queue initialized at %s", db_path)
     return _queue
-
-
-def _get_faq_cache(threshold: float = 0.6) -> FAQCache:
-    global _faq_cache
-    if _faq_cache is None:
-        _faq_cache = FAQCache(KNOWLEDGE_BASE_DIR, threshold=threshold)
-    return _faq_cache
 
 
 def _check_rate_limit(phone: str) -> bool:
@@ -514,7 +505,6 @@ def process_message(
     config = load_config()
     store = _get_store()
     queue = _get_queue()
-    faq_cache = _get_faq_cache(threshold=config.faq_cache_threshold)
 
     telegram_client = TelegramClient(bot_token=config.telegram_bot_token)
 
@@ -602,8 +592,8 @@ def process_message(
     _greeting_word = _detect_greeting(transcript)
     is_re_onboarding = (not is_first_ever) and _greeting_word == "/start"
 
-    # ── FAQ cache check ────────────────────────────────────────────
-    faq_match = None
+    # ── LLM call (FAQ short-circuit dropped — every reply runs through Sonnet
+    # so output is always in bhAI's voice / Hindi, not raw .md content). ──
     llm_result = None
     response_text = None
     memory_summary = ""
@@ -622,69 +612,62 @@ def process_message(
             _greeting_word,
         )
     else:
-        # Skip FAQ for re-onboarding — we want the LLM with full memory context.
-        faq_match = None if is_re_onboarding else faq_cache.match(transcript)
+        try:
+            llm = create_llm(config)
+            user_profile = llm.load_user_profile(phone)
+            memory = store.get_memory(phone)
 
-        if faq_match:
-            response_text = faq_cache.format_response(faq_match)
-            logger.info("FAQ cache hit for user=%s: '%s'", phone_id, faq_match.question)
-        else:
-            try:
-                llm = create_llm(config)
-                user_profile = llm.load_user_profile(phone)
-                memory = store.get_memory(phone)
+            extracted_facts = ""
+            if memory:
+                memory_summary = memory["summary"]
+                facts_list = memory["facts"]
+                if facts_list:
+                    extracted_facts = "\n".join(f"- {f}" for f in facts_list)
 
-                extracted_facts = ""
-                if memory:
-                    memory_summary = memory["summary"]
-                    facts_list = memory["facts"]
-                    if facts_list:
-                        extracted_facts = "\n".join(f"- {f}" for f in facts_list)
+            recent = store.get_recent_messages(phone, limit=8)
 
-                recent = store.get_recent_messages(phone, limit=8)
+            mode_instruction = RE_ONBOARDING_INSTRUCTION if is_re_onboarding else ""
+            if is_re_onboarding:
+                logger.info("Re-onboarding branch for user=%s on /start", phone_id)
 
-                mode_instruction = RE_ONBOARDING_INSTRUCTION if is_re_onboarding else ""
-                if is_re_onboarding:
-                    logger.info("Re-onboarding branch for user=%s on /start", phone_id)
+            llm_result = llm.generate_with_emotions(
+                transcript,
+                domain="hr_admin",
+                user_profile=user_profile,
+                memory_summary=memory_summary,
+                extracted_facts=extracted_facts,
+                conversation_history=recent,
+                is_new_session=is_new_session or is_re_onboarding,
+                mode_instruction=mode_instruction,
+            )
+            response_text = llm_result["text"]
+            logger.info(
+                "LLM response for user=%s, length=%d chars, escalate=%s",
+                phone_id,
+                len(response_text),
+                llm_result["escalate"],
+            )
 
-                llm_result = llm.generate_with_emotions(
-                    transcript,
-                    domain="hr_admin",
-                    user_profile=user_profile,
-                    memory_summary=memory_summary,
-                    extracted_facts=extracted_facts,
-                    conversation_history=recent,
-                    is_new_session=is_new_session or is_re_onboarding,
-                    mode_instruction=mode_instruction,
+            if is_first_ever:
+                intro = _build_intro(config)
+                response_text = llm_result["text"] + " " + intro
+                segs = list(
+                    llm_result.get("segments")
+                    or [{"text": llm_result["text"], "emotion": "neutral"}]
                 )
-                response_text = llm_result["text"]
-                logger.info(
-                    "LLM response for user=%s, length=%d chars, escalate=%s",
-                    phone_id,
-                    len(response_text),
-                    llm_result["escalate"],
-                )
+                segs.append({"text": intro, "emotion": "happy"})
+                llm_result = {**llm_result, "text": response_text, "segments": segs}
 
-                if is_first_ever:
-                    intro = _build_intro(config)
-                    response_text = llm_result["text"] + " " + intro
-                    segs = list(
-                        llm_result.get("segments")
-                        or [{"text": llm_result["text"], "emotion": "neutral"}]
-                    )
-                    segs.append({"text": intro, "emotion": "happy"})
-                    llm_result = {**llm_result, "text": response_text, "segments": segs}
-
-            except Exception as e:
-                logger.error("LLM failed for user=%s: %s", phone_id, e)
-                queue.enqueue(
-                    phone=phone,
-                    sender=str(chat_id),
-                    audio_path=str(inbound_path or run_dir),
-                    stage="llm",
-                    transcript=transcript,
-                )
-                return
+        except Exception as e:
+            logger.error("LLM failed for user=%s: %s", phone_id, e)
+            queue.enqueue(
+                phone=phone,
+                sender=str(chat_id),
+                audio_path=str(inbound_path or run_dir),
+                stage="llm",
+                transcript=transcript,
+            )
+            return
 
     # Save assistant response
     store.save_message(phone, "assistant", response_text, session_id)
@@ -695,8 +678,8 @@ def process_message(
         phone_id,
         store,
         config,
-        memory_summary=("" if faq_match else (memory_summary or "")),
-        memory=store.get_memory(phone) if not faq_match else None,
+        memory_summary=memory_summary or "",
+        memory=store.get_memory(phone),
     )
 
     _synthesize_and_send_voice(
