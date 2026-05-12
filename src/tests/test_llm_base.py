@@ -107,6 +107,63 @@ def test_clean_response_keeps_emotions_by_default():
     assert "EMOTIONS_JSON" in cleaned
 
 
+# ── _strip_reasoning_leak ────────────────────────────────────────────
+
+
+def test_strip_reasoning_leak_drops_system_prompt_paragraph():
+    """Paragraphs mentioning 'system prompt' are leaked reasoning — strip them."""
+    raw = (
+        "User Malayalam में बोल रही हैं. system prompt कहता है Devanagari में जवाब दो.\n\n"
+        "मणिमाला, नमस्ते! कैसी हैं आप?"
+    )
+    cleaned = BaseLLM._strip_reasoning_leak(raw)
+    assert "system prompt" not in cleaned
+    assert "मणिमाला, नमस्ते" in cleaned
+
+
+def test_strip_reasoning_leak_drops_anti_sycophancy_marker():
+    """References to internal prompt rules ('anti-sycophancy') are reasoning leakage."""
+    raw = (
+        "यह loan के बारे में है. Anti-sycophancy rule apply होता है, मुझे numbers पूछने हैं.\n\n"
+        "₹50,000 का loan — एक बात बताइए, अभी कितना EMI जा रहा है?"
+    )
+    cleaned = BaseLLM._strip_reasoning_leak(raw)
+    assert "anti-sycophancy" not in cleaned.lower()
+    assert "₹50,000 का loan" in cleaned
+
+
+def test_strip_reasoning_leak_preserves_clean_response():
+    """A normal response with no reasoning markers passes through untouched."""
+    raw = "अरे मणिमाला, कैसी हैं आप? आज खाने में क्या बनाया?"
+    cleaned = BaseLLM._strip_reasoning_leak(raw)
+    assert cleaned == raw
+
+
+def test_strip_reasoning_leak_falls_back_to_last_paragraph():
+    """If every paragraph contains a marker, keep the last as fallback."""
+    raw = (
+        "system prompt कहता है X.\n\n"
+        "anti-sycophancy rule apply होता है इसलिए मुझे Y करना है."
+    )
+    cleaned = BaseLLM._strip_reasoning_leak(raw)
+    # Last paragraph kept even though it also has a marker — better than empty.
+    assert cleaned != ""
+    assert "anti-sycophancy" in cleaned.lower()
+
+
+def test_clean_response_strips_reasoning_leak_end_to_end():
+    """The full clean pipeline strips leakage (the Manimala May 11 case)."""
+    raw = (
+        "User Malayalam में बोल रही हैं. system prompt कहता है Devanagari Hindi में जवाब दो TTS के लिए.\n\n"
+        "यह एक financial decision है. Anti-sycophancy rule apply होता है. मुझे पहले पूरा हिसाब समझना है.\n\n"
+        "मणिमाला, ₹50,000 लोन — एक बात बताइए, अभी हर महीने कितना खर्च होता है?"
+    )
+    cleaned = BaseLLM._clean_response(raw)
+    assert "system prompt" not in cleaned
+    assert "anti-sycophancy" not in cleaned.lower()
+    assert "मणिमाला, ₹50,000 लोन" in cleaned
+
+
 # ── _strip_markdown ───────────────────────────────────────────────────
 
 

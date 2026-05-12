@@ -11,10 +11,11 @@ import json
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Union
 
 from ..config import KNOWLEDGE_BASE_DIR, Config
 from ..resilience.retry import retry_with_backoff
+from .kb_router import KBRouter
 
 
 def _read_file(path: Path) -> str:
@@ -58,6 +59,26 @@ class BaseLLM(ABC):
         self.escalation_policy = _read_file(shared_dir / "escalation_policy.md")
         self.style_guide = _read_file(shared_dir / "style_guide.md")
 
+        # KB router: selects which helpdesk/*.md files to inject per turn.
+        # Default backend is Haiku 4.5 (LLM-as-router with prompt caching);
+        # falls back transparently to the keyword KBRouter if the API key
+        # is missing or the Haiku call errors at runtime.
+        self._kb_router: Optional[Union[KBRouter, "HaikuKBRouter"]] = None
+        if getattr(config, "kb_router_enabled", False):
+            keyword_router = KBRouter(self.kb_dir / "helpdesk")
+            backend = getattr(config, "kb_router_backend", "haiku")
+            api_key = getattr(config, "anthropic_api_key", "")
+            if backend == "haiku" and api_key:
+                from .haiku_router import HaikuKBRouter
+
+                self._kb_router = HaikuKBRouter(
+                    kb_dir=self.kb_dir,
+                    fallback=keyword_router,
+                    api_key=api_key,
+                )
+            else:
+                self._kb_router = keyword_router
+
     @property
     @abstractmethod
     def model_name(self) -> str:
@@ -75,14 +96,29 @@ class BaseLLM(ABC):
 
     # ── knowledge base ────────────────────────────────────────────────────
 
-    def _load_domain_context(self, domain: str) -> str:
-        """Load domain-specific knowledge base content."""
+    def _load_domain_context(
+        self,
+        domain: str,
+        paths: Optional[Iterable[Path]] = None,
+    ) -> str:
+        """Load domain-specific knowledge base content.
+
+        When ``paths`` is None, every ``.md`` in the domain directory is
+        included (legacy behavior). When provided, only those paths inside
+        the domain directory are loaded — used by the KB router to inject
+        a per-turn subset.
+        """
         domain_dir = self.kb_dir / domain
         if not domain_dir.exists():
             return ""
 
+        if paths is None:
+            files: List[Path] = sorted(domain_dir.glob("*.md"))
+        else:
+            files = [p for p in paths if p.parent == domain_dir and p.exists()]
+
         context_parts = []
-        for md_file in sorted(domain_dir.glob("*.md")):
+        for md_file in files:
             content = _read_file(md_file)
             if content:
                 context_parts.append(f"### {md_file.stem}\n{content}")
@@ -133,19 +169,30 @@ class BaseLLM(ABC):
         user_profile: str = "",
         memory_summary: str = "",
         extracted_facts: str = "",
+        transcript: str = "",
     ) -> str:
-        """Build system prompt from versioned template + user context + KB."""
+        """Build system prompt from versioned template + user context + KB.
+
+        When the KB router is enabled and a ``transcript`` is provided, only
+        the routed subset of ``helpdesk/*.md`` is injected. Otherwise the
+        whole helpdesk block is injected (legacy behavior).
+        """
         version = getattr(self.config, "prompt_version", "current")
         prompt = self._load_prompt_template(version)
 
-        # Inject knowledge base: helpdesk (documents) + hr_admin (yojanas)
-        helpdesk_kb = self._load_domain_context("helpdesk")
+        # Inject helpdesk KB: routed if router is enabled and transcript is
+        # available, else full block. The router always returns _index.md
+        # plus 0..N matched docs.
+        helpdesk_paths: Optional[List[Path]] = None
+        if self._kb_router is not None and transcript:
+            helpdesk_paths = self._kb_router.route(
+                transcript,
+                top_n=getattr(self.config, "kb_router_top_n", 3),
+                threshold=getattr(self.config, "kb_router_threshold", 0.05),
+            )
+        helpdesk_kb = self._load_domain_context("helpdesk", paths=helpdesk_paths)
         if helpdesk_kb:
-            prompt += f"\n\n=== Helpdesk Knowledge Base (documents, IDs) ===\n{helpdesk_kb}"
-
-        govt_schemes = _read_file(self.kb_dir / "hr_admin" / "govt_schemes.md")
-        if govt_schemes:
-            prompt += f"\n\n=== Government Schemes (Yojanas) Knowledge Base ===\n{govt_schemes}"
+            prompt += f"\n\n=== Helpdesk Knowledge Base (documents, schemes) ===\n{helpdesk_kb}"
 
         # Append user-specific context (only if available)
         if user_profile:
@@ -163,20 +210,96 @@ class BaseLLM(ABC):
 
     # Keywords that signal each topic category
     _TOPIC_KEYWORDS = {
-        "खाना": {"वड़ा", "पाव", "भाजी", "खाना", "खाती", "खाते", "ठेला", "चाय",
-                  "चीज़", "घी", "recipe", "बनाता", "बनाती", "पीती", "पीते",
-                  "सरदार", "favourite", "dish", "food", "भूख", "नाश्ता", "बिरयानी"},
-        "मुंबई": {"लोकल", "ट्रेन", "भीड़", "ऑटो", "मीटर", "station", "स्टेशन",
-                  "किलोमीटर", "ट्रैफ़िक", "बारिश", "मुंबई", "धारावी"},
-        "काम": {"बैग", "design", "बना", "बनाती", "order", "काम", "office",
-                "product", "pattern", "हाथ", "machine", "शिफ्ट"},
+        "खाना": {
+            "वड़ा",
+            "पाव",
+            "भाजी",
+            "खाना",
+            "खाती",
+            "खाते",
+            "ठेला",
+            "चाय",
+            "चीज़",
+            "घी",
+            "recipe",
+            "बनाता",
+            "बनाती",
+            "पीती",
+            "पीते",
+            "सरदार",
+            "favourite",
+            "dish",
+            "food",
+            "भूख",
+            "नाश्ता",
+            "बिरयानी",
+        },
+        "मुंबई": {
+            "लोकल",
+            "ट्रेन",
+            "भीड़",
+            "ऑटो",
+            "मीटर",
+            "station",
+            "स्टेशन",
+            "किलोमीटर",
+            "ट्रैफ़िक",
+            "बारिश",
+            "मुंबई",
+            "धारावी",
+        },
+        "काम": {
+            "बैग",
+            "design",
+            "बना",
+            "बनाती",
+            "order",
+            "काम",
+            "office",
+            "product",
+            "pattern",
+            "हाथ",
+            "machine",
+            "शिफ्ट",
+        },
         "मौसम": {"गर्मी", "बारिश", "सर्दी", "धूप", "मौसम", "पानी", "भीगना", "ठंड"},
-        "Bollywood": {"गाना", "शाहरुख़", "फ़िल्म", "actor", "actress", "Bollywood",
-                      "गाती", "गाते"},
-        "परिवार": {"बेटा", "बेटी", "school", "बच्चे", "शरारत", "prize", "पढ़ाई",
-                   "बीवी", "पति", "घर", "परिवार", "माँ", "पापा", "भाई"},
-        "ज़िंदगी": {"Sunday", "छुट्टी", "plan", "ख़ुशी", "याद", "सुबह", "superpower",
-                    "सपना", "इंसान"},
+        "Bollywood": {
+            "गाना",
+            "शाहरुख़",
+            "फ़िल्म",
+            "actor",
+            "actress",
+            "Bollywood",
+            "गाती",
+            "गाते",
+        },
+        "परिवार": {
+            "बेटा",
+            "बेटी",
+            "school",
+            "बच्चे",
+            "शरारत",
+            "prize",
+            "पढ़ाई",
+            "बीवी",
+            "पति",
+            "घर",
+            "परिवार",
+            "माँ",
+            "पापा",
+            "भाई",
+        },
+        "ज़िंदगी": {
+            "Sunday",
+            "छुट्टी",
+            "plan",
+            "ख़ुशी",
+            "याद",
+            "सुबह",
+            "superpower",
+            "सपना",
+            "इंसान",
+        },
     }
 
     @staticmethod
@@ -250,9 +373,9 @@ class BaseLLM(ABC):
                 alternatives = BaseLLM._TOPIC_TRANSITIONS.get(topic, ["कुछ नया"])
                 alt_str = ", ".join(alternatives[:2])
                 parts.append(
-                    f"[सुझाव: \"{topic}\" पर काफ़ी बात हो चुकी है। "
+                    f'[सुझाव: "{topic}" पर काफ़ी बात हो चुकी है। '
                     f"अगर user ने छोटा जवाब दिया है तो smoothly topic बदलो — "
-                    f"\"अच्छा एक बात बताओ —\" बोलो और {alt_str} में से कुछ पूछो। "
+                    f'"अच्छा एक बात बताओ —" बोलो और {alt_str} में से कुछ पूछो। '
                     f"पर अगर user अभी detail दे रहा है तो उनकी बात सुनो।]\n"
                 )
 
@@ -287,9 +410,17 @@ class BaseLLM(ABC):
         Markdown leaks (asterisks, bullet markers) get read literally by TTS
         ("asterisk asterisk", "dash"). We strip them as a safety net even
         though the prompt also forbids them.
+
+        Also strips chain-of-thought leakage — paragraphs where the model
+        narrates its reasoning ("system prompt कहता है...", "anti-sycophancy
+        rule apply होता है...") before the actual response. Even though the
+        prompt forbids this, the model can still slip when rules conflict.
         """
+        # First strip reasoning leakage (paragraph-level), then clean lines
+        text = BaseLLM._strip_reasoning_leak(raw_text)
+
         cleaned_lines = []
-        for line in raw_text.splitlines():
+        for line in text.splitlines():
             if "ESCALATE" in line.upper():
                 continue
             if strip_emotions and line.strip().startswith("EMOTIONS_JSON:"):
@@ -299,6 +430,60 @@ class BaseLLM(ABC):
                 cleaned_lines.append(stripped)
         text = "\n".join(cleaned_lines).strip()
         return BaseLLM._strip_markdown(text)
+
+    # Markers that indicate the model is narrating its own reasoning instead
+    # of speaking to the user. These English terms should NEVER appear in a
+    # Hindi/Marathi/Gujarati voice note. If any of them shows up in a
+    # paragraph, that paragraph is treated as leaked reasoning and dropped.
+    _REASONING_LEAK_MARKERS = (
+        "system prompt",
+        "anti-sycophancy",
+        "TTS engine",
+        "the rule",
+        "this rule",
+        "conflict है",
+        "rule apply",
+        "मुझे पहले",
+        "let me think",
+        "मुझे सोच",
+    )
+
+    @staticmethod
+    def _strip_reasoning_leak(raw_text: str) -> str:
+        """Drop paragraphs that look like the model is narrating its reasoning.
+
+        Splits on blank-line paragraph boundaries. Any paragraph containing
+        an internal-jargon marker (see `_REASONING_LEAK_MARKERS`) is dropped.
+        If the entire response gets dropped, returns the LAST paragraph as a
+        last-ditch fallback (better something than nothing).
+        """
+        if not raw_text:
+            return raw_text
+
+        paragraphs = re.split(r"\n\s*\n", raw_text)
+        kept = []
+        dropped_any = False
+        for para in paragraphs:
+            lowered = para.lower()
+            if any(m.lower() in lowered for m in BaseLLM._REASONING_LEAK_MARKERS):
+                dropped_any = True
+                continue
+            kept.append(para)
+
+        if dropped_any:
+            import logging
+
+            logging.getLogger("bhai.llm").warning(
+                "Reasoning leak detected and stripped (paragraphs dropped: %d)",
+                len(paragraphs) - len(kept),
+            )
+
+        if not kept:
+            # Worst case: every paragraph contained reasoning. Keep the last
+            # one so the user gets *something* — better than empty silence.
+            return paragraphs[-1].strip() if paragraphs else raw_text
+
+        return "\n\n".join(kept).strip()
 
     @staticmethod
     def _strip_markdown(text: str) -> str:
@@ -388,7 +573,7 @@ class BaseLLM(ABC):
             Dictionary with text, raw, and escalate.
         """
         system_prompt = self._build_system_prompt(
-            domain, user_profile, memory_summary, extracted_facts
+            domain, user_profile, memory_summary, extracted_facts, transcript
         )
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
@@ -427,7 +612,7 @@ class BaseLLM(ABC):
         """
         system_prompt = (
             self._build_system_prompt(
-                domain, user_profile, memory_summary, extracted_facts
+                domain, user_profile, memory_summary, extracted_facts, transcript
             )
             + EMOTION_INSTRUCTION
         )
