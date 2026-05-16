@@ -1,0 +1,74 @@
+# Pre-commit hooks for bhAI voice bot.
+#
+# Setup (one time):
+#   pip install pre-commit
+#   pre-commit install
+#
+# Hooks then run automatically on every `git commit`. To run manually:
+#   pre-commit run --all-files
+#
+# To bypass (rarely — only when you know what you're doing):
+#   git commit --no-verify
+
+repos:
+  # ── Built-in sanity hooks ────────────────────────────────────────
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v5.0.0
+    hooks:
+      - id: trailing-whitespace
+      - id: end-of-file-fixer
+      - id: check-yaml
+      - id: check-toml
+      - id: check-added-large-files
+        args: ["--maxkb=500"]
+      - id: check-merge-conflict
+      - id: debug-statements
+
+  # ── Formatting ───────────────────────────────────────────────────
+  - repo: https://github.com/psf/black
+    rev: 24.10.0
+    hooks:
+      - id: black
+        language_version: python3.11
+        args: ["--line-length=88"]
+        files: ^(src/|inference/|scripts/|benchmarking/scripts/).*\.py$
+
+  - repo: https://github.com/pycqa/isort
+    rev: 5.13.2
+    hooks:
+      - id: isort
+        args: ["--profile", "black", "--line-length=88"]
+        files: ^(src/|inference/|scripts/|benchmarking/scripts/).*\.py$
+
+  # ── Type checking (same flags as CI) ─────────────────────────────
+  - repo: local
+    hooks:
+      - id: mypy
+        name: mypy (src/bhai)
+        entry: uv run mypy src/bhai/ --ignore-missing-imports
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^src/bhai/.*\.py$
+
+  # ── Test suite (full run — ~0.7s for 194 tests) ──────────────────
+  - repo: local
+    hooks:
+      - id: pytest
+        name: pytest (src/tests)
+        entry: uv run pytest src/tests/ -q
+        language: system
+        types: [python]
+        pass_filenames: false
+        stages: [pre-commit]
+
+  # ── Entry-point import smoke (catches half-committed modules) ────
+  - repo: local
+    hooks:
+      - id: import-smoke
+        name: import-smoke (webhook entry points)
+        entry: uv run python -c "import inference.webhooks.telegram_webhook, inference.webhooks.twilio_webhook, inference.webhooks.nudges, inference.web.chat_server"
+        language: system
+        types: [python]
+        pass_filenames: false
+        files: ^(inference/|src/bhai/).*\.py$

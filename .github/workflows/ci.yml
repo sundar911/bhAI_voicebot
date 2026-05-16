@@ -47,3 +47,31 @@ jobs:
 
       - name: Type check
         run: uv run mypy src/bhai/ --ignore-missing-imports
+
+  # Verifies every webhook entry point imports cleanly from a fresh checkout.
+  # Catches the failure mode of commit 75f9a1c — where the diff referenced
+  # new KB router modules that were never `git add`-ed. Local unit tests
+  # passed because they didn't import the webhook; Railway crashed at deploy.
+  import-smoke:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+
+      - name: Set up Python
+        run: uv python install 3.11
+
+      - name: Install dependencies
+        run: uv sync --extra dev
+
+      - name: Verify webhook entry points import cleanly
+        env:
+          BHAI_ENCRYPTION_KEY: "ZmRsa2pmZGxrZmpkbGtmamRsa2ZqZGxrZmpkbGtmamRsaw=="
+        run: |
+          uv run python -c "import inference.webhooks.telegram_webhook"
+          uv run python -c "import inference.webhooks.twilio_webhook"
+          uv run python -c "import inference.webhooks.nudges"
+          uv run python -c "import inference.web.chat_server"

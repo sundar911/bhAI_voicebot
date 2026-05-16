@@ -42,6 +42,7 @@ class ClaudeLLM(BaseLLM):
         )
         if response.stop_reason == "max_tokens":
             import logging
+
             logging.getLogger("bhai.llm").warning(
                 "Claude response truncated (hit max_tokens=%d)", 1024
             )

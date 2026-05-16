@@ -64,6 +64,7 @@ class SarvamLLM(BaseLLM):
 
         if response.choices[0].finish_reason in ("length", "max_tokens"):
             import logging
+
             logging.getLogger("bhai.llm").warning(
                 "Sarvam response truncated (finish_reason=%s)",
                 response.choices[0].finish_reason,
