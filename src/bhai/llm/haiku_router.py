@@ -175,10 +175,13 @@ class HaikuKBRouter:
             )
             return self.fallback.route(transcript, top_n=top_n)
 
+        # Duck-typed on the SDK's `type` discriminator so both real TextBlock
+        # instances and SimpleNamespace mocks in tests work the same way.
+        # mypy can't narrow on the string equality so we silence union-attr here.
         raw_output = ""
         for block in response.content:
             if getattr(block, "type", None) == "text":
-                raw_output = block.text.strip()
+                raw_output = block.text.strip()  # type: ignore[union-attr]
                 break
 
         logger.info(

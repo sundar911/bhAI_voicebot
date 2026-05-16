@@ -93,7 +93,28 @@ cp .env.example .env
 
 # Run tests
 uv run pytest
+
+# Install pre-commit hooks (one-time, blocks bad commits locally)
+uv run pre-commit install
 ```
+
+### Before you commit
+
+Three gates protect `main` from broken code. They run automatically — you don't need to remember them, but knowing what they do helps when one fires:
+
+| Gate | Where it runs | What it catches |
+|------|---------------|-----------------|
+| `pre-commit` hooks | Local, on every `git commit` | `black`, `isort`, `mypy`, `pytest`, entry-point import smoke |
+| GitHub Actions CI | On every push + PR | Same checks as pre-commit, plus a fresh-clone import test |
+| Branch protection | At merge time | Requires CI green + 1 PR approval before merging to `main` |
+
+If you've added new behavior (a new endpoint, a new prompt rule, a new integration), invoke `/write-tests` in Claude Code **before committing**. It scans the diff, identifies untested code paths, and proposes tests. Behavior shipped without a test is how regressions sneak in — see [`src/tests/test_contracts.py`](src/tests/test_contracts.py) for examples of regression contracts we maintain for past pilot incidents.
+
+If you absolutely must bypass pre-commit (rare — only when you understand what you're doing):
+```bash
+git commit --no-verify
+```
+But CI will still run, and branch protection still blocks merge if CI fails.
 
 ### Code Structure
 
@@ -118,11 +139,13 @@ src/bhai/
 │   ├── elevenlabs_tts.py        # ElevenLabs voice cloning
 │   └── emotion_tagger.py        # Emotion tagging for TTS
 ├── llm/                         # Language models
-│   ├── base.py                  # Abstract LLM interface
-│   ├── sarvam_llm.py            # Sarvam (default)
-│   ├── openai_llm.py            # OpenAI
-│   ├── claude_llm.py            # Anthropic Claude
-│   └── prompts/                 # Prompt templates
+│   ├── base.py                  # Abstract LLM interface (+ markdown/COT stripping)
+│   ├── sarvam_llm.py            # Sarvam backend
+│   ├── openai_llm.py            # OpenAI backend
+│   ├── claude_llm.py            # Anthropic Claude (pilot default)
+│   ├── kb_router.py             # Keyword-based KB router (fallback)
+│   ├── haiku_router.py          # Claude Haiku KB router (primary, cached)
+│   └── prompts/                 # Prompt templates (current.md, prompt_v1_pilot.md)
 ├── pipelines/                   # Pipeline orchestration
 │   ├── base_pipeline.py         # Abstract pipeline
 │   └── hr_admin_pipeline.py     # HR-Admin domain pipeline
@@ -130,7 +153,7 @@ src/bhai/
 │   ├── store.py                 # Per-user message persistence
 │   └── summarizer.py            # Context window summarization
 ├── resilience/                  # Reliability (legacy — built for Twilio entry point)
-│   ├── faq_cache.py             # FAQ matching (Jaccard similarity) — still active
+│   ├── faq_cache.py             # FAQ matching (Jaccard) — short-circuit dropped, see ARCHITECTURE §5
 │   ├── queue.py                 # Request queue — orphaned under Telegram
 │   ├── retry.py                 # Retry with exponential backoff — orphaned
 │   └── worker.py                # Background retry worker — orphaned
@@ -198,7 +221,7 @@ uv run pytest --cov=src/bhai
 uv run pytest -v
 ```
 
-Tests live in `src/tests/` and cover: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth.
+Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 194 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, Haiku router.
 
 ### Code Style
 
