@@ -241,27 +241,30 @@ def _get_queue() -> RequestQueue:
 
 
 def _get_email_client(config) -> EmailClient | None:
-    """Lazy-init the Gmail SMTP email client.
+    """Lazy-init the Gmail API email client.
 
-    Returns None when SMTP credentials are unset — the escalation handler
-    short-circuits on a None/disabled client so dev runs are safe.
+    Returns None when any of the four OAuth values is unset — the
+    escalation handler short-circuits on a None/disabled client so dev
+    runs are safe.
     """
     global _email_client
-    if not (config.smtp_username and config.smtp_app_password):
+    if not (
+        config.gmail_client_id
+        and config.gmail_client_secret
+        and config.gmail_refresh_token
+        and config.gmail_sender_email
+    ):
         return None
     if _email_client is None:
         _email_client = EmailClient(
-            username=config.smtp_username,
-            app_password=config.smtp_app_password,
-            from_address=config.escalation_from_email,
-            host=config.smtp_host,
-            port=config.smtp_port,
+            client_id=config.gmail_client_id,
+            client_secret=config.gmail_client_secret,
+            refresh_token=config.gmail_refresh_token,
+            sender_email=config.gmail_sender_email,
         )
         logger.info(
-            "Email client initialized (host=%s:%d, from=%s, recipients=%d)",
-            config.smtp_host,
-            config.smtp_port,
-            config.escalation_from_email,
+            "Email client initialized (backend=gmail-api, sender=%s, recipients=%d)",
+            config.gmail_sender_email,
             len(config.escalation_recipients),
         )
     return _email_client
@@ -774,8 +777,9 @@ def _schedule_escalation(
     email_client = _get_email_client(config)
     if email_client is None:
         logger.warning(
-            "Escalation triggered for user=%s but SMTP credentials are unset "
-            "(SMTP_USERNAME / SMTP_APP_PASSWORD) — no email will be sent",
+            "Escalation triggered for user=%s but Gmail OAuth credentials "
+            "are unset (GMAIL_CLIENT_ID/CLIENT_SECRET/REFRESH_TOKEN/SENDER_EMAIL) "
+            "— no email will be sent",
             phone_id,
         )
         return

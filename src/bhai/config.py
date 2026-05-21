@@ -105,16 +105,16 @@ class Config:
     azure_app_client_id: str = ""
     sharepoint_hostname: str = "tinymiraclesnl.sharepoint.com"
 
-    # Escalation emails (Gmail SMTP via Google Workspace) — when ESCALATE: true
-    # fires, send an email to the impact team. escalation_enabled auto-flips
-    # false if SMTP credentials are missing so dev/test runs never silently
-    # try to send. Generate an app password at:
-    # https://myaccount.google.com/apppasswords (2FA required).
-    smtp_host: str = "smtp.gmail.com"
-    smtp_port: int = 587
-    smtp_username: str = ""  # e.g. bhai@tinymiracles.com
-    smtp_app_password: str = ""  # 16-char Google app-specific password
-    escalation_from_email: str = "bhai@tinymiracles.com"
+    # Escalation emails (Gmail API + OAuth 2.0) — when ESCALATE: true fires,
+    # send an email to the impact team via the Gmail HTTPS API. SMTP doesn't
+    # work from Railway (outbound 25/465/587 blocked at the platform level).
+    # escalation_enabled auto-flips false if OAuth credentials are missing so
+    # dev/test runs never silently try to send.
+    # Capture the refresh token once via: uv run python scripts/gmail_oauth_setup.py
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
+    gmail_refresh_token: str = ""
+    gmail_sender_email: str = ""  # the Workspace account that owns the refresh token
     escalation_recipients: tuple = ()
     escalation_enabled: bool = False
 
@@ -198,14 +198,10 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         sharepoint_hostname=os.getenv(
             "SHAREPOINT_HOSTNAME", "tinymiraclesnl.sharepoint.com"
         ),
-        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
-        smtp_port=int(os.getenv("SMTP_PORT", "587")),
-        smtp_username=os.getenv("SMTP_USERNAME", ""),
-        smtp_app_password=os.getenv("SMTP_APP_PASSWORD", ""),
-        escalation_from_email=os.getenv(
-            "ESCALATION_FROM_EMAIL",
-            os.getenv("SMTP_USERNAME", "bhai@tinymiracles.com"),
-        ),
+        gmail_client_id=os.getenv("GMAIL_CLIENT_ID", ""),
+        gmail_client_secret=os.getenv("GMAIL_CLIENT_SECRET", ""),
+        gmail_refresh_token=os.getenv("GMAIL_REFRESH_TOKEN", ""),
+        gmail_sender_email=os.getenv("GMAIL_SENDER_EMAIL", ""),
         escalation_recipients=tuple(
             addr.strip()
             for addr in os.getenv(
@@ -215,8 +211,10 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             if addr.strip()
         ),
         escalation_enabled=(
-            bool(os.getenv("SMTP_USERNAME"))
-            and bool(os.getenv("SMTP_APP_PASSWORD"))
+            bool(os.getenv("GMAIL_CLIENT_ID"))
+            and bool(os.getenv("GMAIL_CLIENT_SECRET"))
+            and bool(os.getenv("GMAIL_REFRESH_TOKEN"))
+            and bool(os.getenv("GMAIL_SENDER_EMAIL"))
             and os.getenv("ESCALATION_ENABLED", "true").lower() == "true"
         ),
     )

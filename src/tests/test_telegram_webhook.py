@@ -400,37 +400,50 @@ def test_admin_send_message_rejects_whitespace_only_text():
 
 
 def test_get_email_client_returns_none_when_credentials_missing():
-    """Dev/test path: no SMTP creds → no client constructed → no accidental sends."""
+    """Dev/test path: no OAuth creds → no client constructed → no accidental sends."""
     from inference.webhooks.telegram_webhook import _get_email_client
 
     class _Cfg:
-        smtp_username = ""
-        smtp_app_password = ""
+        gmail_client_id = ""
+        gmail_client_secret = ""
+        gmail_refresh_token = ""
+        gmail_sender_email = ""
 
     assert _get_email_client(_Cfg()) is None
 
 
+def test_get_email_client_returns_none_when_any_oauth_field_missing():
+    """All four OAuth values must be set — partial creds disables the client."""
+    from inference.webhooks import telegram_webhook as tw
+
+    class _Cfg:
+        gmail_client_id = "x.apps.googleusercontent.com"
+        gmail_client_secret = "GOCSPX-x"
+        gmail_refresh_token = ""  # missing
+        gmail_sender_email = "bhai@example.com"
+
+    assert tw._get_email_client(_Cfg()) is None
+
+
 def test_get_email_client_builds_client_when_creds_present(monkeypatch):
-    """With both username + app password set, an EmailClient is returned."""
+    """With all four OAuth values set, an EmailClient is returned."""
     from inference.webhooks import telegram_webhook as tw
 
     # Reset the module-level singleton so this test is hermetic
     monkeypatch.setattr(tw, "_email_client", None)
 
     class _Cfg:
-        smtp_username = "bhai@example.com"
-        smtp_app_password = "abcd efgh ijkl mnop"
-        smtp_host = "smtp.gmail.com"
-        smtp_port = 587
-        escalation_from_email = "bhai@example.com"
+        gmail_client_id = "x.apps.googleusercontent.com"
+        gmail_client_secret = "GOCSPX-x"
+        gmail_refresh_token = "1//x"
+        gmail_sender_email = "bhai@example.com"
         escalation_recipients = ("rishi@example.com",)
 
     client = tw._get_email_client(_Cfg())
     assert client is not None
-    assert client.username == "bhai@example.com"
-    assert client.from_address == "bhai@example.com"
-    assert client.host == "smtp.gmail.com"
-    assert client.port == 587
+    assert client.client_id == "x.apps.googleusercontent.com"
+    assert client.refresh_token == "1//x"
+    assert client.sender_email == "bhai@example.com"
 
 
 def test_schedule_escalation_drops_silently_without_loop(monkeypatch, tmp_path):
@@ -446,8 +459,10 @@ def test_schedule_escalation_drops_silently_without_loop(monkeypatch, tmp_path):
     monkeypatch.setattr(tw, "_email_client", None)
 
     cfg = Config(
-        smtp_username="bhai@example.com",
-        smtp_app_password="apppass",
+        gmail_client_id="x.apps.googleusercontent.com",
+        gmail_client_secret="GOCSPX-x",
+        gmail_refresh_token="1//x",
+        gmail_sender_email="bhai@example.com",
         escalation_recipients=("rishi@example.com",),
         escalation_enabled=True,
     )

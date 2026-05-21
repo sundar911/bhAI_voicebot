@@ -1,51 +1,77 @@
 """
-Gmail SMTP email client for escalation notifications.
+Gmail API email client for escalation notifications.
 
-Authenticates against smtp.gmail.com using a Google Workspace user
-(e.g. bhai@tinymiracles.com) and a 16-char app-specific password.
-Generate one at: https://myaccount.google.com/apppasswords (2FA must be on).
+Uses OAuth 2.0 with a long-lived refresh token captured by
+scripts/gmail_oauth_setup.py. Sends via the Gmail API (HTTPS to
+gmail.googleapis.com) rather than SMTP — Railway and most modern PaaS
+block outbound SMTP on 25/465/587 to prevent abuse, so SMTP is a dead
+end in cloud deployments.
 
-We use stdlib smtplib (no extra dep) and wrap the blocking send in
-asyncio.to_thread so the event loop isn't stalled.
-
-The client is intentionally minimal: one method, returns bool, never raises.
-Callers (escalation handler) decide what to do with a False return.
+The client is intentionally minimal: one method, returns bool, never
+raises. Callers (escalation handler) decide what to do with a False
+return. The Google access token is auto-refreshed by Credentials when
+needed, so we hold a single Credentials instance for the process
+lifetime.
 """
 
 import asyncio
+import base64
 import logging
-import smtplib
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from email.message import EmailMessage
-from typing import List
+from typing import List, Optional
+
+from google.auth.transport.requests import Request as GoogleAuthRequest
+from google.oauth2.credentials import Credentials
+from googleapiclient.discovery import build
 
 logger = logging.getLogger("bhai.integrations.email")
+
+# Send-only scope — least privilege. Matches what scripts/gmail_oauth_setup.py
+# requests when capturing the refresh token. Mismatch will fail at send time.
+GMAIL_SCOPES = ["https://www.googleapis.com/auth/gmail.send"]
 
 
 @dataclass
 class EmailClient:
-    """Gmail SMTP client wrapped for async use.
+    """Async wrapper around the Gmail API users.messages.send endpoint.
 
-    Defaults target Gmail Workspace on port 587 (STARTTLS). For 465 (implicit
-    SSL) set port=465 — the client picks SMTP_SSL automatically.
+    The Gmail API SDK is sync, so we wrap each send in asyncio.to_thread
+    to avoid blocking the event loop (same pattern as resilience/worker.py).
     """
 
-    username: str
-    app_password: str
-    from_address: str
-    host: str = "smtp.gmail.com"
-    port: int = 587
-    timeout: int = 30
+    client_id: str
+    client_secret: str
+    refresh_token: str
+    sender_email: str
+    _creds: Optional[Credentials] = field(default=None, init=False, repr=False)
+
+    def _get_credentials(self) -> Credentials:
+        """Lazily build Credentials; reuse across sends so the access token
+        cache + auto-refresh works."""
+        if self._creds is None:
+            self._creds = Credentials(
+                token=None,  # forces a refresh on first use
+                refresh_token=self.refresh_token,
+                token_uri="https://oauth2.googleapis.com/token",
+                client_id=self.client_id,
+                client_secret=self.client_secret,
+                scopes=GMAIL_SCOPES,
+            )
+        return self._creds
 
     async def send(self, to: List[str], subject: str, html_body: str) -> bool:
-        """Send an HTML email. Returns True on success, False on any failure.
+        """Send an HTML email via Gmail API. Returns True on success, False
+        on any failure.
 
         Failures are logged with the error string but no PII (recipient
         addresses are internal Tiny Miracles emails — we log count, not
         addresses).
         """
-        if not (self.username and self.app_password):
-            logger.warning("EmailClient.send called with no credentials — skipping")
+        if not (self.client_id and self.client_secret and self.refresh_token):
+            logger.warning(
+                "EmailClient.send called with incomplete OAuth credentials — skipping"
+            )
             return False
         if not to:
             logger.warning("EmailClient.send called with empty recipient list")
@@ -64,20 +90,22 @@ class EmailClient:
             return False
 
     def _send_sync(self, to: List[str], subject: str, html_body: str) -> None:
+        creds = self._get_credentials()
+        if not creds.valid:
+            creds.refresh(GoogleAuthRequest())
+
         msg = EmailMessage()
-        msg["From"] = self.from_address
+        msg["From"] = self.sender_email
         msg["To"] = ", ".join(to)
         msg["Subject"] = subject
-        # Set a minimal plain-text fallback then add the HTML alternative.
         msg.set_content("This email requires an HTML-capable client.")
         msg.add_alternative(html_body, subtype="html")
 
-        if self.port == 465:
-            with smtplib.SMTP_SSL(self.host, self.port, timeout=self.timeout) as s:
-                s.login(self.username, self.app_password)
-                s.send_message(msg)
-        else:
-            with smtplib.SMTP(self.host, self.port, timeout=self.timeout) as s:
-                s.starttls()
-                s.login(self.username, self.app_password)
-                s.send_message(msg)
+        # Gmail API expects URL-safe base64 of the raw RFC 822 message.
+        raw = base64.urlsafe_b64encode(msg.as_bytes()).decode("ascii")
+
+        # cache_discovery=False suppresses the file-cache warning under
+        # google-api-python-client when running in environments without a
+        # writable HOME (Railway containers).
+        service = build("gmail", "v1", credentials=creds, cache_discovery=False)
+        service.users().messages().send(userId="me", body={"raw": raw}).execute()
