@@ -105,6 +105,19 @@ class Config:
     azure_app_client_id: str = ""
     sharepoint_hostname: str = "tinymiraclesnl.sharepoint.com"
 
+    # Escalation emails (Gmail SMTP via Google Workspace) — when ESCALATE: true
+    # fires, send an email to the impact team. escalation_enabled auto-flips
+    # false if SMTP credentials are missing so dev/test runs never silently
+    # try to send. Generate an app password at:
+    # https://myaccount.google.com/apppasswords (2FA required).
+    smtp_host: str = "smtp.gmail.com"
+    smtp_port: int = 587
+    smtp_username: str = ""  # e.g. bhai@tinymiracles.com
+    smtp_app_password: str = ""  # 16-char Google app-specific password
+    escalation_from_email: str = "bhai@tinymiracles.com"
+    escalation_recipients: tuple = ()
+    escalation_enabled: bool = False
+
 
 def load_config(env_path: Optional[Path] = None) -> Config:
     """
@@ -184,5 +197,26 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),
         sharepoint_hostname=os.getenv(
             "SHAREPOINT_HOSTNAME", "tinymiraclesnl.sharepoint.com"
+        ),
+        smtp_host=os.getenv("SMTP_HOST", "smtp.gmail.com"),
+        smtp_port=int(os.getenv("SMTP_PORT", "587")),
+        smtp_username=os.getenv("SMTP_USERNAME", ""),
+        smtp_app_password=os.getenv("SMTP_APP_PASSWORD", ""),
+        escalation_from_email=os.getenv(
+            "ESCALATION_FROM_EMAIL",
+            os.getenv("SMTP_USERNAME", "bhai@tinymiracles.com"),
+        ),
+        escalation_recipients=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS",
+                "rishikesh@tinymiracles.com,anu@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_enabled=(
+            bool(os.getenv("SMTP_USERNAME"))
+            and bool(os.getenv("SMTP_APP_PASSWORD"))
+            and os.getenv("ESCALATION_ENABLED", "true").lower() == "true"
         ),
     )

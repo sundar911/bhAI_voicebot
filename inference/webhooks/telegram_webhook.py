@@ -37,6 +37,8 @@ from src.bhai.config import (
     KNOWLEDGE_BASE_DIR,
     load_config,
 )
+from src.bhai.escalations.handler import handle_escalation
+from src.bhai.integrations.email_client import EmailClient
 from src.bhai.integrations.telegram_client import TelegramClient
 from src.bhai.llm import create_llm
 from src.bhai.memory.store import ConversationStore
@@ -204,7 +206,13 @@ def _extract_phone_numbers(text: str):
 
 _store: ConversationStore | None = None
 _queue: RequestQueue | None = None
+_email_client: EmailClient | None = None
 _worker_task: asyncio.Task | None = None
+# Captured at app startup so sync background tasks (process_message) can
+# schedule coroutines (handle_escalation) back onto the main event loop via
+# asyncio.run_coroutine_threadsafe. FastAPI runs sync BackgroundTasks in a
+# threadpool — there's no running loop to call asyncio.create_task on.
+_main_event_loop: asyncio.AbstractEventLoop | None = None
 
 AUDIO_RESPONSE_DIR = INFERENCE_OUTPUTS_DIR / "telegram_audio"
 
@@ -230,6 +238,33 @@ def _get_queue() -> RequestQueue:
         _queue = RequestQueue(db_path)
         logger.info("Request queue initialized at %s", db_path)
     return _queue
+
+
+def _get_email_client(config) -> EmailClient | None:
+    """Lazy-init the Gmail SMTP email client.
+
+    Returns None when SMTP credentials are unset — the escalation handler
+    short-circuits on a None/disabled client so dev runs are safe.
+    """
+    global _email_client
+    if not (config.smtp_username and config.smtp_app_password):
+        return None
+    if _email_client is None:
+        _email_client = EmailClient(
+            username=config.smtp_username,
+            app_password=config.smtp_app_password,
+            from_address=config.escalation_from_email,
+            host=config.smtp_host,
+            port=config.smtp_port,
+        )
+        logger.info(
+            "Email client initialized (host=%s:%d, from=%s, recipients=%d)",
+            config.smtp_host,
+            config.smtp_port,
+            config.escalation_from_email,
+            len(config.escalation_recipients),
+        )
+    return _email_client
 
 
 def _check_rate_limit(phone: str) -> bool:
@@ -420,7 +455,8 @@ def _send_nudge(chat_id: int, slot: str, text: str) -> None:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Start the retry worker + nudge loop + webhook watchdog on app startup."""
-    global _worker_task, _nudge_task, _webhook_watchdog_task
+    global _worker_task, _nudge_task, _webhook_watchdog_task, _main_event_loop
+    _main_event_loop = asyncio.get_running_loop()
     config = load_config()
     worker = RetryWorker(
         queue=_get_queue(),
@@ -597,6 +633,7 @@ def process_message(
     llm_result = None
     response_text = None
     memory_summary = ""
+    user_profile = ""  # set inside the LLM branch; default for greeting branch
 
     if is_first_ever and _greeting_word:
         intro = _build_intro(config)
@@ -690,6 +727,86 @@ def process_message(
         run_id=run_id,
         run_dir=run_dir,
         phone_id=phone_id,
+    )
+
+    # ── Escalation: send email to impact team + follow-up confirmation ──
+    # Scheduled AFTER the promise voice note above so the user always hears
+    # "main email karne wali hoon" before the system-generated confirmation
+    # ("kar diya" / "nahi ja paaya") arrives.
+    if llm_result and llm_result.get("escalate"):
+        _schedule_escalation(
+            config=config,
+            store=store,
+            telegram_client=telegram_client,
+            phone=phone,
+            chat_id=chat_id,
+            phone_id=phone_id,
+            session_id=session_id,
+            transcript=transcript,
+            response_text=response_text,
+            user_profile=user_profile,
+            run_id=run_id,
+            run_dir=run_dir,
+        )
+
+
+def _schedule_escalation(
+    *,
+    config,
+    store: ConversationStore,
+    telegram_client: TelegramClient,
+    phone: str,
+    chat_id: int,
+    phone_id: str,
+    session_id: str,
+    transcript: str,
+    response_text: str,
+    user_profile: str,
+    run_id: str,
+    run_dir: Path,
+) -> None:
+    """Schedule handle_escalation onto the main event loop.
+
+    process_message runs in a FastAPI threadpool worker (sync `def`), so we
+    can't asyncio.create_task here — no running loop in this thread. We use
+    run_coroutine_threadsafe against the loop captured in lifespan().
+    """
+    email_client = _get_email_client(config)
+    if email_client is None:
+        logger.warning(
+            "Escalation triggered for user=%s but SMTP credentials are unset "
+            "(SMTP_USERNAME / SMTP_APP_PASSWORD) — no email will be sent",
+            phone_id,
+        )
+        return
+
+    if _main_event_loop is None:
+        logger.error(
+            "Escalation triggered for user=%s but main event loop not "
+            "captured (lifespan didn't run) — dropping",
+            phone_id,
+        )
+        return
+
+    asyncio.run_coroutine_threadsafe(
+        handle_escalation(
+            config=config,
+            email_client=email_client,
+            store=store,
+            voice_sender=_synthesize_and_send_voice,
+            phone=phone,
+            chat_id=chat_id,
+            phone_id=phone_id,
+            session_id=session_id,
+            user_transcript=transcript,
+            bot_response=response_text,
+            recent_messages=store.get_recent_messages(phone, limit=8),
+            user_profile=user_profile,
+            run_id=run_id,
+            run_dir=run_dir,
+            telegram_client=telegram_client,
+        ),
+        _main_event_loop,
     )
 
 
