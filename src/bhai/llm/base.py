@@ -485,6 +485,86 @@ class BaseLLM(ABC):
 
         return "\n\n".join(kept).strip()
 
+    # Named human contacts bhAI cannot actually message today. Used by
+    # `_detect_outreach_claim` to flag confabulated outreach. "impact team"
+    # is included as a phrase; "team" alone is too noisy.
+    _OUTREACH_CONTACTS = (
+        "Vijay",
+        "Priti",
+        "Rishi",
+        "Sarfaraz",
+        "Vidhi",
+        "impact team",
+    )
+
+    @staticmethod
+    def _detect_outreach_claim(text: str, escalate: bool) -> Optional[str]:
+        """Detect confabulated outreach claims (past or future tense).
+
+        bhAI cannot actually message Vijay, Priti, Rishi, Sarfaraz, Vidhi,
+        or the impact team today. The only legitimate outreach channel is
+        consent-gated ``ESCALATE: true`` (which triggers a real email via
+        the escalation pipeline).
+
+        Past-tense outreach is always a lie — bhAI cannot have already
+        asked anyone synchronously in this turn. Future-tense outreach is
+        a lie *unless* ``escalate`` is ``True``, in which case the system
+        will actually email the impact team after this response.
+
+        Returns a short description of the violation if found, else
+        ``None``. Intentionally narrow (high precision over recall) — a
+        false positive that strips an honest reply is worse than missing
+        an edge case the next eval iteration can catch.
+        """
+        if not text:
+            return None
+
+        contacts = "(" + "|".join(BaseLLM._OUTREACH_CONTACTS) + ")"
+
+        # Past-tense outreach — always a lie, regardless of ESCALATE.
+        past_patterns = [
+            # "मैंने X से पूछा / बता दिया" — first-person past with contact nearby
+            rf"(मैंने|मैने)\s+\S{{0,30}}?(पूछ|बता|बोल|message कर)",
+            # "Vijay ने बताया / कहा / बोला"
+            rf"{contacts}\s+(?:Sir\s+|जी\s+)?ने\s+(बताया|कहा|बोला|कह\s+दिया)",
+            # "Vijay का जवाब आया / मिला"
+            rf"{contacts}\s+(का|की)\s+\S{{0,15}}?(जवाब|reply)\s+(आया|मिला|आ\s+गया)",
+            # "Vijay से पूछ लिया" — past completed action near contact
+            rf"{contacts}.{{0,40}}?(पूछ\s+लिया|बता\s+दिया|बोल\s+दिया|message\s+कर\s+दिया)",
+            rf"(पूछ\s+लिया|बता\s+दिया|बोल\s+दिया|message\s+कर\s+दिया).{{0,40}}?{contacts}",
+        ]
+        for pat in past_patterns:
+            m = re.search(pat, text)
+            if m:
+                snippet = m.group(0).replace("\n", " ")[:80]
+                return f"past-tense outreach: '{snippet}'"
+
+        # Future-tense outreach — lie unless ESCALATE: true (consent-gated).
+        if not escalate:
+            future_patterns = [
+                # "मैं Vijay/team से/को X" (पूछ/बता/message/email/etc.)
+                rf"मैं\s+{contacts}(?:\s+|को|से)\s*\S{{0,25}}?"
+                rf"(पूछ|बता|बोल|message|email|note|forward|contact)",
+                # "Vijay से/को पूछ के बताऊँगी" or similar future commitments
+                rf"{contacts}\s+(से|को)\s+\S{{0,30}}?"
+                rf"(पूछूँगी|बताऊँगी|बता\s+दूँगी|message\s+करूँगी|email\s+करूँगी|"
+                rf"पूछ\s+के\s+बताऊँगी|पूछ\s+के\s+बताती\s+हूँ)",
+            ]
+            for pat in future_patterns:
+                m = re.search(pat, text)
+                if not m:
+                    continue
+                # Negation suppression: if "नहीं" appears in a small window
+                # around the match, this is an honest disclaimer, not a lie.
+                # e.g. "मैं Vijay को directly message नहीं कर सकती"
+                window = text[max(0, m.start() - 20) : m.end() + 20]
+                if "नहीं" in window:
+                    continue
+                snippet = m.group(0).replace("\n", " ")[:80]
+                return f"future-tense outreach (no ESCALATE): '{snippet}'"
+
+        return None
+
     @staticmethod
     def _strip_markdown(text: str) -> str:
         """Strip markdown so TTS doesn't read it literally.
@@ -531,6 +611,69 @@ class BaseLLM(ABC):
         return None
 
     # ── retry helper ─────────────────────────────────────────────────────
+
+    _OUTREACH_CORRECTION_PROMPT = (
+        "\n\nIMPORTANT correction for your next reply: your previous draft "
+        "contained a confabulated outreach claim — you implied you would "
+        "(or did) message someone like Vijay, Priti, Rishi, Sarfaraz, "
+        "Vidhi, or the impact team. You CANNOT actually message anyone "
+        "today outside the consent-gated ESCALATE: true flow. Rewrite the "
+        "response: name the capability limit honestly ('मैं अभी directly "
+        "किसी को message नहीं कर सकती'), and route the user to a direct "
+        "contact number (text the number for documents/schemes from the "
+        "KB) or just answer the underlying question yourself without "
+        "claiming any outreach. Do not output the same draft."
+    )
+
+    def _guard_outreach(
+        self,
+        raw_text: str,
+        escalate: bool,
+        cleaned_text: str,
+        system_prompt: str,
+        user_message: str,
+        strip_emotions: bool,
+    ) -> tuple:
+        """One-shot re-prompt if a confabulated outreach claim is detected.
+
+        bhAI cannot message anyone today outside ``ESCALATE: true``. If the
+        cleaned response contains a past-tense or future-tense outreach
+        claim against a named contact and no escalation is in flight, log
+        the violation, re-prompt the LLM once with a corrective system
+        message, and return the corrected outputs. If the second draft
+        still fails, emit a warning but return the (still-failing) text —
+        the response cleaner has already stripped the worst structural
+        leaks, and silence is worse than a logged warning.
+
+        Returns ``(raw_text, escalate, cleaned_text)``.
+        """
+        violation = BaseLLM._detect_outreach_claim(cleaned_text, escalate)
+        if not violation:
+            return raw_text, escalate, cleaned_text
+
+        import logging
+
+        log = logging.getLogger("bhai.llm")
+        log.warning("Confabulated outreach detected, re-prompting: %s", violation)
+
+        corrected_prompt = system_prompt + self._OUTREACH_CORRECTION_PROMPT
+        try:
+            new_raw = self._call_api_with_retry(corrected_prompt, user_message)
+        except Exception:  # pragma: no cover - defensive fallback
+            log.exception("Outreach re-prompt failed; keeping original draft")
+            return raw_text, escalate, cleaned_text
+
+        new_escalate = self._detect_escalation(new_raw)
+        new_cleaned = self._clean_response(new_raw, strip_emotions=strip_emotions)
+
+        residual = BaseLLM._detect_outreach_claim(new_cleaned, new_escalate)
+        if residual:
+            log.warning(
+                "Outreach claim persisted after re-prompt: %s (emitting anyway)",
+                residual,
+            )
+
+        return new_raw, new_escalate, new_cleaned
 
     def _call_api_with_retry(
         self, system_prompt: str, user_message: str, max_attempts: int = 3
@@ -583,6 +726,18 @@ class BaseLLM(ABC):
         escalate = self._detect_escalation(raw_text)
         cleaned_text = self._clean_response(raw_text)
 
+        # One-shot re-prompt if the response contains a confabulated outreach
+        # claim. bhAI cannot actually message anyone outside the consent-gated
+        # ESCALATE: true flow.
+        raw_text, escalate, cleaned_text = self._guard_outreach(
+            raw_text,
+            escalate,
+            cleaned_text,
+            system_prompt,
+            user_message,
+            strip_emotions=False,
+        )
+
         return {
             "text": cleaned_text or raw_text,
             "raw": raw_text,
@@ -625,6 +780,15 @@ class BaseLLM(ABC):
 
         escalate = self._detect_escalation(raw_text)
         cleaned_text = self._clean_response(raw_text, strip_emotions=True)
+
+        raw_text, escalate, cleaned_text = self._guard_outreach(
+            raw_text,
+            escalate,
+            cleaned_text,
+            system_prompt,
+            user_message,
+            strip_emotions=True,
+        )
 
         segments = self._parse_emotion_segments(raw_text)
         if segments is None:

@@ -233,11 +233,15 @@ def test_prompt_template_contains_outreach_honesty_rule():
         "Honesty-About-Outreach Rule" in prompt
     ), "Honesty-About-Outreach Rule section header is missing"
 
-    # The hard ban on past-tense outreach must remain explicit
+    # The hard ban on confabulated outreach must remain explicit. Both past-
+    # and future-tense outreach are lies (per the 2026-05-18 Phase 1 rewrite);
+    # the only legitimate outreach channel is consent-gated ESCALATE: true.
     must_contain = [
         "No past-tense outreach claims",
-        "मैं पूछ के बताऊँगी",  # the allowed future tense phrasing
-        "मैंने पूछ लिया है",  # the explicitly banned past tense
+        "No future-tense outreach claims",  # NEW: future-tense is also a lie outside ESCALATE
+        "मैंने पूछ लिया",  # explicitly banned past tense example
+        "ESCALATE: true",  # the one legitimate outreach channel
+        "अभी directly",  # the capability disclosure phrasing
         "No fake attribution",
     ]
     for phrase in must_contain:

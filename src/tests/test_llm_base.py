@@ -260,3 +260,76 @@ def test_system_prompt_includes_memory_summary(stub_llm):
         "hr_admin", memory_summary="User asked about PF twice."
     )
     assert "PF" in prompt
+
+
+# ── _detect_outreach_claim ─────────────────────────────────────────────
+
+
+def test_detect_outreach_claim_clean_response_returns_none():
+    """A normal helpful response with no outreach claim is fine."""
+    text = "आज खाने में क्या बनाया है? मुझे curry बहुत पसंद है।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is None
+
+
+def test_detect_outreach_claim_past_tense_vijay_attribution():
+    """'Vijay ने बताया' is a fake-attribution lie, always."""
+    text = "Vijay ने बताया कि Grant Road पर karate classes हैं।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is not None
+
+
+def test_detect_outreach_claim_past_tense_self_action():
+    """'मैंने ... पूछ लिया' is a past-tense outreach lie, always."""
+    text = "मैंने Vijay से karate के बारे में पूछ लिया है।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is not None
+
+
+def test_detect_outreach_claim_past_tense_blocked_even_with_escalate():
+    """Past-tense outreach is a lie even when ESCALATE: true (you can't
+    have already messaged anyone in the same turn)."""
+    text = "Vijay ने बताया कि classes Grant Road पर हैं।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=True) is not None
+
+
+def test_detect_outreach_claim_future_tense_without_escalate_flagged():
+    """'मैं Vijay से पूछूँगी' without ESCALATE: true is a lie — bhAI cannot
+    actually message Vijay."""
+    text = "अच्छा, मैं Vijay से पूछ के बताऊँगी।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is not None
+
+
+def test_detect_outreach_claim_future_tense_with_escalate_allowed():
+    """Future-tense outreach IS allowed when ESCALATE: true — the consent-
+    gated flow does send a real email."""
+    text = "Main team ko email kar rahi hoon — Rishi aur Sarfaraz ko."
+    assert BaseLLM._detect_outreach_claim(text, escalate=True) is None
+
+
+def test_detect_outreach_claim_negation_suppresses_match():
+    """An honest disclaimer like 'मैं Vijay को message नहीं कर सकती'
+    must not be flagged — the negation is the whole point."""
+    text = "मैं अभी directly Vijay को message नहीं कर सकती — ये feature आ रहा है जल्दी।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is None
+
+
+def test_detect_outreach_claim_kb_check_phrase_allowed():
+    """'मैं देख के बताती हूँ' (checking KB, not asking a human) is allowed."""
+    text = "एक minute रुको, मैं देख के बताती हूँ — Aadhaar के documents क्या लगते हैं।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is None
+
+
+def test_detect_outreach_claim_text_in_send_phrase_allowed():
+    """Sending a phone number via text (the system handles this) is NOT
+    outreach — the regex must not trip on 'मैं number text में भेज रही हूँ'."""
+    text = "Vijay का number मैं अभी text में भेज रही हूँ।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is None
+
+
+def test_detect_outreach_claim_empty_text_returns_none():
+    assert BaseLLM._detect_outreach_claim("", escalate=False) is None
+    assert BaseLLM._detect_outreach_claim("", escalate=True) is None
+
+
+def test_detect_outreach_claim_jawab_aaya_flagged():
+    """'Vijay का जवाब आया' (claiming a reply came) is a past-tense lie."""
+    text = "Vijay का जवाब आया — कहते हैं Grant Road पर classes हैं।"
+    assert BaseLLM._detect_outreach_claim(text, escalate=False) is not None

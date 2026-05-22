@@ -22,14 +22,15 @@ SUMMARIZE_PROMPT = """Neeche ek user ki pichli baatcheet ka summary hai aur uske
 
 === Instructions ===
 1. Puraane summary ko nayi baatcheet ke saath update karo. 3-4 lines mein likho, Hindi mein.
-2. Jo important facts hain (naam, parivaar, kaam, health, preferences) unko alag se list karo.
-3. Response SIRF is format mein do:
+2. Jo important facts hain unko alag se list karo: naam, parivaar, kaam, health, preferences, aur user ka gender (agar grammatically signal mile, jaise "main gaya tha" → male, "main gayi thi" → female; agar koi clear signal nahi hai to gender ka fact mat banao).
+3. Gender wala fact iss format mein likho: "gender: female" ya "gender: male".
+4. Response SIRF is format mein do:
 
 SUMMARY:
 [updated summary in 3-4 lines]
 
 FACTS:
-["fact 1", "fact 2", "fact 3"]
+["fact 1", "fact 2", "gender: female"]
 
 Bas itna. Koi aur text mat likho."""
 
