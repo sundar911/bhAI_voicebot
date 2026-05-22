@@ -77,10 +77,8 @@ def telegram_client_stub():
 @pytest.fixture
 def cfg_enabled():
     return Config(
-        gmail_client_id="test-client-id.apps.googleusercontent.com",
-        gmail_client_secret="GOCSPX-test-secret",
-        gmail_refresh_token="1//test-refresh-token",
-        gmail_sender_email="bhai@example.com",
+        resend_api_key="re_test_key",
+        resend_from_email="bhai@example.com",
         escalation_recipients=("rishi@example.com", "anu@example.com"),
         escalation_enabled=True,
     )

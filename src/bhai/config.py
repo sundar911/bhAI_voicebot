@@ -105,16 +105,16 @@ class Config:
     azure_app_client_id: str = ""
     sharepoint_hostname: str = "tinymiraclesnl.sharepoint.com"
 
-    # Escalation emails (Gmail API + OAuth 2.0) — when ESCALATE: true fires,
-    # send an email to the impact team via the Gmail HTTPS API. SMTP doesn't
-    # work from Railway (outbound 25/465/587 blocked at the platform level).
-    # escalation_enabled auto-flips false if OAuth credentials are missing so
+    # Escalation emails (Resend HTTPS API) — when ESCALATE: true fires, send
+    # an email to the impact team. SMTP doesn't work from Railway (outbound
+    # 25/465/587 blocked at the platform level), Resend's HTTPS API does.
+    # escalation_enabled auto-flips false if RESEND_API_KEY is missing so
     # dev/test runs never silently try to send.
-    # Capture the refresh token once via: uv run python scripts/gmail_oauth_setup.py
-    gmail_client_id: str = ""
-    gmail_client_secret: str = ""
-    gmail_refresh_token: str = ""
-    gmail_sender_email: str = ""  # the Workspace account that owns the refresh token
+    # resend_from_email defaults to onboarding@resend.dev (works without
+    # domain verification but only sends to the Resend account owner's email).
+    # Override with bhai@tinymiracles.com once the domain is verified in Resend.
+    resend_api_key: str = ""
+    resend_from_email: str = "onboarding@resend.dev"
     escalation_recipients: tuple = ()
     escalation_enabled: bool = False
 
@@ -198,10 +198,8 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         sharepoint_hostname=os.getenv(
             "SHAREPOINT_HOSTNAME", "tinymiraclesnl.sharepoint.com"
         ),
-        gmail_client_id=os.getenv("GMAIL_CLIENT_ID", ""),
-        gmail_client_secret=os.getenv("GMAIL_CLIENT_SECRET", ""),
-        gmail_refresh_token=os.getenv("GMAIL_REFRESH_TOKEN", ""),
-        gmail_sender_email=os.getenv("GMAIL_SENDER_EMAIL", ""),
+        resend_api_key=os.getenv("RESEND_API_KEY", ""),
+        resend_from_email=os.getenv("RESEND_FROM_EMAIL", "onboarding@resend.dev"),
         escalation_recipients=tuple(
             addr.strip()
             for addr in os.getenv(
@@ -211,10 +209,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             if addr.strip()
         ),
         escalation_enabled=(
-            bool(os.getenv("GMAIL_CLIENT_ID"))
-            and bool(os.getenv("GMAIL_CLIENT_SECRET"))
-            and bool(os.getenv("GMAIL_REFRESH_TOKEN"))
-            and bool(os.getenv("GMAIL_SENDER_EMAIL"))
+            bool(os.getenv("RESEND_API_KEY"))
             and os.getenv("ESCALATION_ENABLED", "true").lower() == "true"
         ),
     )
