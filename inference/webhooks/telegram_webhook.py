@@ -241,22 +241,30 @@ def _get_queue() -> RequestQueue:
 
 
 def _get_email_client(config) -> EmailClient | None:
-    """Lazy-init the Resend email client.
+    """Lazy-init the Gmail API email client.
 
-    Returns None when RESEND_API_KEY is unset — the escalation handler
-    short-circuits on a None/disabled client so dev runs are safe.
+    Returns None when any of the four OAuth values is unset — the
+    escalation handler short-circuits on a None/disabled client so dev
+    runs are safe.
     """
     global _email_client
-    if not config.resend_api_key:
+    if not (
+        config.gmail_client_id
+        and config.gmail_client_secret
+        and config.gmail_refresh_token
+        and config.gmail_sender_email
+    ):
         return None
     if _email_client is None:
         _email_client = EmailClient(
-            api_key=config.resend_api_key,
-            from_email=config.resend_from_email,
+            client_id=config.gmail_client_id,
+            client_secret=config.gmail_client_secret,
+            refresh_token=config.gmail_refresh_token,
+            sender_email=config.gmail_sender_email,
         )
         logger.info(
-            "Email client initialized (backend=resend, from=%s, recipients=%d)",
-            config.resend_from_email,
+            "Email client initialized (backend=gmail-api, sender=%s, recipients=%d)",
+            config.gmail_sender_email,
             len(config.escalation_recipients),
         )
     return _email_client
@@ -769,8 +777,9 @@ def _schedule_escalation(
     email_client = _get_email_client(config)
     if email_client is None:
         logger.warning(
-            "Escalation triggered for user=%s but RESEND_API_KEY is unset — "
-            "no email will be sent",
+            "Escalation triggered for user=%s but Gmail OAuth credentials "
+            "are unset (GMAIL_CLIENT_ID/CLIENT_SECRET/REFRESH_TOKEN/SENDER_EMAIL) "
+            "— no email will be sent",
             phone_id,
         )
         return
