@@ -11,6 +11,24 @@ When adding a row, include:
 
 ---
 
+## 2026-05-22 — Honesty-About-Outreach update: bhAI CAN email now
+
+**Commit**: WIP (this branch — `dev`)
+**Trigger**: user has shipped the consent-gated `ESCALATE: true` → real Gmail email path end-to-end. The earlier Phase 1 prompt had a "this capability is being built" framing that's no longer accurate.
+**Fix shape**: positive capability statement + tighter consent rule. No code changes — the regex backstop (`_detect_outreach_claim`) already handles the ESCALATE-aware case correctly.
+
+Changes:
+- Opening paragraph of Honesty-About-Outreach section rewritten from "you cannot ask anyone" to "you CAN email named contacts via consent-gated `ESCALATE: true`."
+- "The one exception" sub-section renamed to "How outreach actually works" — now describes the channel as the standard mechanism, not as an exception.
+- Three-step procedure made explicit: ask consent → on yes emit `ESCALATE: true` + future tense → on no drop it.
+- Past-tense ban tightened: even when `ESCALATE: true` is emitted, past-tense outreach is still a lie because the email goes async after the turn ends.
+- Verbal habit (line 36): "मैं Vijay से पूछ के बताऊँगी" is now allowed when paired with `ESCALATE: true` and user consent.
+- "If asked 'did you ask Vijay?'" honest response updated to offer the email path rather than "directly call them."
+
+Contract test updated to lock in the new invariants (the "team को email करूँ" consent question is now required to appear).
+
+---
+
 ## 2026-05-22 — Phase 1 anti-lying rewrites
 
 **Commit**: WIP (this branch — `dev`)
