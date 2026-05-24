@@ -4,6 +4,7 @@ Uses Sarvam's TTS API for natural Hindi speech synthesis.
 """
 
 import base64
+import re
 from pathlib import Path
 from typing import Any, Dict
 
@@ -12,6 +13,45 @@ import requests
 from ..config import Config
 from ..resilience.retry import retry_with_backoff
 from .base import BaseTTS
+
+
+def normalize_currency_for_sarvam(text: str) -> str:
+    """Pre-TTS currency normalization for Sarvam's Hindi TTS.
+
+    Sarvam's ``bulbul:v3`` Hindi TTS has no pronunciation for the ``₹``
+    glyph or the English word "rupees" — it falls back to spelling them
+    out letter-by-letter ("r u p e e s"). We convert to the Devanagari
+    form ``रुपए`` before the text hits the API.
+
+    Conversions applied (in order, so the more specific patterns win):
+
+    * ``₹500-800`` → ``500 से 800 रुपए``
+    * ``₹500``    → ``500 रुपए``
+    * lone ``₹`` → ``रुपए`` (rare, but covers edge cases)
+    * ``Rs. 500`` / ``Rs 500`` → ``रुपए 500``
+    * ``rupees`` / ``Rupees`` / ``rupee`` → ``रुपए``
+
+    Leaves all other text untouched (intentional — we only fix what
+    breaks; we don't touch English words Sarvam pronounces correctly).
+    """
+    if not text:
+        return text
+    # Ranges first so we don't accidentally insert रुपए between the
+    # low and high values.
+    text = re.sub(
+        r"₹\s*(\d[\d,]*)\s*[-–—]\s*(\d[\d,]*)",
+        r"\1 से \2 रुपए",
+        text,
+    )
+    # Single amount with the ₹ prefix.
+    text = re.sub(r"₹\s*(\d[\d,]*)", r"\1 रुपए", text)
+    # Standalone glyph (no following digits).
+    text = text.replace("₹", "रुपए ")
+    # English "Rs." / "Rs " followed by a number.
+    text = re.sub(r"\bRs\.?\s*(?=\d)", "रुपए ", text)
+    # "rupees" / "rupee" as a word, in any case.
+    text = re.sub(r"\brupees?\b", "रुपए", text, flags=re.IGNORECASE)
+    return text
 
 
 class SarvamTTS(BaseTTS):
@@ -64,6 +104,10 @@ class SarvamTTS(BaseTTS):
             "api-subscription-key": self.config.sarvam_api_key,
             "Content-Type": "application/json",
         }
+
+        # Normalize ₹ / Rs / "rupees" → रुपए so Sarvam's Hindi TTS doesn't
+        # spell them out letter-by-letter ("r u p e e s").
+        text = normalize_currency_for_sarvam(text)
 
         payload: dict = {
             "text": text,

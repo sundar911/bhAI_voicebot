@@ -11,6 +11,21 @@ When adding a row, include:
 
 ---
 
+## 2026-05-24 — Fix "ru p e e s" letter-by-letter TTS leak
+
+**Commit**: WIP (this branch — `dev`)
+**Trigger**: dev-bot transcript `871473eb2147` showed responses with `₹700-800`, `₹150-180 per person`, etc. Sarvam's `bulbul:v3` Hindi TTS has no pronunciation for the `₹` glyph or the English word "rupees" — it falls back to spelling them out letter-by-letter ("r u p e e s"). User caught it audibly.
+**Fix shape**: pre-TTS regex normalization (in `sarvam_tts.py`, not in the prompt response cleaner — keeps the stored transcript clean with `₹` for log readability) + prompt-side instruction as defense-in-depth.
+
+Changes:
+- New `normalize_currency_for_sarvam()` in [src/bhai/tts/sarvam_tts.py](../../tts/sarvam_tts.py): converts `₹500` → `500 रुपए`, `₹500-800` → `500 से 800 रुपए`, `Rs.500` → `रुपए 500`, "rupees"/"rupee" → `रुपए`. Called inline in `_synthesize_once` right before the API payload is built.
+- Prompt TTS Output Rules: new bullet — "Currency — always Devanagari, never the ₹ glyph. Write `500 रुपए` or `500-800 रुपए` — NOT `₹500`." Notes that the normalization pass exists as a safety net, but the model should produce the right form in the first place.
+- 13 new unit tests in `src/tests/test_sarvam_tts.py` covering: single amounts, ranges (hyphen and en-dash), comma-grouped amounts, `Rs.` prefix, the standalone glyph, the English word in various cases, idempotence on already-Devanagari text, and a guard that `Rs` followed by a non-digit (`Rs corp`) doesn't accidentally substitute.
+
+Only affects Sarvam TTS — ElevenLabs handles currency natively, so its path is untouched.
+
+---
+
 ## 2026-05-22 — Honesty-About-Outreach update: bhAI CAN email now
 
 **Commit**: WIP (this branch — `dev`)
