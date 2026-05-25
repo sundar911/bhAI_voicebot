@@ -111,19 +111,23 @@ class BaseLLM(ABC):
         self.escalation_policy = _read_file(shared_dir / "escalation_policy.md")
         self.style_guide = _read_file(shared_dir / "style_guide.md")
 
-        # KB router: selects which helpdesk/*.md files to inject per turn.
-        # Default backend is Haiku 4.5 (LLM-as-router with prompt caching);
+        # KB router: selects which helpdesk/*.md files to inject per turn
+        # AND emits the use-case tags (grievance/finance/scheme_kb/general).
+        # Default backend is Sonnet 4.6 (LLM-as-router with prompt caching);
         # falls back transparently to the keyword KBRouter if the API key
-        # is missing or the Haiku call errors at runtime.
-        self._kb_router: Optional[Union[KBRouter, "HaikuKBRouter"]] = None
+        # is missing or the LLM call errors at runtime. The legacy
+        # ``kb_router_backend="haiku"`` config value is honoured for
+        # back-compat — both values now route to the same Sonnet-backed
+        # LLMKBRouter; only the keyword fallback runs differently.
+        self._kb_router: Optional[Union[KBRouter, "LLMKBRouter"]] = None
         if getattr(config, "kb_router_enabled", False):
             keyword_router = KBRouter(self.kb_dir / "helpdesk")
             backend = getattr(config, "kb_router_backend", "haiku")
             api_key = getattr(config, "anthropic_api_key", "")
-            if backend == "haiku" and api_key:
-                from .haiku_router import HaikuKBRouter
+            if backend in ("haiku", "sonnet", "llm") and api_key:
+                from .llm_router import LLMKBRouter
 
-                self._kb_router = HaikuKBRouter(
+                self._kb_router = LLMKBRouter(
                     kb_dir=self.kb_dir,
                     fallback=keyword_router,
                     api_key=api_key,
@@ -240,6 +244,7 @@ class BaseLLM(ABC):
         memory_summary: str = "",
         extracted_facts: str = "",
         transcript: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
         """Build system prompt from versioned template + user context + KB + use-cases.
 
@@ -248,6 +253,10 @@ class BaseLLM(ABC):
         returns 0+ use-case tags; matching instruction blocks are appended
         after the KB section so the model sees task-specific guidance for
         the current turn.
+
+        ``conversation_history`` (when provided) is forwarded to the LLM
+        router so it can disambiguate short follow-up turns from their
+        surrounding context. The keyword fallback ignores it.
         """
         version = getattr(self.config, "prompt_version", "current")
         prompt = self._load_prompt_template(version)
@@ -262,6 +271,7 @@ class BaseLLM(ABC):
                 transcript,
                 top_n=getattr(self.config, "kb_router_top_n", 3),
                 threshold=getattr(self.config, "kb_router_threshold", 0.05),
+                conversation_history=conversation_history,
             )
             helpdesk_paths = result.paths
             use_case_tags = result.use_cases
@@ -908,7 +918,12 @@ class BaseLLM(ABC):
         """
         system_prompt = (
             self._build_system_prompt(
-                domain, user_profile, memory_summary, extracted_facts, transcript
+                domain,
+                user_profile,
+                memory_summary,
+                extracted_facts,
+                transcript,
+                conversation_history=conversation_history,
             )
             + MEMORY_INSTRUCTION
         )
@@ -967,7 +982,12 @@ class BaseLLM(ABC):
         """
         system_prompt = (
             self._build_system_prompt(
-                domain, user_profile, memory_summary, extracted_facts, transcript
+                domain,
+                user_profile,
+                memory_summary,
+                extracted_facts,
+                transcript,
+                conversation_history=conversation_history,
             )
             + EMOTION_INSTRUCTION
             + MEMORY_INSTRUCTION

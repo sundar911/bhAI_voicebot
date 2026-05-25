@@ -1,10 +1,10 @@
 """
-One-off validation: send real + synthetic transcripts through HaikuKBRouter
-and print its decisions. Used to sanity-check the new two-line output
-format (KB + USE_CASES) against actual pilot inputs before relying on it
-in production.
+One-off validation: send real + synthetic transcripts through LLMKBRouter
+(Sonnet 4.6) and print its decisions. Used to sanity-check the two-line
+output format (KB + USE_CASES) against actual pilot inputs before
+relying on it in production.
 
-Run: uv run python scripts/validate_haiku_router.py
+Run: uv run python scripts/validate_llm_router.py
 """
 
 import os
@@ -19,8 +19,8 @@ from dotenv import load_dotenv
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
-from src.bhai.llm.haiku_router import HaikuKBRouter  # noqa: E402
 from src.bhai.llm.kb_router import KBRouter  # noqa: E402
+from src.bhai.llm.llm_router import LLMKBRouter  # noqa: E402
 
 load_dotenv()
 
@@ -43,7 +43,11 @@ SYNTHETIC: list[tuple[str, str, set[str]]] = [
     ("Salary slip मिली नहीं अभी तक, account में आ गई क्या?", "finance", {"finance"}),
     ("Loan की कितनी EMI बाकी है मेरी?", "finance", {"finance"}),
     # Grievance — should emit grievance
-    ("Supervisor मुझे रोज़ डांटती है, समझ नहीं आ रहा क्या करूँ।", "grievance", {"grievance"}),
+    (
+        "Supervisor मुझे रोज़ डांटती है, समझ नहीं आ रहा क्या करूँ।",
+        "grievance",
+        {"grievance"},
+    ),
     ("Co-worker harass कर रहा है, बहुत परेशान हूँ।", "grievance", {"grievance"}),
     # Multi-label: grievance + finance (the modal "delayed salary" complaint)
     (
@@ -57,7 +61,11 @@ SYNTHETIC: list[tuple[str, str, set[str]]] = [
         "general",
         {"general"},
     ),
-    ("बेटे के लिए karate classes Grant Road के पास कहाँ मिलेंगी?", "general", {"general"}),
+    (
+        "बेटे के लिए karate classes Grant Road के पास कहाँ मिलेंगी?",
+        "general",
+        {"general"},
+    ),
     ("मेरे बच्चे को पढ़ाई में मदद कैसे करूँ, कुछ tips दो।", "general", {"general"}),
 ]
 
@@ -108,7 +116,7 @@ def main() -> int:
         return 1
 
     fallback = KBRouter(KB_DIR / "helpdesk")
-    router = HaikuKBRouter(kb_dir=KB_DIR, fallback=fallback, api_key=api_key)
+    router = LLMKBRouter(kb_dir=KB_DIR, fallback=fallback, api_key=api_key)
 
     fail_count = 0
     pass_count = 0

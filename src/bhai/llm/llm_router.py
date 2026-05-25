@@ -1,22 +1,30 @@
 """
-KB router driven by Claude Haiku 4.5 with Anthropic prompt caching.
+KB + use-case router driven by Claude Sonnet 4.6 with Anthropic prompt caching.
 
-Per turn, sends the transcribed user message to Haiku alongside a static
-list of available helpdesk topics. Haiku returns two lines: the 1-3 most
+Per turn, sends the transcribed user message — plus the last 1-2 turns of
+conversation history for disambiguation — to Sonnet alongside a static
+list of available helpdesk topics. Sonnet returns two lines: the 1-3 most
 relevant KB file stems, and zero-or-more use-case tags from a fixed
 allowlist (grievance, finance, scheme_kb, general). The static prefix
 carries a ``cache_control`` breakpoint so repeat calls within the 5-minute
 cache TTL pay 10% of input cost.
 
+Previously this used Haiku 4.5 (cheaper, single-turn). We switched to
+Sonnet 4.6 + conversation context after a real-conversation audit
+(2026-05-25 transcript) showed 3 of 10 turns tagged ∅ because short
+follow-ups like "वो आँखें डाँटती रहती है" lost their grievance/scheme_kb
+intent when seen in isolation. Sonnet with 1-2 turns of context closes
+those misses at the cost of ~5× per-call spend (still ≪1 cent per turn
+post-cache).
+
 On any failure (network, parse, missing API key, timeout) the router
 falls back to the keyword ``KBRouter`` so the voice loop never breaks.
 The keyword fallback returns empty use-cases — we'd rather have no tag
-than a wrong tag when Haiku is unavailable.
+than a wrong tag when the LLM router is unavailable.
 """
 
 import logging
 import re
-from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -24,18 +32,24 @@ import anthropic
 
 from .kb_router import KBRouter, RouteResult
 
-logger = logging.getLogger("bhai.llm.haiku_router")
+logger = logging.getLogger("bhai.llm.llm_router")
 
 INDEX_FILE = "_index.md"
-DEFAULT_MODEL = "claude-haiku-4-5-20251001"
+DEFAULT_MODEL = "claude-sonnet-4-6"
 
-# Fixed allowlist. Anything Haiku emits outside this set is dropped.
+# How many messages of conversation history (user + assistant interleaved)
+# to include before the current user transcript. 4 = the last 2
+# user-assistant exchanges. Chosen to disambiguate short follow-ups
+# without burning tokens.
+DEFAULT_CONTEXT_TURNS = 4
+
+# Fixed allowlist. Anything the router LLM emits outside this set is dropped.
 VALID_USE_CASES = ("grievance", "finance", "scheme_kb", "general")
 
 
 _ROUTER_INSTRUCTIONS = """You are a router for bhAI, a Hindi voice bot for Mumbai artisans.
 
-Given a user's transcribed voice message (Hindi, Hinglish, or Marathi), emit exactly two lines:
+You will receive the user's current transcribed voice message, and (when available) the last 1-2 turns of conversation before it. Emit exactly two lines based on the CURRENT user message, using the prior turns to disambiguate short follow-ups:
 
 KB: <comma-separated KB file stems, 1-3, or empty>
 USE_CASES: <comma-separated tags from the allowlist, or empty>
@@ -44,52 +58,78 @@ No quotes, no JSON, no explanation, no other text. Both lines must be present ev
 
 For the KB line: if the query is companion-mode chitchat (greetings, feelings, family, weather, food, daily life), output `KB: _index` only.
 
+**Using prior turns**: a short user follow-up like "हाँ कर दो", "बस इतना ही?", "तुम भेजो", "वो आँखें डाँटती है" inherits the topical intent from the immediately preceding turn(s). If the prior assistant turn was about Aadhaar, the follow-up is still scheme_kb. If the prior turn was about a supervisor problem, the follow-up is still grievance. Don't reset to ∅ just because the current line is short.
+
 KB topics available:
 {topics}
 
 USE_CASES allowlist (multi-label OK):
   grievance   — workplace problem, pay dispute, supervisor/co-worker conflict, harassment, family situation bleeding into work
-  finance     — user asking about their OWN salary, PF, EPF, loan repayment, EMI, salary slip (NOT general money advice)
-  scheme_kb   — user asking about a government scheme or document (Aadhaar, PAN, voter ID, ration card, ESIC, marriage cert, PMMY, PMJAY, etc.) — overlaps with a non-empty KB line
+  finance     — user asking about their OWN salary, PF, EPF, loan repayment, EMI, salary slip (NOT general money advice, NOT government-scheme payments like Ladki Bahin — those are scheme_kb)
+  scheme_kb   — user asking about a government scheme or document (Aadhaar, PAN, voter ID, ration card, ESIC, marriage cert, PMMY, PMJAY, Ladki Bahin, etc.) — overlaps with a non-empty KB line
   general     — everyday "stuff you'd Google": restaurants, kids' classes, brands, recipes, prices, opinions on common decisions
 
 Leave USE_CASES empty for pure companion chitchat (greetings, "how are you", talking about food/weather/family with no specific ask).
 
-Multi-label is allowed when the turn genuinely touches more than one: e.g. a user venting about delayed salary = `grievance, finance`.
+Multi-label is allowed when the turn genuinely touches more than one: e.g. a user venting about delayed employer salary = `grievance, finance`. But don't over-tag — if the turn is clearly about one thing, emit one tag.
 
 Examples:
 
-Query: आज मन भारी है
+Prior:
+  (none)
+Current: आज मन भारी है
 Output:
 KB: _index
 USE_CASES:
 
-Query: Aadhaar update kaise karu?
+Prior:
+  (none)
+Current: Aadhaar update kaise karu?
 Output:
 KB: aadhaar
 USE_CASES: scheme_kb
 
-Query: Salary abhi tak nahi aayi, supervisor kuch bata bhi nahi raha
+Prior:
+  User: मेरे supervisor का कुछ करना पड़ेगा, वो irritate कर रही है
+  bhAI: ये कब से हो रहा है?
+Current: वो आँखें डाँटती रहती है सबके सामने मुझे
+Output:
+KB: _index
+USE_CASES: grievance
+
+Prior:
+  User: दोनों बच्चों का आधार बनवाना है
+  bhAI: BC centre जाना होगा, ये documents लगेंगे...
+Current: बस इतना ही? और कुछ नहीं?
+Output:
+KB: aadhaar
+USE_CASES: scheme_kb
+
+Prior:
+  User: मुझे Priti दीदी मदद करती है सब, मैं उसको बोलूं?
+  bhAI: हाँ बिल्कुल Priti को बोलो, number भेज रही हूँ
+Current: अरे तुम भेजो भाई प्रीति को ईमेल, मैं क्यों भेजूँगी?
+Output:
+KB: _index
+USE_CASES: scheme_kb
+
+Prior:
+  (none)
+Current: Salary abhi tak nahi aayi, supervisor kuch bata bhi nahi raha
 Output:
 KB: _index
 USE_CASES: grievance, finance
 
-Query: Mera PF balance kitna hai?
-Output:
-KB: _index
-USE_CASES: finance
-
-Query: BC ke paas Chinese restaurant ₹700 mein 4 logo ke liye bata
+Prior:
+  (none)
+Current: BC ke paas Chinese restaurant ₹700 mein 4 logo ke liye bata
 Output:
 KB: _index
 USE_CASES: general
 
-Query: naam galat छप गया sab cards pe
-Output:
-KB: aadhaar, gazette, pan_card
-USE_CASES: scheme_kb
-
-Query: Mudra loan chahiye chhota business ke liye
+Prior:
+  (none)
+Current: Mudra loan chahiye chhota business ke liye
 Output:
 KB: scheme_pmmy
 USE_CASES: scheme_kb
@@ -119,13 +159,17 @@ def _read_title_and_keywords(md_path: Path) -> str:
     return f"{title} — {keywords}" if keywords else title
 
 
-class HaikuKBRouter:
-    """LLM-driven KB router using Haiku 4.5 + prompt caching.
+class LLMKBRouter:
+    """LLM-driven KB + use-case router using Sonnet 4.6 + prompt caching.
 
     The router takes the same interface as :class:`KBRouter` so callers
     can swap between them by config. ``threshold`` is accepted for
-    compatibility but ignored — Haiku makes a categorical include/exclude
+    compatibility but ignored — the LLM makes a categorical include/exclude
     decision instead of producing a score.
+
+    Default model is Sonnet 4.6. The class accepts any Claude model id
+    via ``model``; smaller models (Haiku) work but trade accuracy on
+    short follow-ups for cost (see module docstring).
     """
 
     def __init__(
@@ -152,7 +196,7 @@ class HaikuKBRouter:
             topics=self._build_topic_list()
         )
         logger.info(
-            "haiku_router init: model=%s topics=%d system_chars=%d index=%s",
+            "llm_router init: model=%s topics=%d system_chars=%d index=%s",
             self.model,
             len(self._stem_to_path),
             len(self._system_prompt),
@@ -180,12 +224,21 @@ class HaikuKBRouter:
         transcript: str,
         top_n: int = 3,
         threshold: float = 0.0,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> RouteResult:
         """Return docs to inject + use-case tags for this transcript.
 
         Always starts with ``_index.md`` if present. Use-case tags come
         from a fixed allowlist (see ``VALID_USE_CASES``); anything else
-        Haiku emits is silently dropped.
+        the router LLM emits is silently dropped.
+
+        ``conversation_history`` is the recent message list (same shape
+        as what ``BaseLLM.generate`` receives — list of
+        ``{"role": "user"|"assistant", "content": str}``). The last
+        :data:`DEFAULT_CONTEXT_TURNS` entries are included before the
+        current transcript so the LLM can disambiguate short follow-ups.
+        Pass ``None`` (or omit) for the no-context path used by tests
+        and the legacy single-turn flow.
         """
         paths: List[Path] = []
         if self._index_path is not None:
@@ -193,6 +246,8 @@ class HaikuKBRouter:
 
         if not transcript.strip():
             return RouteResult(paths=paths, use_cases=[])
+
+        messages = _build_router_messages(transcript, conversation_history)
 
         try:
             response = self._client.messages.create(
@@ -205,12 +260,12 @@ class HaikuKBRouter:
                         "cache_control": {"type": "ephemeral"},
                     }
                 ],
-                messages=[{"role": "user", "content": transcript}],
+                messages=messages,  # type: ignore[arg-type]
                 temperature=0.0,
             )
         except Exception as e:
             logger.warning(
-                "haiku_router failed (%s: %s), falling back to keyword router",
+                "llm_router failed (%s: %s), falling back to keyword router",
                 type(e).__name__,
                 e,
             )
@@ -228,9 +283,10 @@ class HaikuKBRouter:
         kb_line, use_cases_line = _split_router_output(raw_output)
 
         logger.info(
-            "haiku_router decision: query=%r → kb=%r use_cases=%r "
+            "llm_router decision: query=%r ctx_msgs=%d → kb=%r use_cases=%r "
             "(cache_read=%s cache_write=%s)",
             transcript[:60],
+            len(messages) - 1,  # current turn excluded from "context"
             kb_line,
             use_cases_line,
             getattr(response.usage, "cache_read_input_tokens", None),
@@ -254,6 +310,50 @@ class HaikuKBRouter:
                 use_cases.append(tag)
 
         return RouteResult(paths=paths, use_cases=use_cases)
+
+
+def _build_router_messages(
+    transcript: str,
+    conversation_history: Optional[List[Dict[str, str]]],
+) -> List[Dict[str, str]]:
+    """Assemble the messages list sent to the router LLM.
+
+    Anthropic's API requires alternating user/assistant turns starting
+    with user. The conversation history (if any) is rendered as a single
+    leading "user" message containing labelled prior turns, followed by
+    a second "user" message with the current transcript. We render the
+    history as text inside a single user message (rather than passing
+    actual alternating turns) because:
+
+    1. The router is doing classification, not multi-turn generation —
+       conflating roles is fine.
+    2. It keeps caching boundaries clean: only the static system prompt
+       sits behind the cache_control breakpoint; everything in messages
+       is fresh per turn.
+    3. It avoids API errors when the history starts with assistant.
+    """
+    history = conversation_history or []
+    context_msgs = history[-DEFAULT_CONTEXT_TURNS:] if history else []
+
+    if not context_msgs:
+        return [{"role": "user", "content": f"Current: {transcript}"}]
+
+    prior_lines = []
+    for m in context_msgs:
+        role = m.get("role", "")
+        content = (m.get("content") or "").strip()
+        if not content:
+            continue
+        label = "User" if role == "user" else "bhAI"
+        prior_lines.append(f"  {label}: {content}")
+
+    prior_block = "\n".join(prior_lines) if prior_lines else "  (none)"
+    return [
+        {
+            "role": "user",
+            "content": f"Prior:\n{prior_block}\nCurrent: {transcript}",
+        }
+    ]
 
 
 def _split_router_output(raw: str) -> tuple:

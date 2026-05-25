@@ -450,14 +450,16 @@ def test_clean_response_strips_memory_blocks_end_to_end():
 
 
 class _StubRouterWithUseCases:
-    """Test double that mimics HaikuKBRouter.route() output for a fixed tag set."""
+    """Test double that mimics LLMKBRouter.route() output for a fixed tag set."""
 
     def __init__(self, use_cases, paths=None):
         from bhai.llm.kb_router import RouteResult
 
         self._result = RouteResult(paths=paths or [], use_cases=use_cases)
+        self.received_history = None
 
-    def route(self, transcript, top_n=3, threshold=0.0):
+    def route(self, transcript, top_n=3, threshold=0.0, conversation_history=None):
+        self.received_history = conversation_history
         return self._result
 
 

@@ -1,6 +1,6 @@
 """
-Tests for src/bhai/llm/haiku_router.py — LLM-driven KB routing with
-graceful fallback to the keyword router.
+Tests for src/bhai/llm/llm_router.py — LLM-driven KB + use-case routing
+(Sonnet 4.6) with graceful fallback to the keyword router.
 
 All tests mock the anthropic client; no real network calls.
 """
@@ -10,8 +10,8 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from bhai.llm.haiku_router import HaikuKBRouter, _read_title_and_keywords
 from bhai.llm.kb_router import KBRouter
+from bhai.llm.llm_router import LLMKBRouter, _read_title_and_keywords
 
 
 @pytest.fixture
@@ -61,8 +61,8 @@ def _make_client(response_text: str):
 
 
 def _make_router(kb_dir, response_text: str, *, fallback=None):
-    """Construct a HaikuKBRouter with a mock client returning ``response_text``."""
-    return HaikuKBRouter(
+    """Construct an LLMKBRouter with a mock client returning ``response_text``."""
+    return LLMKBRouter(
         kb_dir=kb_dir,
         fallback=fallback or KBRouter(kb_dir / "helpdesk"),
         api_key="test-key",
@@ -181,7 +181,7 @@ def test_route_falls_back_to_keyword_on_api_error(kb_with_helpdesk):
     fallback = KBRouter(kb_with_helpdesk / "helpdesk")
     client = MagicMock()
     client.messages.create.side_effect = RuntimeError("network down")
-    router = HaikuKBRouter(
+    router = LLMKBRouter(
         kb_dir=kb_with_helpdesk,
         fallback=fallback,
         api_key="test-key",
@@ -261,3 +261,86 @@ def test_route_handles_case_insensitive_labels(kb_with_helpdesk):
     names = [p.name for p in result.paths]
     assert "aadhaar.md" in names
     assert result.use_cases == ["grievance"]
+
+
+# ── conversation_history context ──────────────────────────────────────
+
+
+def test_route_no_history_sends_only_current_turn(kb_with_helpdesk):
+    """With no history, the API message says `Current: <transcript>` only."""
+    router = _make_router(kb_with_helpdesk, "KB: aadhaar\nUSE_CASES: scheme_kb")
+    router.route("Aadhaar update")
+    call = router._client.messages.create.call_args
+    msgs = call.kwargs["messages"]
+    assert len(msgs) == 1
+    assert msgs[0]["role"] == "user"
+    assert msgs[0]["content"] == "Current: Aadhaar update"
+    assert "Prior:" not in msgs[0]["content"]
+
+
+def test_route_with_history_includes_prior_turns_in_user_message(kb_with_helpdesk):
+    """Conversation history is rendered into the single user message as a
+    `Prior: ... Current: ...` block."""
+    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES: scheme_kb")
+    history = [
+        {"role": "user", "content": "दोनों बच्चों का आधार बनवाना है"},
+        {"role": "assistant", "content": "BC centre जाना होगा"},
+    ]
+    router.route("बस इतना ही?", conversation_history=history)
+    call = router._client.messages.create.call_args
+    msg = call.kwargs["messages"][0]["content"]
+    assert "Prior:" in msg
+    assert "User: दोनों बच्चों का आधार बनवाना है" in msg
+    assert "bhAI: BC centre जाना होगा" in msg
+    assert "Current: बस इतना ही?" in msg
+
+
+def test_route_truncates_long_history_to_last_context_turns(kb_with_helpdesk):
+    """Only the last DEFAULT_CONTEXT_TURNS messages are included."""
+    from bhai.llm.llm_router import DEFAULT_CONTEXT_TURNS
+
+    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES:")
+    # Build a long history; older messages should be dropped.
+    history = [
+        {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg-{i}"}
+        for i in range(20)
+    ]
+    router.route("कुछ नया?", conversation_history=history)
+    msg = router._client.messages.create.call_args.kwargs["messages"][0]["content"]
+    # The oldest message must not be in the prompt
+    assert "msg-0" not in msg
+    # The last DEFAULT_CONTEXT_TURNS messages MUST be in the prompt
+    for i in range(20 - DEFAULT_CONTEXT_TURNS, 20):
+        assert f"msg-{i}" in msg
+
+
+def test_route_skips_empty_history_messages(kb_with_helpdesk):
+    """Blank content in history doesn't produce empty lines in the prompt."""
+    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES:")
+    history = [
+        {"role": "user", "content": ""},
+        {"role": "assistant", "content": "  "},
+        {"role": "user", "content": "real message"},
+    ]
+    router.route("follow-up", conversation_history=history)
+    msg = router._client.messages.create.call_args.kwargs["messages"][0]["content"]
+    assert "User: real message" in msg
+    # No "User: " line with empty content
+    assert "User: \n" not in msg
+    assert "bhAI: \n" not in msg
+
+
+def test_route_history_logged_with_ctx_msgs_count(kb_with_helpdesk, caplog):
+    """The decision log line shows how many context messages were sent."""
+    import logging
+
+    caplog.set_level(logging.INFO, logger="bhai.llm.llm_router")
+    router = _make_router(kb_with_helpdesk, "KB: aadhaar\nUSE_CASES: scheme_kb")
+    history = [
+        {"role": "user", "content": "previous question"},
+        {"role": "assistant", "content": "previous answer"},
+    ]
+    router.route("follow-up", conversation_history=history)
+    # ctx_msgs counts the rendered prior turns sent in the single user message
+    log_lines = [r.getMessage() for r in caplog.records]
+    assert any("llm_router decision" in l for l in log_lines)

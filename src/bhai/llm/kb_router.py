@@ -145,6 +145,7 @@ class KBRouter:
         transcript: str,
         top_n: int = 3,
         threshold: float = 0.25,
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> RouteResult:
         """Return the docs to inject + (always empty) use-cases for this transcript.
 
@@ -152,10 +153,14 @@ class KBRouter:
         ``top_n`` scored docs whose score >= threshold. The threshold is
         on a 0..1.5 scale (containment + stem bonus, see ``_score``).
 
+        ``conversation_history`` is accepted for signature parity with
+        :class:`LLMKBRouter.route` and ignored — keyword scoring only
+        looks at the current transcript.
+
         The keyword router never emits use-cases — that decision needs the
-        contextual judgment Haiku provides. When the keyword router is
-        running (i.e. Haiku is down), the system prompt gets no use-case
-        block, which is the safer default than a wrong tag.
+        contextual judgment the LLM router provides. When the keyword
+        router is running (i.e. the LLM router is down), the system prompt
+        gets no use-case block, which is the safer default than a wrong tag.
         """
         paths: List[Path] = []
         if self.index_path is not None:
