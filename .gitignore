@@ -44,6 +44,8 @@ env/
 credentials.json
 secrets/
 twilio_2FA_recovery_code.txt
+# Google OAuth client secrets downloaded from Cloud Console
+client_secret_*.json
 
 # PII: user profiles and conversation database
 knowledge_base/users/*.md
@@ -62,7 +64,7 @@ data/sharepoint_sync/**/*.mp3
 data/sharepoint_sync/**/*.m4a
 data/sharepoint_sync/**/*.opus
 !data/sharepoint_sync/**/.gitkeep
-sharepoint_audio 
+sharepoint_audio
 
 # Inference outputs (generated at runtime)
 inference/outputs/

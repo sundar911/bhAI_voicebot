@@ -115,7 +115,11 @@ class Config:
     gmail_client_secret: str = ""
     gmail_refresh_token: str = ""
     gmail_sender_email: str = ""  # the Workspace account that owns the refresh token
+    # Default escalation recipients (grievance / unknown category) — impact team
     escalation_recipients: tuple = ()
+    # Per-office govt-docs routing. Empty tuple → falls back to default.
+    escalation_recipients_docs_bc: tuple = ()
+    escalation_recipients_docs_midc: tuple = ()
     escalation_enabled: bool = False
 
 
@@ -207,6 +211,22 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             for addr in os.getenv(
                 "ESCALATION_RECIPIENTS",
                 "rishikesh@tinymiracles.com,anu@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_recipients_docs_bc=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS_DOCS_BC",
+                "priti@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_recipients_docs_midc=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS_DOCS_MIDC",
+                "dinesh@tinymiracles.com",
             ).split(",")
             if addr.strip()
         ),

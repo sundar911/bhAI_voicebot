@@ -82,6 +82,8 @@ def cfg_enabled():
         gmail_refresh_token="1//test-refresh-token",
         gmail_sender_email="bhai@example.com",
         escalation_recipients=("rishi@example.com", "anu@example.com"),
+        escalation_recipients_docs_bc=("priti@example.com",),
+        escalation_recipients_docs_midc=("dinesh@example.com",),
         escalation_enabled=True,
     )
 
@@ -260,3 +262,227 @@ async def test_voice_sender_failure_does_not_propagate(cfg_enabled, base_kwargs)
         config=cfg_enabled, email_client=email_client, **base_kwargs
     )
     assert len(email_client.calls) == 1
+
+
+# ── Category-based routing ───────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_category_none_routes_to_default_grievance_recipients(
+    cfg_enabled, base_kwargs
+):
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled, email_client=email_client, category=None, **base_kwargs
+    )
+    assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
+    assert "grievance" in email_client.calls[0]["subject"]
+
+
+@pytest.mark.asyncio
+async def test_category_grievance_routes_to_default_recipients(
+    cfg_enabled, base_kwargs
+):
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled,
+        email_client=email_client,
+        category="grievance",
+        **base_kwargs,
+    )
+    assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_category_docs_bc_routes_to_priti(cfg_enabled, base_kwargs):
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled,
+        email_client=email_client,
+        category="docs_bc",
+        **base_kwargs,
+    )
+    assert email_client.calls[0]["to"] == ["priti@example.com"]
+    assert "docs_bc" in email_client.calls[0]["subject"]
+
+
+@pytest.mark.asyncio
+async def test_category_docs_midc_routes_to_dinesh(cfg_enabled, base_kwargs):
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled,
+        email_client=email_client,
+        category="docs_midc",
+        **base_kwargs,
+    )
+    assert email_client.calls[0]["to"] == ["dinesh@example.com"]
+    assert "docs_midc" in email_client.calls[0]["subject"]
+
+
+@pytest.mark.asyncio
+async def test_category_docs_unknown_routes_to_both_office_recipients(
+    cfg_enabled, base_kwargs
+):
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled,
+        email_client=email_client,
+        category="docs_unknown",
+        **base_kwargs,
+    )
+    assert email_client.calls[0]["to"] == ["priti@example.com", "dinesh@example.com"]
+    assert "docs_unknown" in email_client.calls[0]["subject"]
+
+
+@pytest.mark.asyncio
+async def test_unknown_category_falls_back_to_default(cfg_enabled, base_kwargs):
+    """An unrecognised category string should NOT silently misroute — falls back to default."""
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled,
+        email_client=email_client,
+        category="totally_made_up",
+        **base_kwargs,
+    )
+    assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_docs_bc_skips_when_office_recipient_empty(base_kwargs):
+    """If docs_bc category fires but priti's address isn't configured, fall back to default."""
+    cfg = Config(
+        gmail_client_id="x",
+        gmail_client_secret="x",
+        gmail_refresh_token="x",
+        gmail_sender_email="x@example.com",
+        escalation_recipients=("rishi@example.com",),
+        escalation_recipients_docs_bc=(),  # not configured
+        escalation_enabled=True,
+    )
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg, email_client=email_client, category="docs_bc", **base_kwargs
+    )
+    # Falls back to default — at least the user's email reaches someone
+    assert email_client.calls[0]["to"] == ["rishi@example.com"]
+
+
+# ── Category parsing (handler.parse_escalation_category) ─────────────
+
+
+def test_parse_escalation_category_docs_bc():
+    from bhai.escalations.handler import parse_escalation_category
+
+    assert (
+        parse_escalation_category(
+            "Main Priti ko email kar rahi hoon.\nESCALATE: true\nESCALATE_CATEGORY: docs_bc"
+        )
+        == "docs_bc"
+    )
+
+
+def test_parse_escalation_category_case_insensitive():
+    from bhai.escalations.handler import parse_escalation_category
+
+    assert (
+        parse_escalation_category("ESCALATE: TRUE\nescalate_category: DOCS_MIDC")
+        == "docs_midc"
+    )
+
+
+def test_parse_escalation_category_unknown_returns_none():
+    """A bad model output shouldn't silently misroute — fall back to None
+    (handler treats None as 'grievance' default)."""
+    from bhai.escalations.handler import parse_escalation_category
+
+    assert (
+        parse_escalation_category("ESCALATE: true\nESCALATE_CATEGORY: bogus_value")
+        is None
+    )
+
+
+def test_parse_escalation_category_missing_returns_none():
+    from bhai.escalations.handler import parse_escalation_category
+
+    assert parse_escalation_category("ESCALATE: true") is None
+
+
+def test_parse_escalation_category_empty_returns_none():
+    from bhai.escalations.handler import parse_escalation_category
+
+    assert parse_escalation_category("") is None
+    assert parse_escalation_category(None) is None  # type: ignore[arg-type]
+
+
+# ── work_location extraction + email body labelling ─────────────────
+
+
+def test_extract_work_location_from_facts(store):
+    """work_location: BC / MIDC in the facts list is picked up."""
+    from bhai.escalations.handler import _extract_work_location
+
+    store.save_memory(
+        "tg_loc1",
+        summary="some summary",
+        facts=["name: Priya", "work_location: MIDC", "daughter age 8"],
+    )
+    assert _extract_work_location(store, "tg_loc1", "") == "MIDC"
+
+
+def test_extract_work_location_case_insensitive(store):
+    from bhai.escalations.handler import _extract_work_location
+
+    store.save_memory(
+        "tg_loc2",
+        summary="",
+        facts=["Work_Location: bc"],
+    )
+    assert _extract_work_location(store, "tg_loc2", "") == "BC"
+
+
+def test_extract_work_location_from_profile_when_facts_silent(store):
+    """If facts don't mention it but profile does, profile wins."""
+    from bhai.escalations.handler import _extract_work_location
+
+    store.save_memory("tg_loc3", summary="", facts=["just a name"])
+    profile = "Priya, stitcher.\nwork_location: BC\n2 children."
+    assert _extract_work_location(store, "tg_loc3", profile) == "BC"
+
+
+def test_extract_work_location_returns_none_when_unknown(store):
+    from bhai.escalations.handler import _extract_work_location
+
+    assert _extract_work_location(store, "tg_never_saved", "") is None
+    store.save_memory("tg_loc4", summary="", facts=["name: X"])
+    assert _extract_work_location(store, "tg_loc4", "") is None
+
+
+@pytest.mark.asyncio
+async def test_email_body_includes_work_location_when_known(cfg_enabled, base_kwargs):
+    """When work_location is in facts, the email body shows the office."""
+    base_kwargs["store"].save_memory(
+        base_kwargs["phone"],
+        summary="",
+        facts=["work_location: BC"],
+    )
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled, email_client=email_client, **base_kwargs
+    )
+    body = email_client.calls[0]["html_body"]
+    assert "Work location" in body
+    assert "BC office" in body
+    # Subject is tagged too
+    assert "/BC]" in email_client.calls[0]["subject"]
+
+
+@pytest.mark.asyncio
+async def test_email_body_flags_missing_work_location(cfg_enabled, base_kwargs):
+    """When no work_location is known, the body explicitly flags it."""
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled, email_client=email_client, **base_kwargs
+    )
+    body = email_client.calls[0]["html_body"]
+    assert "UNKNOWN" in body
+    assert "/LOC?]" in email_client.calls[0]["subject"]

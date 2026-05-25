@@ -4,7 +4,8 @@ Escalation handler — fires when the LLM emits ESCALATE: true.
 Flow (trust-restoring two-message pattern):
 1. The LLM's promise voice note ("Main team ko email karne wali hoon...") has
    already been sent to the user by the time we're called.
-2. We send the escalation email to the impact team (Rishi + Anu by default).
+2. We send the escalation email to the right recipients for the category
+   (see _recipients_for_category below).
 3. One retry after RETRY_DELAY_SECONDS on first failure.
 4. We synthesize and send a follow-up voice note confirming success
    ("Email kar diya...") or honest failure ("Abhi email nahi ja paaya...").
@@ -18,9 +19,10 @@ telegram_webhook.py (which would create an import cycle).
 import asyncio
 import html
 import logging
+import re
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Awaitable, Callable, List, Optional
+from typing import Callable, List, Optional, Tuple
 
 from ..config import Config
 from ..integrations.email_client import EmailClient
@@ -36,9 +38,102 @@ CONFIRM_FAILURE_HI = (
 )
 RETRY_DELAY_SECONDS = 30
 
+# Matches `work_location: BC` / `work_location: MIDC` (case-insensitive,
+# tolerant of spacing) anywhere in a fact string or profile text.
+_WORK_LOCATION_RE = re.compile(
+    r"work[_ ]?location\s*[:=]\s*(BC|MIDC)\b", flags=re.IGNORECASE
+)
+
+# Valid ESCALATE_CATEGORY values the LLM may emit. Anything else (or absent)
+# → routed as "grievance" (the default impact-team list).
+_VALID_CATEGORIES = ("docs_bc", "docs_midc", "docs_unknown", "grievance")
+_CATEGORY_RE = re.compile(r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", re.IGNORECASE)
+
+
+def parse_escalation_category(raw_text: str) -> Optional[str]:
+    """Parse `ESCALATE_CATEGORY: <value>` from the LLM's raw response.
+
+    Returns one of `_VALID_CATEGORIES` or None if missing / unknown. None
+    is treated by the handler as 'grievance' default — so unknown category
+    strings can't silently misroute, they fall back to the safe path.
+    """
+    if not raw_text:
+        return None
+    match = _CATEGORY_RE.search(raw_text)
+    if not match:
+        return None
+    value = match.group(1).lower()
+    if value in _VALID_CATEGORIES:
+        return value
+    return None
+
+
+def _extract_work_location(
+    store: ConversationStore, phone: str, user_profile: str
+) -> Optional[str]:
+    """Pull `BC` or `MIDC` from the user's facts or profile, if known.
+
+    The prompt's MEMORY_INSTRUCTION asks the model to emit
+    ``<memory>fact: work_location: BC</memory>`` (or MIDC) as soon as the
+    user mentions her office, and the webhook persists those into facts.
+    Profiles may also carry the location in free text.
+
+    Returns the uppercase string ``"BC"`` / ``"MIDC"`` or ``None`` if not
+    found in either source.
+    """
+    try:
+        memory = store.get_memory(phone)
+    except Exception as e:
+        logger.warning(
+            "Could not load memory for work_location lookup user=%s: %s",
+            phone[:8],
+            e,
+        )
+        memory = None
+
+    if memory:
+        for fact in memory.get("facts") or []:
+            m = _WORK_LOCATION_RE.search(str(fact))
+            if m:
+                return m.group(1).upper()
+
+    if user_profile:
+        m = _WORK_LOCATION_RE.search(user_profile)
+        if m:
+            return m.group(1).upper()
+
+    return None
+
 
 # Voice sender signature: kwargs-only, matches telegram_webhook._synthesize_and_send_voice
 VoiceSender = Callable[..., bool]
+
+
+def _recipients_for_category(
+    config: Config, category: Optional[str]
+) -> Tuple[List[str], str]:
+    """Pick recipients and a human-readable category label based on the LLM
+    category. Unknown / missing → default impact-team list (grievance).
+
+    Returns (recipients, label_for_subject).
+    """
+    if category == "docs_bc" and config.escalation_recipients_docs_bc:
+        return list(config.escalation_recipients_docs_bc), "docs_bc"
+    if category == "docs_midc" and config.escalation_recipients_docs_midc:
+        return list(config.escalation_recipients_docs_midc), "docs_midc"
+    if category == "docs_unknown":
+        # Send to BOTH office contacts; let them sort. Skip silently if neither
+        # is configured. Dedup with order preserved.
+        deduped: List[str] = []
+        for addr in list(config.escalation_recipients_docs_bc) + list(
+            config.escalation_recipients_docs_midc
+        ):
+            if addr not in deduped:
+                deduped.append(addr)
+        if deduped:
+            return deduped, "docs_unknown"
+    # Default: grievance / unknown category → impact team
+    return list(config.escalation_recipients), "grievance"
 
 
 async def handle_escalation(
@@ -58,24 +153,50 @@ async def handle_escalation(
     run_id: str,
     run_dir: Path,
     telegram_client,
+    category: Optional[str] = None,
 ) -> None:
     """Send escalation email, then confirm to user with a voice note.
 
     Never raises — all failure paths are logged. Designed to be scheduled via
     asyncio.create_task from the webhook handler.
+
+    `category` (from BaseLLM._detect_escalation_category) routes to the right
+    recipients: 'docs_bc'→Priti, 'docs_midc'→Dinesh, 'docs_unknown'→both,
+    anything else / None → default impact-team list (Rishi + Anu).
     """
-    if not config.escalation_enabled or not config.escalation_recipients:
+    if not config.escalation_enabled:
+        logger.warning("Escalation skipped for user=%s: escalation disabled", phone_id)
+        return
+
+    recipients, category_label = _recipients_for_category(config, category)
+    if not recipients:
         logger.warning(
-            "Escalation skipped for user=%s: enabled=%s, recipients=%d",
+            "Escalation skipped for user=%s: no recipients configured for category=%s",
             phone_id,
-            config.escalation_enabled,
-            len(config.escalation_recipients),
+            category_label,
         )
         return
 
+    # Work location is required per escalation_policy.md. The prompt should
+    # ask the user before emitting ESCALATE: true if it's missing; logging
+    # loudly here surfaces the cases where it slips through (acute self-harm
+    # exception, or model error).
+    work_location = _extract_work_location(store, phone, user_profile)
+    if not work_location:
+        logger.warning(
+            "Escalation firing for user=%s WITHOUT known work_location — "
+            "impact team will need to ask manually. category=%s",
+            phone_id,
+            category_label,
+        )
+
     user_hash = hash(phone) % 10000
     timestamp = datetime.now(IST)
-    subject = f"[bhAI escalation] user #{user_hash} — {timestamp:%Y-%m-%d %H:%M IST}"
+    location_tag = work_location or "LOC?"
+    subject = (
+        f"[bhAI escalation:{category_label}/{location_tag}] user #{user_hash} "
+        f"— {timestamp:%Y-%m-%d %H:%M IST}"
+    )
     body = _render_html_body(
         phone=phone,
         chat_id=chat_id,
@@ -84,8 +205,16 @@ async def handle_escalation(
         bot_response=bot_response,
         recent_messages=recent_messages,
         user_profile=user_profile,
+        category_label=category_label,
+        work_location=work_location,
     )
-    recipients = list(config.escalation_recipients)
+
+    logger.info(
+        "Escalation routing user=%s category=%s recipients=%d",
+        phone_id,
+        category_label,
+        len(recipients),
+    )
 
     sent = await email_client.send(to=recipients, subject=subject, html_body=body)
     if not sent:
@@ -138,6 +267,8 @@ def _render_html_body(
     bot_response: str,
     recent_messages: List[dict],
     user_profile: str,
+    category_label: str = "grievance",
+    work_location: Optional[str] = None,
 ) -> str:
     """Render the escalation email body as HTML.
 
@@ -146,6 +277,16 @@ def _render_html_body(
     """
     parts: List[str] = []
     parts.append("<h2>bhAI escalation triggered</h2>")
+    parts.append("<p><b>Category:</b> " + html.escape(category_label) + "</p>")
+    if work_location:
+        parts.append(
+            "<p><b>Work location:</b> " + html.escape(work_location) + " office</p>"
+        )
+    else:
+        parts.append(
+            "<p><b>Work location:</b> <i>UNKNOWN — please ask the user when "
+            "you follow up</i></p>"
+        )
     parts.append("<p><b>User phone:</b> " + html.escape(phone) + "</p>")
     parts.append(f"<p><b>Telegram chat ID:</b> {chat_id}</p>")
     parts.append(f"<p><b>Time (IST):</b> {timestamp:%Y-%m-%d %H:%M:%S}</p>")
