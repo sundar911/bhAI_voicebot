@@ -92,5 +92,5 @@ Inform the officer about the service needed:
 **Website**: https://voters.eci.gov.in/login
 
 **Contact**:
-- Vijay (BC) – 9321125042
-- Priti (MIDC) – 7738561086
+- Priti (BC) – 7738561086
+- Dinesh (MIDC) – no phone number on file yet; the bot can email Dinesh directly via the consent-gated escalation flow.

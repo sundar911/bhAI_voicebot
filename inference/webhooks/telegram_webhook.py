@@ -146,8 +146,11 @@ def _split_for_tts(text: str) -> list:
 _PHONE_RE = re.compile(r"(?:\+91[\s\-]?)?(\d[\d\s\-]{8,12}\d)")
 
 _KNOWN_CONTACTS = {
-    "9321125042": "Vijay (BC)",
-    "7738561086": "Priti (MIDC)",
+    # Priti shifted from MIDC to BC (same phone number, new office assignment).
+    # Dinesh now staffs MIDC docs but has no phone on file yet — no entry for
+    # him here because the bot has no number to give the user. For MIDC docs
+    # help the bot offers email escalation to Dinesh instead.
+    "7738561086": "Priti (BC)",
     "7400426103": "Veena (MIDC – ESIC)",
     "9773964985": "Bharati (BC – ESIC)",
 }

@@ -85,11 +85,11 @@ UIDAI website → Download Aadhaar → Aadhaar / VID / Enrolment ID daalo → OT
 
 ### MIDC Centre (Andheri)
 Marol Telephone Exchange, Marol MIDC Industrial Estate, Andheri East, Mumbai – 400093
-**Contact**: Priti – 7738561086
+**Contact**: Dinesh – no phone number on file yet; the bot can email Dinesh directly via the consent-gated escalation flow.
 
 ### Bombay Central (BC) Centre
 Naushir Bharucha Marg, Grant Road West, Chikalwadi, Grant Road, Mumbai – 400007
-**Contact**: Vijay – 9321125042
+**Contact**: Priti – 7738561086
 
 ## Aadhaar Centre Visit – Step by Step (Ground Work)
 

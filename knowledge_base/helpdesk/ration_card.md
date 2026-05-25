@@ -104,5 +104,5 @@ Sane Guruji Nagar, Motilal Nagar III, Goregaon West, Mumbai – 400104
 **Timings**: Monday to Friday – 10:30 AM to 5:30 PM
 
 **Contact**:
-- Vijay (BC) – 9321125042
-- Priti (MIDC) – 7738561086
+- Priti (BC) – 7738561086
+- Dinesh (MIDC) – no phone number on file yet; the bot can email Dinesh directly via the consent-gated escalation flow.

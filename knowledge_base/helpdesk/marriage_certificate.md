@@ -98,5 +98,5 @@ Kai states mein approval ke baad e-Marriage Certificate official portal se downl
 - Carry original documents and 1 Xerox copy of each
 
 **Contact for help**:
-- Vijay (BC) – 9321125042
-- Priti (MIDC) – 7738561086
+- Priti (BC) – 7738561086
+- Dinesh (MIDC) – no phone number on file yet; the bot can email Dinesh directly via the consent-gated escalation flow.

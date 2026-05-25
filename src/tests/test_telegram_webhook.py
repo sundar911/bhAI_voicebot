@@ -130,12 +130,12 @@ def test_extract_phone_numbers_returns_none_when_no_number():
 
 
 def test_extract_phone_numbers_strips_known_contact():
-    text = "Vijay को call करो: 9321125042"
+    text = "Priti को call करो: 7738561086"
     voice_text, contact_msg = _extract_phone_numbers(text)
-    assert "9321125042" not in voice_text
+    assert "7738561086" not in voice_text
     assert contact_msg is not None
-    assert "9321125042" in contact_msg
-    assert "Vijay" in contact_msg
+    assert "7738561086" in contact_msg
+    assert "Priti" in contact_msg
 
 
 # ── Dashboard auth ───────────────────────────────────────────────────
