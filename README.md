@@ -74,6 +74,18 @@ BHAI_ENCRYPTION_KEY=...
 
 # Admin/dashboard auth (default: bhai-pilot-2026)
 DASHBOARD_SECRET=...
+
+# Escalation emails to impact team (Gmail API — Railway blocks SMTP)
+# When ESCALATE: true fires in an LLM response, an email goes out.
+# See ARCHITECTURE.md §8 for the per-office routing logic.
+GMAIL_CLIENT_ID=...
+GMAIL_CLIENT_SECRET=...
+GMAIL_REFRESH_TOKEN=...
+GMAIL_SENDER_EMAIL=...
+ESCALATION_RECIPIENTS=rishi@..., anu@...
+ESCALATION_RECIPIENTS_DOCS_BC=priti@...
+ESCALATION_RECIPIENTS_DOCS_MIDC=dinesh@...
+ESCALATION_ENABLED=true
 ```
 
 See `.env.example` for all available options.
@@ -94,21 +106,24 @@ uv run python inference/scripts/run_demo.py --audio path/to/audio.m4a --no_tts
 bhAI_voice_bot/
 ├── src/bhai/              # Core library
 │   ├── stt/               # Speech-to-text backends (7 models)
-│   ├── tts/               # Text-to-speech (Sarvam, ElevenLabs + emotion tagging)
+│   ├── tts/               # Text-to-speech (Sarvam bulbul:v3, ElevenLabs)
 │   ├── llm/               # Language model backends (Sarvam, OpenAI, Claude)
-│   │   └── prompts/       # Prompt templates
+│   │   ├── prompts/       # Persona prompt + per-use-case blocks (use_cases/)
+│   │   ├── haiku_router.py # Haiku KB + use-case classifier
+│   │   └── kb_router.py   # Keyword fallback router
+│   ├── escalations/       # ESCALATE: true → Gmail API → impact team
 │   ├── pipelines/         # Processing pipelines (base + hr_admin)
-│   ├── memory/            # Conversation memory (encrypted store + summarizer)
-│   ├── resilience/        # FAQ cache, request queue, retry logic, background worker
+│   ├── memory/            # Encrypted store, summarizer, self-edited memory
+│   ├── resilience/        # FAQ cache (legacy), retry, worker (Twilio-era)
 │   ├── security/          # Encryption (Fernet), webhook auth, rate limiting
-│   └── integrations/      # External integrations (WhatsApp, SharePoint)
+│   └── integrations/      # Telegram, Twilio (legacy), SharePoint, email_client
 │
-├── src/tests/             # Test suite (79 tests — config, crypto, retry, etc.)
+├── src/tests/             # Test suite (278 tests, incl. test_contracts.py)
 │
 ├── knowledge_base/        # Domain knowledge (editable by TM team)
 │   ├── shared/            # Cross-domain (escalation, style)
 │   ├── hr_admin/          # HR-specific policies
-│   ├── helpdesk/          # Govt schemes (Aadhaar, PAN, ESIC, etc.)
+│   ├── helpdesk/          # Govt docs + schemes (~27 markdown files, Excel source)
 │   └── users/             # Per-user profiles (gitignored — see ARCHITECTURE.md §13)
 │
 ├── data/                  # Audio data and transcriptions
@@ -212,7 +227,11 @@ uv run python inference/web/chat_server.py
 - **Messaging**: Telegram bot (replaces Twilio/WhatsApp)
 - **Security**: Fernet encryption for PII at rest, Telegram secret-token webhook auth
 - **Framework**: Python, FastAPI, pydub
-- **Deployment**: Railway (auto-deploys from `main`). Data persists on a volume mounted at `/app/data` — see [ARCHITECTURE.md §13](ARCHITECTURE.md#13-deployment--data-persistence).
+- **KB retrieval**: Claude Haiku routes each query to 1-3 helpdesk files + emits a use-case tag (`grievance` / `finance` / `scheme_kb` / `general`) for prompt scoping (see [ARCHITECTURE.md §5-6](ARCHITECTURE.md))
+- **Escalation**: `ESCALATE: true` from the LLM triggers a Gmail-API email to the impact team, routed per-office (Priti for BC docs, Dinesh for MIDC docs, Rishi+Anu for grievance)
+- **Memory**: per-user encrypted SQLite. Background summarizer + Letta-style self-edited memory (LLM emits `<memory>` blocks)
+- **Anti-confabulation**: regex backstop on every LLM response detects past-tense / unconsented future-tense outreach claims and re-prompts the model
+- **Deployment**: Railway (auto-deploys from `main`, `uv` pinned via `railpack.json`). Data persists on a volume mounted at `/app/data` — see [ARCHITECTURE.md §13](ARCHITECTURE.md#13-deployment--data-persistence).
 
 ## License
 
