@@ -32,22 +32,55 @@ class ClaudeLLM(BaseLLM):
     def model_name(self) -> str:
         return self.config.anthropic_model
 
+    # Seed the assistant turn with the start of the JSON object. This forces
+    # the model to begin inside the structured contract (cot first, in order)
+    # and makes it physically impossible to emit preamble or chain-of-thought
+    # before the JSON — the leak is prevented at generation time, not scrubbed
+    # afterwards. We re-attach the prefill to the returned text before parsing.
+    _PREFILL = '{"cot":'
+
+    # Higher than the old 1024: cot + out share the budget, so leave headroom
+    # for a complete out (long helpdesk answers) after the reasoning.
+    _MAX_TOKENS = 2048
+
     def _call_api(self, system_prompt: str, user_message: str) -> str:
+        """Plain call — NO JSON prefill.
+
+        Used by callers that expect free-form text (summarizer, nudges). These
+        must NOT be forced into the cot/out JSON contract, or their output gets
+        corrupted (and, for nudges, leaks JSON straight to the user).
+        """
+        return self._messages_create(system_prompt, user_message, prefill="")
+
+    def _call_api_json(self, system_prompt: str, user_message: str) -> str:
+        """Structured cot/out call — prefill forces valid JSON and kills any
+        preamble/chain-of-thought before the object."""
+        return self._messages_create(system_prompt, user_message, prefill=self._PREFILL)
+
+    def _messages_create(
+        self, system_prompt: str, user_message: str, prefill: str
+    ) -> str:
+        messages: list = [{"role": "user", "content": user_message}]
+        if prefill:
+            messages.append({"role": "assistant", "content": prefill})
+
         response = self.client.messages.create(
             model=self.config.anthropic_model,
-            max_tokens=1024,
+            max_tokens=self._MAX_TOKENS,
             system=system_prompt,
-            messages=[{"role": "user", "content": user_message}],
+            messages=messages,
             temperature=0.4,
         )
         if response.stop_reason == "max_tokens":
             import logging
 
             logging.getLogger("bhai.llm").warning(
-                "Claude response truncated (hit max_tokens=%d)", 1024
+                "Claude response truncated (hit max_tokens=%d)", self._MAX_TOKENS
             )
 
         from anthropic.types import TextBlock
 
         block = next((b for b in response.content if isinstance(b, TextBlock)), None)
-        return (block.text if block else "").strip()
+        text = block.text if block else ""
+        # Re-attach the prefill so the parser sees the complete JSON object.
+        return (prefill + text).strip()
