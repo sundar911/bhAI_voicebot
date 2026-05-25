@@ -8,14 +8,17 @@ Subclasses only implement _call_api() and model_name.
 """
 
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from ..config import KNOWLEDGE_BASE_DIR, Config
 from ..resilience.retry import retry_with_backoff
 from .kb_router import KBRouter
+
+logger = logging.getLogger("bhai.llm")
 
 
 def _read_file(path: Path) -> str:
@@ -34,6 +37,44 @@ EMOTION_INSTRUCTION = (
     "Use 'neutral' for most segments. Only add emotion when genuinely "
     "appropriate to bhAI's warm, empathetic personality.\n"
 )
+
+
+# ── Structured output contract (cot / out) ────────────────────────────────
+# The model returns a JSON object with two keys:
+#   "cot" — private chain-of-thought (logged for debugging, NEVER delivered)
+#   "out" — the spoken reply (the ONLY thing sent to TTS / saved / shown)
+# This replaces post-hoc reasoning-scrubbing: reasoning gets a dedicated home,
+# so it structurally cannot leak into "out". cot is generated BEFORE out (field
+# order matters) so the reasoning actually conditions the answer.
+_JSON_OUTPUT_INSTRUCTION = (
+    "\n\n=== OUTPUT FORMAT (STRICT — follow exactly) ===\n"
+    "Respond with ONE JSON object and nothing else — no prose, no code fences, "
+    "before or after:\n"
+    '{"cot": "<your private reasoning>", "out": "<the message the user hears>", '
+    '"escalate": false}\n\n'
+    '"cot" is your private scratchpad — the user NEVER sees it. Think here about: '
+    "which language/script to mirror, the user's gender from their grammar, what the "
+    "knowledge base says, any anti-sycophancy math, and what to ask next. Keep it "
+    "brief (2-3 sentences) so it doesn't crowd out the reply.\n"
+    '"out" is the ONLY thing the user receives, spoken aloud by a TTS engine:\n'
+    "- Devanagari script, natural spoken Hindi/Marathi, mirroring the user.\n"
+    "- Short — 1-3 sentences (longer only for a documents/scheme answer that needs "
+    "completeness).\n"
+    "- NO markdown, NO asterisks, NO English meta-words, NO mention of rules, the "
+    'prompt, or "cot".\n'
+    "- It must read like something a real बहन says out loud: zero reasoning, zero "
+    "narration.\n"
+    '"escalate" is a boolean — set true ONLY after the user has explicitly '
+    "consented to emailing their issue to the impact team (the consent-gated "
+    "escalation flow described in the system prompt); otherwise false. When true, "
+    'keep "out" in future tense (the email sends after this turn).\n\n'
+    'Put ALL thinking in "cot". "out" is clean speech only. All keys are required '
+    "and must be valid JSON (escape any quotes and newlines).\n"
+)
+
+# Safe, in-character fallback used ONLY when the model's JSON can't be parsed at
+# all. We never fall back to raw text — raw text is exactly what leaks reasoning.
+_FALLBACK_OUT = "अरे, ज़रा सी गड़बड़ हो गई — एक बार फिर से बोलोगे?"
 
 
 class BaseLLM(ABC):
@@ -88,11 +129,24 @@ class BaseLLM(ABC):
     @abstractmethod
     def _call_api(self, system_prompt: str, user_message: str) -> str:
         """
-        Make the LLM API call and return the raw response text.
+        Make a PLAIN LLM API call and return the raw response text.
 
-        This is the only method subclasses must implement.
+        This is the only method subclasses must implement. It must NOT force
+        the cot/out JSON contract — free-form callers (summarizer, nudges)
+        depend on plain text here. Structured replies go through _call_api_json.
         """
         pass
+
+    def _call_api_json(self, system_prompt: str, user_message: str) -> str:
+        """Structured-output variant used by the cot/out contract.
+
+        Backends with a native JSON-forcing mechanism (e.g. Claude assistant
+        prefill) override this. The default delegates to ``_call_api`` and
+        relies on the prompt's JSON instruction + the tolerant parser. Keeping
+        this separate from ``_call_api`` guarantees plain-text callers are never
+        forced into JSON mode.
+        """
+        return self._call_api(system_prompt, user_message)
 
     # ── knowledge base ────────────────────────────────────────────────────
 
@@ -610,6 +664,124 @@ class BaseLLM(ABC):
                     pass
         return None
 
+    # ── structured output parsing (cot / out contract) ───────────────────
+
+    @staticmethod
+    def _json_unescape(s: str) -> str:
+        """Unescape a JSON string body (the text between the quotes)."""
+        try:
+            return str(json.loads(f'"{s}"'))
+        except (json.JSONDecodeError, ValueError):
+            return s
+
+    @staticmethod
+    def _parse_structured_output(raw_text: str) -> Tuple[str, str, bool]:
+        """Parse the {"cot", "out", "escalate"} JSON contract from raw output.
+
+        Tolerant by design: handles code fences, leading/trailing prose around
+        the object, and a final regex that pulls just the "out" value when the
+        JSON is malformed. Returns ``(cot, out, escalate)``; ``out`` is "" when
+        nothing usable could be extracted, signalling the caller to use a safe
+        fallback rather than ever delivering raw text.
+        """
+        if not raw_text:
+            return "", "", False
+
+        s = raw_text.strip()
+
+        # Strip ```json ... ``` fences if the model wrapped the object.
+        if s.startswith("```"):
+            s = re.sub(r"^```[a-zA-Z0-9]*\n?", "", s)
+            s = re.sub(r"\n?```\s*$", "", s).strip()
+
+        # Try the whole string, then the {...} substring (drops surrounding prose).
+        candidates = [s]
+        first, last = s.find("{"), s.rfind("}")
+        if first != -1 and last != -1 and last > first:
+            candidates.append(s[first : last + 1])
+
+        for cand in candidates:
+            try:
+                obj = json.loads(cand)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("out"), str):
+                cot = obj.get("cot")
+                return (
+                    cot if isinstance(cot, str) else "",
+                    obj["out"],
+                    bool(obj.get("escalate", False)),
+                )
+
+        # Last resort: regex-extract the "out" (and "cot"/"escalate") values.
+        out_m = re.search(r'"out"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+        if out_m:
+            cot_m = re.search(r'"cot"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+            esc_m = re.search(r'"escalate"\s*:\s*(true|false)', s, re.IGNORECASE)
+            return (
+                BaseLLM._json_unescape(cot_m.group(1)) if cot_m else "",
+                BaseLLM._json_unescape(out_m.group(1)),
+                bool(esc_m and esc_m.group(1).lower() == "true"),
+            )
+
+        return "", "", False
+
+    def _generate_structured(
+        self, system_prompt: str, user_message: str
+    ) -> Dict[str, Any]:
+        """Call the model, parse the cot/out/escalate JSON, return cleaned out.
+
+        On a cot/out parse failure the whole call is re-rolled up to
+        ``config.llm_json_max_attempts`` times (each re-roll is a fresh
+        generation, so non-zero temperature usually yields valid JSON next
+        time). Only after every attempt fails do we drop to a safe canned line
+        — never to raw text. ``out`` is run through markdown stripping as a TTS
+        safety net.
+        """
+        max_attempts = max(1, int(getattr(self.config, "llm_json_max_attempts", 3)))
+
+        raw, cot, out, escalate = "", "", "", False
+        for attempt in range(1, max_attempts + 1):
+            raw = self._call_api_json_with_retry(system_prompt, user_message)
+            cot, out, escalate = self._parse_structured_output(raw)
+            if out:
+                break
+            logger.warning(
+                "cot/out parse failed (attempt %d/%d); retrying. raw=%r",
+                attempt,
+                max_attempts,
+                raw[:300],
+            )
+
+        parsed = bool(out)
+        if not parsed:
+            logger.error(
+                "cot/out parse failed after %d attempts; using fallback.",
+                max_attempts,
+            )
+            out = _FALLBACK_OUT
+            escalate = False  # never escalate off a failed/fallback response
+
+        if cot:
+            logger.info("cot: %s", cot[:300])
+
+        text = self._strip_markdown(out).strip()
+        if not text:
+            # Parsed but empty after markdown stripping — treat as a failure too.
+            text = _FALLBACK_OUT
+            parsed = False
+            escalate = False
+
+        # ``parsed`` lets callers distinguish a real reply from the safe canned
+        # fallback (e.g. nudges skip sending rather than speak the fallback).
+        return {
+            "text": text,
+            "raw": raw,
+            "cot": cot,
+            "parsed": parsed,
+            "escalate": escalate,
+        }
+
     # ── retry helper ─────────────────────────────────────────────────────
 
     _OUTREACH_CORRECTION_PROMPT = (
@@ -627,60 +799,65 @@ class BaseLLM(ABC):
 
     def _guard_outreach(
         self,
-        raw_text: str,
-        escalate: bool,
-        cleaned_text: str,
+        result: Dict[str, Any],
         system_prompt: str,
         user_message: str,
-        strip_emotions: bool,
-    ) -> tuple:
+    ) -> Dict[str, Any]:
         """One-shot re-prompt if a confabulated outreach claim is detected.
 
-        bhAI cannot message anyone today outside ``ESCALATE: true``. If the
-        cleaned response contains a past-tense or future-tense outreach
-        claim against a named contact and no escalation is in flight, log
-        the violation, re-prompt the LLM once with a corrective system
-        message, and return the corrected outputs. If the second draft
-        still fails, emit a warning but return the (still-failing) text —
-        the response cleaner has already stripped the worst structural
-        leaks, and silence is worse than a logged warning.
-
-        Returns ``(raw_text, escalate, cleaned_text)``.
+        Operates on the cot/out structured ``result``. bhAI cannot message
+        anyone today outside the consent-gated ``escalate`` flow. If ``out``
+        contains a past-tense or (non-escalate) future-tense outreach claim
+        against a named contact, log the violation, re-prompt once with a
+        corrective system message, and return the corrected structured result.
+        If the second draft still fails, emit a warning but return it —
+        silence is worse than a logged warning.
         """
-        violation = BaseLLM._detect_outreach_claim(cleaned_text, escalate)
+        violation = BaseLLM._detect_outreach_claim(
+            result["text"], result.get("escalate", False)
+        )
         if not violation:
-            return raw_text, escalate, cleaned_text
+            return result
 
-        import logging
-
-        log = logging.getLogger("bhai.llm")
-        log.warning("Confabulated outreach detected, re-prompting: %s", violation)
+        logger.warning("Confabulated outreach detected, re-prompting: %s", violation)
 
         corrected_prompt = system_prompt + self._OUTREACH_CORRECTION_PROMPT
         try:
-            new_raw = self._call_api_with_retry(corrected_prompt, user_message)
+            new_result = self._generate_structured(corrected_prompt, user_message)
         except Exception:  # pragma: no cover - defensive fallback
-            log.exception("Outreach re-prompt failed; keeping original draft")
-            return raw_text, escalate, cleaned_text
+            logger.exception("Outreach re-prompt failed; keeping original draft")
+            return result
 
-        new_escalate = self._detect_escalation(new_raw)
-        new_cleaned = self._clean_response(new_raw, strip_emotions=strip_emotions)
-
-        residual = BaseLLM._detect_outreach_claim(new_cleaned, new_escalate)
+        residual = BaseLLM._detect_outreach_claim(
+            new_result["text"], new_result.get("escalate", False)
+        )
         if residual:
-            log.warning(
+            logger.warning(
                 "Outreach claim persisted after re-prompt: %s (emitting anyway)",
                 residual,
             )
 
-        return new_raw, new_escalate, new_cleaned
+        return new_result
 
     def _call_api_with_retry(
         self, system_prompt: str, user_message: str, max_attempts: int = 3
     ) -> str:
-        """Call _call_api with retry and exponential backoff."""
+        """Call _call_api (plain) with retry and exponential backoff."""
         return retry_with_backoff(
             self._call_api,
+            system_prompt,
+            user_message,
+            max_attempts=max_attempts,
+            base_delay=1.0,
+            max_delay=10.0,
+        )
+
+    def _call_api_json_with_retry(
+        self, system_prompt: str, user_message: str, max_attempts: int = 3
+    ) -> str:
+        """Call _call_api_json (structured cot/out) with retry and backoff."""
+        return retry_with_backoff(
+            self._call_api_json,
             system_prompt,
             user_message,
             max_attempts=max_attempts,
@@ -713,35 +890,28 @@ class BaseLLM(ABC):
             is_new_session: Whether this is a new conversation session
 
         Returns:
-            Dictionary with text, raw, and escalate.
+            Dictionary with text (the parsed "out"), raw, cot, and escalate.
         """
-        system_prompt = self._build_system_prompt(
-            domain, user_profile, memory_summary, extracted_facts, transcript
+        system_prompt = (
+            self._build_system_prompt(
+                domain, user_profile, memory_summary, extracted_facts, transcript
+            )
+            + _JSON_OUTPUT_INSTRUCTION
         )
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
         )
-        raw_text = self._call_api_with_retry(system_prompt, user_message)
-
-        escalate = self._detect_escalation(raw_text)
-        cleaned_text = self._clean_response(raw_text)
-
-        # One-shot re-prompt if the response contains a confabulated outreach
-        # claim. bhAI cannot actually message anyone outside the consent-gated
-        # ESCALATE: true flow.
-        raw_text, escalate, cleaned_text = self._guard_outreach(
-            raw_text,
-            escalate,
-            cleaned_text,
-            system_prompt,
-            user_message,
-            strip_emotions=False,
-        )
+        result = self._generate_structured(system_prompt, user_message)
+        # One-shot re-prompt if the reply confabulates outreach (bhAI can only
+        # message anyone via the consent-gated escalate flow).
+        result = self._guard_outreach(result, system_prompt, user_message)
 
         return {
-            "text": cleaned_text or raw_text,
-            "raw": raw_text,
-            "escalate": escalate,
+            "text": result["text"],
+            "raw": result["raw"],
+            "cot": result["cot"],
+            "parsed": result["parsed"],
+            "escalate": result["escalate"],
         }
 
     def generate_with_emotions(
@@ -762,41 +932,29 @@ class BaseLLM(ABC):
         one-off behaviours (re-onboarding on /start, etc.) without forking the
         whole prompt template. Pass empty string for default behaviour.
 
-        Falls back to a single neutral segment if parsing fails.
-        Returns dict with text, raw, escalate, and segments.
+        Returns dict with text (the parsed "out"), raw, cot, escalate, and a
+        single neutral segment (per-segment emotions were dropped in favour of
+        the cot/out JSON contract; the Telegram TTS path re-chunks plain text).
         """
-        system_prompt = (
-            self._build_system_prompt(
-                domain, user_profile, memory_summary, extracted_facts, transcript
-            )
-            + EMOTION_INSTRUCTION
+        system_prompt = self._build_system_prompt(
+            domain, user_profile, memory_summary, extracted_facts, transcript
         )
         if mode_instruction:
             system_prompt += "\n\n" + mode_instruction
+        system_prompt += _JSON_OUTPUT_INSTRUCTION
+
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
         )
-        raw_text = self._call_api_with_retry(system_prompt, user_message)
-
-        escalate = self._detect_escalation(raw_text)
-        cleaned_text = self._clean_response(raw_text, strip_emotions=True)
-
-        raw_text, escalate, cleaned_text = self._guard_outreach(
-            raw_text,
-            escalate,
-            cleaned_text,
-            system_prompt,
-            user_message,
-            strip_emotions=True,
-        )
-
-        segments = self._parse_emotion_segments(raw_text)
-        if segments is None:
-            segments = [{"text": cleaned_text or raw_text, "emotion": "neutral"}]
+        result = self._generate_structured(system_prompt, user_message)
+        result = self._guard_outreach(result, system_prompt, user_message)
+        text = result["text"]
 
         return {
-            "text": cleaned_text or raw_text,
-            "raw": raw_text,
-            "escalate": escalate,
-            "segments": segments,
+            "text": text,
+            "raw": result["raw"],
+            "cot": result["cot"],
+            "parsed": result["parsed"],
+            "escalate": result["escalate"],
+            "segments": [{"text": text, "emotion": "neutral"}],
         }

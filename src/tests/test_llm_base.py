@@ -333,3 +333,169 @@ def test_detect_outreach_claim_jawab_aaya_flagged():
     """'Vijay का जवाब आया' (claiming a reply came) is a past-tense lie."""
     text = "Vijay का जवाब आया — कहते हैं Grant Road पर classes हैं।"
     assert BaseLLM._detect_outreach_claim(text, escalate=False) is not None
+
+
+# ── _parse_structured_output (cot / out / escalate contract) ──────────
+
+
+def test_parse_structured_output_valid():
+    raw = '{"cot": "user is sad, be gentle", "out": "अरे, क्या हुआ? बताओ ना।"}'
+    cot, out, escalate = BaseLLM._parse_structured_output(raw)
+    assert cot == "user is sad, be gentle"
+    assert out == "अरे, क्या हुआ? बताओ ना।"
+    assert escalate is False
+
+
+def test_parse_structured_output_strips_code_fence():
+    raw = '```json\n{"cot": "x", "out": "नमस्ते"}\n```'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == "नमस्ते"
+
+
+def test_parse_structured_output_ignores_surrounding_prose():
+    raw = 'Sure!\n{"cot": "x", "out": "ठीक है"} Hope that helps.'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == "ठीक है"
+
+
+def test_parse_structured_output_regex_fallback_on_broken_json():
+    # Unterminated object (no closing brace) — json.loads fails, regex recovers out.
+    raw = '{"cot": "thinking { broken", "out": "सब बढ़िया"'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == "सब बढ़िया"
+
+
+def test_parse_structured_output_handles_escaped_quotes():
+    raw = '{"cot": "x", "out": "उसने कहा \\"हाँ\\""}'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == 'उसने कहा "हाँ"'
+
+
+def test_parse_structured_output_escalate_true():
+    raw = '{"cot": "user consented to email", "out": "Team ko email kar rahi hoon.", "escalate": true}'
+    _cot, out, escalate = BaseLLM._parse_structured_output(raw)
+    assert out == "Team ko email kar rahi hoon."
+    assert escalate is True
+
+
+def test_parse_structured_output_escalate_regex_fallback():
+    # Broken JSON (no closing brace) — escalate still recovered via regex.
+    raw = '{"cot": "x", "out": "ठीक है", "escalate": true'
+    _cot, out, escalate = BaseLLM._parse_structured_output(raw)
+    assert out == "ठीक है"
+    assert escalate is True
+
+
+def test_parse_structured_output_unparseable_returns_empty():
+    assert BaseLLM._parse_structured_output("totally not json") == ("", "", False)
+
+
+def test_parse_structured_output_empty_input():
+    assert BaseLLM._parse_structured_output("") == ("", "", False)
+
+
+# ── generate() / generate_with_emotions() use "out", never "cot" ──────
+
+
+class JsonStubLLM(BaseLLM):
+    """Stub that returns a fixed raw payload, to exercise the JSON contract."""
+
+    model_name = "json-stub"
+
+    def __init__(self, cfg, kb, payload):
+        super().__init__(cfg, knowledge_base_dir=kb)
+        self._payload = payload
+
+    def _call_api(self, system_prompt: str, user_message: str) -> str:
+        return self._payload
+
+
+def test_generate_uses_out_and_never_leaks_cot(tmp_knowledge_base):
+    cfg = load_config()
+    payload = '{"cot": "internal reasoning that must NOT leak", "out": "नमस्ते भाई!"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["text"] == "नमस्ते भाई!"
+    assert "internal reasoning" not in result["text"]
+    assert result["cot"] == "internal reasoning that must NOT leak"
+    assert result["parsed"] is True
+
+
+def test_generate_falls_back_safely_when_unparseable(tmp_knowledge_base):
+    cfg = load_config()
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, "this is not json at all")
+    result = llm.generate("hi")
+    # Never delivers the raw text; uses the safe canned fallback.
+    assert result["text"]
+    assert "not json" not in result["text"]
+    # parsed=False signals callers (e.g. nudges) to skip rather than send it.
+    assert result["parsed"] is False
+
+
+def test_generate_with_emotions_returns_single_neutral_segment(tmp_knowledge_base):
+    cfg = load_config()
+    payload = '{"cot": "x", "out": "ठीक है ना?"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate_with_emotions("hi")
+    assert result["text"] == "ठीक है ना?"
+    assert result["segments"] == [{"text": "ठीक है ना?", "emotion": "neutral"}]
+
+
+class SequenceStubLLM(BaseLLM):
+    """Stub that returns a different payload per call, to exercise retries."""
+
+    model_name = "seq-stub"
+
+    def __init__(self, cfg, kb, payloads):
+        super().__init__(cfg, knowledge_base_dir=kb)
+        self._payloads = list(payloads)
+        self.calls = 0
+
+    def _call_api(self, system_prompt: str, user_message: str) -> str:
+        payload = self._payloads[min(self.calls, len(self._payloads) - 1)]
+        self.calls += 1
+        return payload
+
+
+def test_generate_retries_on_cot_parse_failure_then_succeeds(tmp_knowledge_base):
+    cfg = load_config()
+    # First call returns garbage; the re-roll returns valid JSON.
+    llm = SequenceStubLLM(
+        cfg,
+        tmp_knowledge_base,
+        ["garbage, not json", '{"cot": "x", "out": "अब ठीक है!"}'],
+    )
+    result = llm.generate("hi")
+    assert result["text"] == "अब ठीक है!"
+    assert llm.calls >= 2  # it actually retried
+
+
+def test_generate_stops_retrying_after_max_attempts(tmp_knowledge_base):
+    cfg = load_config()
+    cfg.llm_json_max_attempts = 2  # cap retries for the test
+    llm = SequenceStubLLM(cfg, tmp_knowledge_base, ["still not json"])
+    result = llm.generate("hi")
+    # Gave up to the safe fallback, and did NOT loop forever.
+    assert result["text"]
+    assert "not json" not in result["text"]
+    assert llm.calls == 2
+
+
+def test_generate_propagates_escalate_flag(tmp_knowledge_base):
+    cfg = load_config()
+    payload = (
+        '{"cot": "user consented", "out": "Team ko email kar rahi hoon.", '
+        '"escalate": true}'
+    )
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("please email the team")
+    assert result["escalate"] is True
+    assert result["text"] == "Team ko email kar rahi hoon."
+
+
+def test_generate_escalate_defaults_false_when_absent(tmp_knowledge_base):
+    cfg = load_config()
+    payload = '{"cot": "x", "out": "अच्छा, बताओ।"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["escalate"] is False

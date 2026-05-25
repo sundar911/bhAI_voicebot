@@ -19,6 +19,7 @@ from inference.webhooks.nudges import (
     SLOT_NIGHT,
     build_nudge_prompts,
     current_slot,
+    generate_nudge_text,
     is_wildcard_allowlist,
     parse_allowlist,
     select_nudge_candidates,
@@ -388,8 +389,74 @@ def test_build_nudge_prompts_handles_no_history():
     assert "Recent Conversation" not in user_p
 
 
-def test_nudge_instruction_forbids_escalate_emotions():
-    """The nudge text must be plain — no ESCALATE/EMOTIONS_JSON post-processing."""
-    assert "ESCALATE" in NUDGE_INSTRUCTION
-    assert "EMOTIONS_JSON" in NUDGE_INSTRUCTION
-    assert "no" in NUDGE_INSTRUCTION.lower()
+def test_nudge_instruction_has_no_plaintext_only_directive():
+    """The old plain-text directives were removed — nudges now use the cot/out
+    JSON contract, so a conflicting 'output only plain text' instruction would
+    confuse the model into leaking JSON to the user."""
+    assert "Output ONLY the nudge text" not in NUDGE_INSTRUCTION
+    assert "EMOTIONS_JSON" not in NUDGE_INSTRUCTION
+
+
+def test_build_nudge_prompts_includes_json_contract():
+    """Nudges must carry the structured-output instruction so reasoning lands
+    in 'cot', never in the spoken nudge."""
+    llm = _stub_llm()
+    sys_p, _ = build_nudge_prompts(
+        llm,
+        domain="hr_admin",
+        slot=SLOT_MORNING,
+        user_profile="",
+        memory_summary="",
+        extracted_facts="",
+        recent_messages=[],
+    )
+    assert "OUTPUT FORMAT" in sys_p
+    assert '"cot"' in sys_p
+    assert '"out"' in sys_p
+
+
+def test_generate_nudge_text_returns_out_not_cot():
+    """generate_nudge_text delivers the parsed 'out' and never the cot."""
+    llm = _stub_llm()
+    llm._generate_structured = MagicMock(
+        return_value={
+            "text": "अरे, बेटी की तबियत अब कैसी है?",
+            "cot": "returning user — reference daughter's health",
+            "raw": '{"cot": "...", "out": "..."}',
+            "parsed": True,
+        }
+    )
+    text = generate_nudge_text(
+        llm,
+        slot=SLOT_MORNING,
+        user_profile="",
+        memory_summary="",
+        extracted_facts="",
+        recent_messages=[],
+    )
+    assert text == "अरे, बेटी की तबियत अब कैसी है?"
+    assert "returning user" not in text
+    llm._generate_structured.assert_called_once()
+
+
+def test_generate_nudge_text_skips_on_parse_failure():
+    """When cot/out can't be parsed, the nudge is skipped (None) — never the
+    canned fallback as an unprompted message."""
+    llm = _stub_llm()
+    llm._generate_structured = MagicMock(
+        return_value={
+            "text": "अरे, ज़रा सी गड़बड़ हो गई — एक बार फिर से बोलोगे?",
+            "cot": "",
+            "raw": "garbage",
+            "parsed": False,
+        }
+    )
+    text = generate_nudge_text(
+        llm,
+        slot=SLOT_MORNING,
+        user_profile="",
+        memory_summary="",
+        extracted_facts="",
+        recent_messages=[],
+    )
+    assert text is None
