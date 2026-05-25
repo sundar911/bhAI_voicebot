@@ -108,55 +108,63 @@ def test_topic_list_includes_every_file_except_index(kb_with_helpdesk):
 
 
 def test_route_returns_index_plus_haiku_choice(kb_with_helpdesk):
-    router = _make_router(kb_with_helpdesk, "aadhaar")
+    router = _make_router(kb_with_helpdesk, "KB: aadhaar\nUSE_CASES: scheme_kb")
     result = router.route("Aadhaar update kaise karu?")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert names == ["_index.md", "aadhaar.md"]
+    assert result.use_cases == ["scheme_kb"]
 
 
 def test_route_parses_comma_separated_output(kb_with_helpdesk):
-    router = _make_router(kb_with_helpdesk, "aadhaar, pan_card")
+    router = _make_router(
+        kb_with_helpdesk, "KB: aadhaar, pan_card\nUSE_CASES: scheme_kb"
+    )
     result = router.route("naam galat sab cards pe")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert names == ["_index.md", "aadhaar.md", "pan_card.md"]
 
 
 def test_route_index_only_for_companion_query(kb_with_helpdesk):
-    router = _make_router(kb_with_helpdesk, "_index")
+    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES:")
     result = router.route("आज मन भारी है")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert names == ["_index.md"]
+    assert result.use_cases == []
 
 
 def test_route_ignores_unknown_stems(kb_with_helpdesk):
     """Haiku might hallucinate a stem; the router drops unknown ones."""
-    router = _make_router(kb_with_helpdesk, "aadhaar, unknown_stem")
+    router = _make_router(
+        kb_with_helpdesk, "KB: aadhaar, unknown_stem\nUSE_CASES: scheme_kb"
+    )
     result = router.route("Aadhaar")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert names == ["_index.md", "aadhaar.md"]
 
 
 def test_route_caps_at_top_n(kb_with_helpdesk):
     router = _make_router(
-        kb_with_helpdesk, "aadhaar, pan_card, scheme_sukanya_samriddhi"
+        kb_with_helpdesk,
+        "KB: aadhaar, pan_card, scheme_sukanya_samriddhi\nUSE_CASES: scheme_kb",
     )
     result = router.route("everything please", top_n=1)
     # 1 index + 1 scored doc
-    assert len(result) == 2
+    assert len(result.paths) == 2
 
 
 def test_route_empty_transcript_returns_only_index(kb_with_helpdesk):
-    router = _make_router(kb_with_helpdesk, "")
+    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES:")
     result = router.route("")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert names == ["_index.md"]
+    assert result.use_cases == []
     # client should not even be called for empty transcripts
     router._client.messages.create.assert_not_called()
 
 
 def test_route_uses_cache_control_in_system_prompt(kb_with_helpdesk):
     """The static prefix must be sent with cache_control so repeat calls cache."""
-    router = _make_router(kb_with_helpdesk, "aadhaar")
+    router = _make_router(kb_with_helpdesk, "KB: aadhaar\nUSE_CASES: scheme_kb")
     router.route("Aadhaar update")
     call = router._client.messages.create.call_args
     system = call.kwargs["system"]
@@ -180,10 +188,12 @@ def test_route_falls_back_to_keyword_on_api_error(kb_with_helpdesk):
         client=client,
     )
     result = router.route("Aadhaar update kaise karu?")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     # Keyword fallback should still hit aadhaar.md via filename stem
     assert "_index.md" in names
     assert "aadhaar.md" in names
+    # Fallback never emits use-cases
+    assert result.use_cases == []
 
 
 def test_route_falls_back_on_empty_response(kb_with_helpdesk):
@@ -191,13 +201,63 @@ def test_route_falls_back_on_empty_response(kb_with_helpdesk):
     router = _make_router(kb_with_helpdesk, "")
     result = router.route("some query")
     # No stems parsed → only index
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert names == ["_index.md"]
+    assert result.use_cases == []
 
 
 def test_route_dedupes_repeated_stems(kb_with_helpdesk):
     """If Haiku returns the same stem twice, we don't double-inject."""
-    router = _make_router(kb_with_helpdesk, "aadhaar, aadhaar, aadhaar")
+    router = _make_router(
+        kb_with_helpdesk, "KB: aadhaar, aadhaar, aadhaar\nUSE_CASES: scheme_kb"
+    )
     result = router.route("Aadhaar")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert names == ["_index.md", "aadhaar.md"]
+
+
+# ── use-case parsing ──────────────────────────────────────────────────
+
+
+def test_route_multi_label_use_cases(kb_with_helpdesk):
+    """A turn can carry multiple use-case tags simultaneously."""
+    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES: grievance, finance")
+    result = router.route("Salary nahi aayi, supervisor kuch bata nahi raha")
+    assert result.use_cases == ["grievance", "finance"]
+
+
+def test_route_filters_invalid_use_cases(kb_with_helpdesk):
+    """Tags outside the allowlist are silently dropped."""
+    router = _make_router(
+        kb_with_helpdesk, "KB: _index\nUSE_CASES: grievance, bogus_tag, general"
+    )
+    result = router.route("anything")
+    assert result.use_cases == ["grievance", "general"]
+
+
+def test_route_dedupes_use_cases(kb_with_helpdesk):
+    """Repeated tags are collapsed."""
+    router = _make_router(
+        kb_with_helpdesk, "KB: _index\nUSE_CASES: finance, finance, finance"
+    )
+    result = router.route("PF balance")
+    assert result.use_cases == ["finance"]
+
+
+def test_route_legacy_bare_stem_format_still_works(kb_with_helpdesk):
+    """If the model slips and returns only a bare stem line (old format),
+    treat it as the KB line and leave use-cases empty."""
+    router = _make_router(kb_with_helpdesk, "aadhaar")
+    result = router.route("Aadhaar update")
+    names = [p.name for p in result.paths]
+    assert names == ["_index.md", "aadhaar.md"]
+    assert result.use_cases == []
+
+
+def test_route_handles_case_insensitive_labels(kb_with_helpdesk):
+    """Labels are case-insensitive on parse (model may capitalise)."""
+    router = _make_router(kb_with_helpdesk, "kb: aadhaar\nuse_cases: GRIEVANCE")
+    result = router.route("anything")
+    names = [p.name for p in result.paths]
+    assert "aadhaar.md" in names
+    assert result.use_cases == ["grievance"]

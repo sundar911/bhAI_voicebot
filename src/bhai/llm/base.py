@@ -36,6 +36,58 @@ EMOTION_INSTRUCTION = (
 )
 
 
+MEMORY_INSTRUCTION = """
+=== Memory (self-edited) ===
+
+You maintain a small per-user memory across turns. After your spoken reply,
+you may optionally emit zero or more `<memory>` blocks. These are NOT spoken
+to the user — they're stripped before TTS — and they update the persistent
+notes you'll see at the top of future turns under "याद रखी हुई बातें" and
+"पिछली बातचीत का सारांश".
+
+Two operations are supported:
+
+  <memory>fact: <one short, durable fact about the user></memory>
+  <memory>summary: <a fresh 3-4 line Hindi summary of who this person is and
+  what's been going on, replaces the previous summary entirely></memory>
+
+Rules:
+- Only emit a `fact:` when this turn revealed something durable that's not
+  already in the existing facts above. Routine chitchat usually has no new
+  fact. Quality beats quantity.
+- Only emit a `summary:` once every few turns when the conversation has
+  meaningfully shifted (new topic, new concern, a milestone). If the prior
+  summary still describes them well, don't emit one — saves tokens and
+  avoids churn.
+- High-priority facts to capture when the user mentions them:
+    * `work_location: BC` or `work_location: MIDC` — REQUIRED before any
+      ESCALATE: true can fire, so capture it the first time it's mentioned
+      or inferable (e.g. user says "BC office में काम करती हूँ").
+    * Name (`name: Priya`), family members and ages, health conditions
+      they're managing, the supervisor/co-worker names they mention, the
+      products they make, the worry currently on their mind.
+- Facts are merged + deduplicated automatically. Re-emitting an existing
+  fact is a no-op, not an error — but it wastes tokens, so don't.
+- NEVER include religion, caste, disability, or specific loan numbers in
+  memory. Those are filtered upstream from external APIs and should not
+  appear here either.
+- The `<memory>` tags themselves and everything inside them are stripped
+  before the response reaches the user. Do not refer to them in your
+  spoken reply.
+
+Example (after a turn where the user mentioned she's at MIDC and her
+daughter Priya is starting Class 3):
+
+  <memory>fact: work_location: MIDC</memory>
+  <memory>fact: daughter Priya starting Class 3 (2026)</memory>
+
+Example (after several turns of conversation about a workplace issue with
+a supervisor named Ramesh that the prior summary doesn't capture):
+
+  <memory>summary: पिछले 2-3 दिन से supervisor Ramesh के साथ बहस हो रही है — salary को लेकर। User परेशान है पर escalate नहीं करना चाहती अभी। MIDC office में काम करती है, 2 बच्चे हैं।</memory>
+"""
+
+
 class BaseLLM(ABC):
     """
     Abstract base class for LLM backends.
@@ -163,6 +215,24 @@ class BaseLLM(ABC):
         cls._prompt_cache[version] = content
         return content
 
+    _USE_CASES_DIR = _PROMPTS_DIR / "use_cases"
+    _use_case_cache: Dict[str, str] = {}
+
+    @classmethod
+    def _load_use_case_block(cls, tag: str) -> str:
+        """Read a use-case instruction block from prompts/use_cases/{tag}.md.
+
+        Cached on first read. Returns empty string if the file is missing —
+        the router's allowlist already constrains ``tag`` so this is mostly
+        a defensive guard against typos during prompt edits.
+        """
+        if tag in cls._use_case_cache:
+            return cls._use_case_cache[tag]
+        path = cls._USE_CASES_DIR / f"{tag}.md"
+        content = _read_file(path)
+        cls._use_case_cache[tag] = content
+        return content
+
     def _build_system_prompt(
         self,
         domain: str,
@@ -171,28 +241,45 @@ class BaseLLM(ABC):
         extracted_facts: str = "",
         transcript: str = "",
     ) -> str:
-        """Build system prompt from versioned template + user context + KB.
+        """Build system prompt from versioned template + user context + KB + use-cases.
 
         When the KB router is enabled and a ``transcript`` is provided, only
-        the routed subset of ``helpdesk/*.md`` is injected. Otherwise the
-        whole helpdesk block is injected (legacy behavior).
+        the routed subset of ``helpdesk/*.md`` is injected. The router also
+        returns 0+ use-case tags; matching instruction blocks are appended
+        after the KB section so the model sees task-specific guidance for
+        the current turn.
         """
         version = getattr(self.config, "prompt_version", "current")
         prompt = self._load_prompt_template(version)
 
-        # Inject helpdesk KB: routed if router is enabled and transcript is
-        # available, else full block. The router always returns _index.md
-        # plus 0..N matched docs.
+        # Inject helpdesk KB + use-case tags via the router. The router always
+        # returns _index.md plus 0..N matched docs; use_cases is empty for
+        # companion-mode chitchat and for the keyword-fallback path.
         helpdesk_paths: Optional[List[Path]] = None
+        use_case_tags: List[str] = []
         if self._kb_router is not None and transcript:
-            helpdesk_paths = self._kb_router.route(
+            result = self._kb_router.route(
                 transcript,
                 top_n=getattr(self.config, "kb_router_top_n", 3),
                 threshold=getattr(self.config, "kb_router_threshold", 0.05),
             )
+            helpdesk_paths = result.paths
+            use_case_tags = result.use_cases
         helpdesk_kb = self._load_domain_context("helpdesk", paths=helpdesk_paths)
         if helpdesk_kb:
             prompt += f"\n\n=== Helpdesk Knowledge Base (documents, schemes) ===\n{helpdesk_kb}"
+
+        if use_case_tags:
+            blocks = [
+                block
+                for block in (self._load_use_case_block(tag) for tag in use_case_tags)
+                if block
+            ]
+            if blocks:
+                prompt += (
+                    "\n\n=== Active Use Cases (apply to THIS turn) ===\n\n"
+                    + "\n\n".join(blocks)
+                )
 
         # Append user-specific context (only if available)
         if user_profile:
@@ -403,21 +490,53 @@ class BaseLLM(ABC):
             return match.group(1).lower() == "true"
         return "escalate" in text.lower()
 
+    # Valid ESCALATE_CATEGORY values. Anything else → routed as "grievance"
+    # (the default impact-team list). Office-specific docs categories route
+    # to the per-office recipients (see escalations/handler.py).
+    _ESCALATION_CATEGORIES = ("docs_bc", "docs_midc", "docs_unknown", "grievance")
+
+    @staticmethod
+    def _detect_escalation_category(text: str) -> Optional[str]:
+        """Detect the office/topic routing category from the LLM response.
+
+        Returns one of: 'docs_bc', 'docs_midc', 'docs_unknown', 'grievance', or
+        None if the model didn't emit a category (caller treats None as
+        'grievance' default). Unknown category strings also return None so
+        a bad model output can't silently misroute.
+        """
+        match = re.search(
+            r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", text, flags=re.IGNORECASE
+        )
+        if not match:
+            return None
+        value = match.group(1).lower()
+        if value in BaseLLM._ESCALATION_CATEGORIES:
+            return value
+        return None
+
     @staticmethod
     def _clean_response(raw_text: str, strip_emotions: bool = False) -> str:
-        """Remove ESCALATE/EMOTIONS_JSON lines and strip markdown formatting.
+        """Remove ESCALATE/EMOTIONS_JSON lines, <memory> blocks, and markdown.
 
         Markdown leaks (asterisks, bullet markers) get read literally by TTS
         ("asterisk asterisk", "dash"). We strip them as a safety net even
         though the prompt also forbids them.
+
+        <memory> blocks (see ``MEMORY_INSTRUCTION``) are model-internal
+        notes the user must never hear. They're stripped before reasoning-
+        leak detection so their contents can't accidentally trip outreach
+        or jargon filters.
 
         Also strips chain-of-thought leakage — paragraphs where the model
         narrates its reasoning ("system prompt कहता है...", "anti-sycophancy
         rule apply होता है...") before the actual response. Even though the
         prompt forbids this, the model can still slip when rules conflict.
         """
-        # First strip reasoning leakage (paragraph-level), then clean lines
-        text = BaseLLM._strip_reasoning_leak(raw_text)
+        # First strip memory patches (must precede reasoning-leak detection
+        # so memory contents don't trip the jargon filter), then reasoning
+        # leakage at the paragraph level, then per-line cleanup.
+        text = BaseLLM._strip_memory_patches(raw_text)
+        text = BaseLLM._strip_reasoning_leak(text)
 
         cleaned_lines = []
         for line in text.splitlines():
@@ -430,6 +549,78 @@ class BaseLLM(ABC):
                 cleaned_lines.append(stripped)
         text = "\n".join(cleaned_lines).strip()
         return BaseLLM._strip_markdown(text)
+
+    # Matches a single <memory>...</memory> block. DOTALL so multi-line
+    # summary patches are captured. Case-insensitive on the tag in case the
+    # model slips on capitalisation.
+    _MEMORY_BLOCK_RE = re.compile(
+        r"<memory>(.*?)</memory>", flags=re.DOTALL | re.IGNORECASE
+    )
+
+    @staticmethod
+    def _strip_memory_patches(raw_text: str) -> str:
+        """Remove all <memory>...</memory> blocks from text.
+
+        Idempotent. Collapses adjacent blank lines left behind so the
+        spoken reply doesn't develop awkward gaps.
+        """
+        if not raw_text or "<memory" not in raw_text.lower():
+            return raw_text
+        stripped = BaseLLM._MEMORY_BLOCK_RE.sub("", raw_text)
+        # Collapse 3+ newlines left from removing blocks back to 2.
+        stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+        return stripped.strip()
+
+    @staticmethod
+    def _parse_memory_patches(raw_text: str) -> Optional[Dict[str, Any]]:
+        """Extract memory ops from a raw LLM response.
+
+        Returns ``{"summary": Optional[str], "facts": List[str]}`` if any
+        ``<memory>`` block was found, else ``None``. Only the LAST
+        ``summary:`` block in the response is kept (later overrides earlier);
+        all ``fact:`` blocks are collected in order. Unknown operation
+        prefixes are logged and ignored.
+
+        The caller (the webhook) is responsible for actually persisting
+        these patches via ``ConversationStore.save_memory()`` — BaseLLM
+        stays store-ignorant.
+        """
+        if not raw_text or "<memory" not in raw_text.lower():
+            return None
+
+        facts: List[str] = []
+        summary: Optional[str] = None
+        for match in BaseLLM._MEMORY_BLOCK_RE.finditer(raw_text):
+            body = match.group(1).strip()
+            if not body:
+                continue
+            # Split on the first colon to get the op prefix.
+            if ":" not in body:
+                import logging
+
+                logging.getLogger("bhai.llm").warning(
+                    "Memory block missing op prefix, ignored: %r", body[:60]
+                )
+                continue
+            op_raw, value = body.split(":", 1)
+            op = op_raw.strip().lower()
+            value = value.strip()
+            if not value:
+                continue
+            if op == "fact":
+                facts.append(value)
+            elif op == "summary":
+                summary = value
+            else:
+                import logging
+
+                logging.getLogger("bhai.llm").warning(
+                    "Unknown memory op %r, ignored", op
+                )
+
+        if not facts and summary is None:
+            return None
+        return {"summary": summary, "facts": facts}
 
     # Markers that indicate the model is narrating its own reasoning instead
     # of speaking to the user. These English terms should NEVER appear in a
@@ -715,8 +906,11 @@ class BaseLLM(ABC):
         Returns:
             Dictionary with text, raw, and escalate.
         """
-        system_prompt = self._build_system_prompt(
-            domain, user_profile, memory_summary, extracted_facts, transcript
+        system_prompt = (
+            self._build_system_prompt(
+                domain, user_profile, memory_summary, extracted_facts, transcript
+            )
+            + MEMORY_INSTRUCTION
         )
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
@@ -738,10 +932,16 @@ class BaseLLM(ABC):
             strip_emotions=False,
         )
 
+        # Memory patches parsed from the FINAL raw_text (after any outreach
+        # re-prompt). The webhook applies them via store.save_memory().
+        memory_patches = self._parse_memory_patches(raw_text)
+
         return {
             "text": cleaned_text or raw_text,
             "raw": raw_text,
             "escalate": escalate,
+            "category": self._detect_escalation_category(raw_text),
+            "memory_patches": memory_patches,
         }
 
     def generate_with_emotions(
@@ -770,6 +970,7 @@ class BaseLLM(ABC):
                 domain, user_profile, memory_summary, extracted_facts, transcript
             )
             + EMOTION_INSTRUCTION
+            + MEMORY_INSTRUCTION
         )
         if mode_instruction:
             system_prompt += "\n\n" + mode_instruction
@@ -794,9 +995,13 @@ class BaseLLM(ABC):
         if segments is None:
             segments = [{"text": cleaned_text or raw_text, "emotion": "neutral"}]
 
+        memory_patches = self._parse_memory_patches(raw_text)
+
         return {
             "text": cleaned_text or raw_text,
             "raw": raw_text,
             "escalate": escalate,
             "segments": segments,
+            "category": self._detect_escalation_category(raw_text),
+            "memory_patches": memory_patches,
         }

@@ -19,6 +19,7 @@ import time
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Dict, Optional
 
 from fastapi import BackgroundTasks, FastAPI, Header, Request, Response
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -42,12 +43,7 @@ from src.bhai.integrations.email_client import EmailClient
 from src.bhai.integrations.telegram_client import TelegramClient
 from src.bhai.llm import create_llm
 from src.bhai.memory.store import ConversationStore
-from src.bhai.memory.summarizer import (
-    build_summarize_request,
-    merge_facts,
-    parse_summary,
-    should_summarize,
-)
+from src.bhai.memory.summarizer import merge_facts
 from src.bhai.resilience.queue import RequestQueue
 from src.bhai.resilience.worker import RetryWorker
 from src.bhai.stt.sarvam_stt import SarvamSTT
@@ -636,6 +632,7 @@ def process_message(
     llm_result = None
     response_text = None
     memory_summary = ""
+    memory: Optional[Dict[str, Any]] = None  # set inside the LLM branch
     user_profile = ""  # set inside the LLM branch; default for greeting branch
 
     if is_first_ever and _greeting_word:
@@ -712,14 +709,21 @@ def process_message(
     # Save assistant response
     store.save_message(phone, "assistant", response_text, session_id)
 
-    # ── Summarization (every N user messages) ──────────────────────
-    _try_summarize(
-        phone,
-        phone_id,
-        store,
-        config,
-        memory_summary=memory_summary or "",
-        memory=store.get_memory(phone),
+    # ── Memory patches (Letta-style self-edited core memory) ──────
+    # The LLM emits zero or more `<memory>` blocks per turn (see
+    # MEMORY_INSTRUCTION in src/bhai/llm/base.py). The blocks are already
+    # stripped from response_text before TTS; here we just persist the
+    # parsed deltas into the store.
+    #
+    # Replaces the legacy every-5-turns _try_summarize() flow. The
+    # summariser code in src/bhai/memory/summarizer.py is kept as a
+    # legacy fallback but no longer called from the hot path.
+    _apply_memory_patches(
+        phone=phone,
+        phone_id=phone_id,
+        store=store,
+        memory_patches=(llm_result or {}).get("memory_patches"),
+        prior_memory=memory,
     )
 
     _synthesize_and_send_voice(
@@ -750,6 +754,7 @@ def process_message(
             user_profile=user_profile,
             run_id=run_id,
             run_dir=run_dir,
+            category=llm_result.get("category"),
         )
 
 
@@ -767,6 +772,7 @@ def _schedule_escalation(
     user_profile: str,
     run_id: str,
     run_dir: Path,
+    category: str | None = None,
 ) -> None:
     """Schedule handle_escalation onto the main event loop.
 
@@ -809,6 +815,7 @@ def _schedule_escalation(
             run_id=run_id,
             run_dir=run_dir,
             telegram_client=telegram_client,
+            category=category,
         ),
         _main_event_loop,
     )
@@ -908,35 +915,54 @@ def _synthesize_and_send_voice(
         return False
 
 
-def _try_summarize(phone, phone_id, store, config, memory_summary="", memory=None):
-    """Run summarization if due. Non-critical — failures are logged only."""
-    user_msg_count = store.count_user_messages(phone)
-    if not should_summarize(user_msg_count):
+def _apply_memory_patches(
+    *,
+    phone: str,
+    phone_id: str,
+    store: ConversationStore,
+    memory_patches: Optional[Dict[str, Any]],
+    prior_memory: Optional[Dict[str, Any]],
+) -> None:
+    """Persist model-emitted memory deltas into the store.
+
+    ``memory_patches`` is the parsed output of
+    ``BaseLLM._parse_memory_patches()`` — either ``None`` (no <memory>
+    blocks emitted this turn) or ``{"summary": Optional[str],
+    "facts": List[str]}``. New facts are merged + deduplicated against
+    the prior fact list via ``merge_facts``. The summary is replaced
+    wholesale when present, preserved when ``None``.
+
+    Non-critical: any persistence failure is logged but does not block
+    the voice reply (which has already been sent by this point).
+    """
+    if not memory_patches:
         return
 
-    logger.info(
-        "Triggering summarization for user=%s (msg #%d)", phone_id, user_msg_count
-    )
+    new_summary = memory_patches.get("summary")
+    new_facts = memory_patches.get("facts") or []
+
+    if not new_summary and not new_facts:
+        return
+
     try:
-        llm = create_llm(config)
-        old_summary = memory_summary
-        recent_for_summary = store.get_recent_messages(phone, limit=10)
-        summarize_prompt = build_summarize_request(old_summary, recent_for_summary)
+        existing_summary = (prior_memory or {}).get("summary", "")
+        existing_facts = (prior_memory or {}).get("facts", []) or []
 
-        summary_raw = llm._call_api_with_retry(
-            "You are a conversation summarizer. Follow the instructions exactly.",
-            summarize_prompt,
+        merged_summary = new_summary if new_summary else existing_summary
+        merged_facts = (
+            merge_facts(existing_facts, new_facts) if new_facts else existing_facts
         )
-        parsed = parse_summary(summary_raw)
 
-        existing_facts = memory["facts"] if memory else []
-        merged = merge_facts(existing_facts, parsed["facts"])
-        store.save_memory(phone, parsed["summary"], merged)
+        store.save_memory(phone, merged_summary, merged_facts)
         logger.info(
-            "Summarization complete for user=%s, facts=%d", phone_id, len(merged)
+            "Memory patch applied for user=%s: summary_updated=%s new_facts=%d total_facts=%d",
+            phone_id,
+            bool(new_summary),
+            len(new_facts),
+            len(merged_facts),
         )
     except Exception as e:
-        logger.error("Summarization failed for user=%s: %s", phone_id, e)
+        logger.error("Memory patch persistence failed for user=%s: %s", phone_id, e)
 
 
 # ── Main webhook ──────────────────────────────────────────────────────
