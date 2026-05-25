@@ -11,6 +11,22 @@ When adding a row, include:
 
 ---
 
+## 2026-05-25 — Strengthen general-knowledge mode: stop the "Google पर देखो" punt
+
+**Commit**: WIP (this branch — `dev`)
+**Trigger**: dev-bot transcript at 2026-05-25 09:28:28 IST. User asked *"कोई बढ़िया चाइनीज़ ऑप्शन दो"* (after a multi-turn budget restaurant conversation around Bombay Central). Bot replied: *"सुंदर, honestly बोलूँ — Bombay Central के पास specific Chinese restaurants के नाम और current prices मेरे पास नहीं हैं। Zomato या Google Maps पर 'Chinese near Bombay Central' search करो..."* Punting to Google instead of naming chains/areas Sonnet definitely knows is false modesty — and the user flagged it as a failure mode (normal Sonnet would name a few restaurants, hedge prices, ask follow-up).
+**Fix shape**: prompt-only edit. Strengthen the "General questions outside the KB" section + scope the Sapna-karate failure narrative narrowly.
+
+Changes:
+- **"General questions outside the KB" section** rewritten and expanded. New section heading: *"answer them like normal Sonnet"*. Explicit instruction: "respond exactly the way Sonnet/ChatGPT would respond to any user asking this question on a normal day — share specific suggestions, name places and chains you actually know about." Explicit prohibition: "Do NOT default to 'Google Maps पर देखो' as the answer." Worked example (restaurant recommendation in BC area, ₹700 budget) showing the right pattern: named chains + hedged prices + follow-up question about preferences.
+- **"Why this matters" coda** (Sapna karate failure narrative) narrowed: previous wording lumped "inventing specifics (specific academy, exact fees, exact schedule)" with the actual failure (fake attribution to Vijay + past-tense outreach). The breadth was mistraining the model into refusing all specifics. Now scoped to *"fake outreach attribution + past-tense outreach claims — putting words in a real person's mouth"*, explicitly distinguishing from general-knowledge suggestions.
+
+No code changes. No regex updates needed — this is a model-behaviour calibration via prompt only.
+
+239 tests pass.
+
+---
+
 ## 2026-05-24 — Fix "ru p e e s" letter-by-letter TTS leak
 
 **Commit**: WIP (this branch — `dev`)
