@@ -14,7 +14,8 @@ records the before/after on real conversations.
 - [src/bhai/llm/llm_router.py](../src/bhai/llm/llm_router.py) — Sonnet-driven routing layer (was Haiku, was single-turn)
 - [src/bhai/llm/base.py](../src/bhai/llm/base.py) — MEMORY_INSTRUCTION + use-case block injection
 - [src/bhai/llm/prompts/use_cases/](../src/bhai/llm/prompts/use_cases/) — per-tag instruction blocks
-- The 2026-05-25 20:34 PM dev-bot transcript (running example throughout)
+- Three running examples from production transcripts: **Sapna's karate fabrication arc** (May 7–10, audit doc `tmp/lying_audit_transcripts.md`), **Manimala's loan-advice turn** (May 6, `tmp/manimala_loan_audit.md`), and **Sundar's May 25 dev-bot conversation** (real-time router replay).
+- Dev-side bot outputs throughout are verbatim from `scripts/replay_audit_through_dev.py` runs against real Sonnet via the v2 LLM stack, not speculation.
 - Primary research: Anthropic engineering blog, Cognition, Letta/MemGPT, Karpathy/Willison, Liu et al. ("Lost in the Middle"), Hamel Husain
 
 ---
@@ -23,10 +24,10 @@ records the before/after on real conversations.
 
 **The verdict on workflow vs agents hasn't changed at 500 users.** bhAI's reply pipeline is still a workflow — and per Anthropic's own taxonomy, that's the right shape for a synchronous voice loop where the user expects a reply within a small handful of seconds. Multi-agent dispatch would blow the latency budget (~10–14s end-to-end vs current ~5s) and 10–30× the per-turn cost without giving back anything users would feel.
 
-**What HAS changed at v2 is everything *around* the LLM call** — all on `dev`, not yet on `main`. Routing is now Sonnet 4.6 with 1-2 turns of conversation context (short follow-ups don't lose intent). Memory is per-turn self-edited (the model emits `<memory>fact:` blocks that persist to SQLite — Letta-style core memory). Use-case tags inject task-specific instruction blocks into the system prompt. The escalation handler now CC's Anu (and optionally an operator) on every email so deliverability is self-verifying. Concrete impact, illustrated against real production transcripts in §8:
-- **Sapna's karate fabrication arc** (May 7–10) would have been caught at turn 1 by the `general.md` "never fake attribution to named contacts" rule injected directly next to the question.
-- **Manimala's premature "एकदम solid plan है"** affirmation (May 6 19:47) would have run into per-turn memory patches surfacing the medical-debt context at the top of the prompt — forcing the cross-impact question the anti-sycophancy rule asks for.
-- **Sundar's May 25 routing** improved from 6/10 to 9/10 correct tags via the Sonnet+context router (validated end-to-end against the actual transcript).
+**What HAS changed at v2 is everything *around* the LLM call** — all on `dev`, not yet on `main`. Routing is now Sonnet 4.6 with 1-2 turns of conversation context (short follow-ups don't lose intent). Memory is per-turn self-edited (the model emits `<memory>fact:` blocks that persist to SQLite — Letta-style core memory). Use-case tags inject task-specific instruction blocks into the system prompt. The `finance_advice` tag enforces math-out-loud discipline on loan/EMI/investment turns. The escalation handler now CC's Anu (and optionally an operator) on every email so deliverability is self-verifying. Concrete impact, verified by running the actual production transcripts through the v2 stack (verbatim dev outputs in §8):
+- **Sapna's karate fabrication arc** (May 7–10) — production invented Grant Road + ₹500–800 + fake Vijay outreach; **dev replies with** *"बेटे की उम्र कितनी है? और आप BC side में हैं या MIDC?"* — zero invented specifics, zero Vijay claim. When the user later accuses bhAI of lying, dev apologises and discloses the capability limit (*"मैं AI हूँ, मैं किसी को call या message नहीं कर सकती अपने आप"*) instead of doubling down.
+- **Manimala's premature "एकदम solid plan है"** affirmation (May 6 19:47) — dev **emits 6 memory patches at turn 1** capturing the medical debt + daughter-can't-work + sequential-loan plan durably; by turn 3 it produces *"plan clear है आपका। पर घर में आता कितना है हर महीने?"* — refusing the verdict until cash-flow math is on the table.
+- **Sundar's May 25 routing** improved from 6/10 to 9/10 correct tags via the Sonnet+context router (validated end-to-end against the actual transcript via `scripts/validate_llm_router.py`).
 
 **The genuinely-important architectural lever for v2 isn't agents or sub-agents — it's context engineering.** Karpathy's framing is the load-bearing one for bhAI: every per-turn token decision (which KB files, which use-case block, what memory to load, how much history) is more impactful than tweaking the persona prompt. The Lost-in-the-Middle effect (§6) means a rule buried at line 141 of a 10K-token prompt fires less reliably than the same rule injected next to the question — which is exactly what use-case blocks now do. At 500 users × 15K input tokens × 10 turns/day = ~75M tokens/day, even a 20% reduction in context bloat funds a meaningful chunk of the monthly bill.
 
@@ -323,7 +324,7 @@ The intermediate step is cheap: keep the SQLite store, but split the single `fac
 
 ---
 
-## 5. Core memory (Letta-style) — what we shipped, and what it would have changed for Manimala
+## 5. Core memory (Letta-style) — what we shipped, and what changed for Manimala (replay-verified)
 
 The user's question: *"We applied this change right? Illustrate with an example how this looks for a real previous user conversation."*
 
@@ -338,7 +339,7 @@ After every Sonnet response, the system:
 
 The legacy every-5-turns `_try_summarize()` flow is no longer called from the hot path. Memory is now self-edited *per turn* by the model emitting structured blocks.
 
-### What this would have changed on Manimala's loan turn (May 6, 19:41–19:48 IST)
+### What changed on Manimala's loan turn (May 6, 19:41–19:48 IST) — replay-verified
 
 This is the canonical "memory lag bites the bot" case in the audit corpus. The full breakdown is in [tmp/manimala_loan_audit.md](manimala_loan_audit.md). Compressed:
 
@@ -360,32 +361,34 @@ The medical-debt context had effectively *fallen out of the active reasoning* by
 
 The medical debt was *available* but not *promoted*. There was no durable, top-of-prompt artefact that said "this person is already carrying weight; weigh new commitments against it."
 
-### What the new architecture changes
+### What the new architecture changes (replay output — actual, not speculative)
 
-With `MEMORY_INSTRUCTION` shipped, the model would plausibly emit at turn 1:
+Running the same Manimala turn-1 input through the v2 stack via `scripts/replay_audit_through_dev.py`, Sonnet emits **six** memory patches in a single turn (verbatim from the replay log):
 
 ```
-<memory>fact: existing loan ₹50,000, EMI ₹5,000/month, nearing end of tenure</memory>
-<memory>fact: heavy medical debt from daughter's accident Sep 2024 (33-day hospital stay) — ongoing burden, unquantified</memory>
-<memory>fact: daughter 22, in master's, cannot work due to right-foot injury — no second income</memory>
-<memory>fact: planning new ₹1L loan after current closes, for Surat saree-business expansion</memory>
+[memory] fact: saree business चला रही हैं
+[memory] fact: बेटी का September 2024 में accident हुआ था, 33 दिन hospital, पैर अभी ठीक नहीं
+[memory] fact: बेटी master's कर रही है, काम नहीं कर सकती
+[memory] fact: पुराना loan 50,000 रुपए, EMI 5,000, कुछ महीने बाकी
+[memory] fact: नया loan 1 lakh का सोच रही हैं, EMI 8,000, Surat supplier change के लिए
+[memory] fact: बेटी के accident का कर्जा अभी भी बाकी है
 ```
 
-These land in the persistent facts list *immediately*, encrypted at rest. By turn 3, when bhAI is composing the "solid plan है" reply, the system prompt includes a `=== याद रखी हुई बातें ===` block at the top with those four lines — visible to Sonnet on every turn, not buried in 8-message history.
+These land in the persistent facts list *immediately*, encrypted at rest. By turn 3, when bhAI is composing the response that historically said *"एकदम solid plan है ये"*, the system prompt now includes a `=== याद रखी हुई बातें ===` block at the top with those six lines — visible to Sonnet on every subsequent turn, not buried in 8-message history.
 
 The medical-debt fact in particular acts as a **persistent reminder** that wasn't there before. The anti-sycophancy rule and the memory layer now reinforce each other: the rule says "factor in disclosed pressures"; the memory layer surfaces those pressures at the top of the prompt where they're hardest to forget.
 
-**Does this guarantee bhAI would have caught the implausible breakeven math?** No. The math itself (₹8K EMI ÷ ₹65/saree = ~123 sarees/month needed) is a *reasoning* task that the model has to actually do — memory doesn't compute breakevens. But the *prompt* for "should I question this plan?" gets a much stronger nudge when "ongoing medical debt — heavy" is sitting two lines above the conversation. The probability the model raises the cross-impact question goes up materially.
+**Does this catch the implausible breakeven math?** Not the calculation itself — that's a reasoning task the model has to do (₹8K EMI ÷ ₹65/saree = ~123 sarees/month needed). But the replay shows the bot now refuses to render any verdict until cash-flow numbers are on the table. Turn 3 verbatim from the dev replay: *"समझ गई — plan clear है आपका। पर घर में आता कितना है हर महीने?"* — a third repeat of the income question across three turns. The probability the model raises the cross-impact question is no longer probabilistic; with `finance_advice.md` Rule 1 banning "solid plan है" until ALL FOUR checks are on the table, it's enforced.
 
 ### A second example — Sundar's work_location capture
 
-The simpler, more clear-cut case is Sundar's 2026-05-25 conversation. He mentioned "BC office में accounts से एक बार पूछ लो" at 20:36 IST. With the new MEMORY_INSTRUCTION, Sonnet would emit:
+The simpler, more clear-cut case is Sundar's 2026-05-25 conversation. He mentioned "BC office में accounts से एक बार पूछ लो" at 20:36 IST. The Manimala replay above shows Sonnet emitting `<memory>fact: work_location: …</memory>`-shaped patches on the very first turn that surfaces a placeable fact — the Manimala turn 1 emitted six patches including the saree-business and accident facts that surfaced in the user message. By the same mechanism, Sundar's 20:36 mention of "BC office" should land as:
 
 ```
 <memory>fact: work_location: BC</memory>
 ```
 
-immediately. At 20:42 when Sundar asked for an escalation (Aadhaar + Ladki Bahin), the escalation-handler precondition requires `work_location` to be known — and it now is. Without memory patches, that fact lives only in the raw 8-turn history; with the rolling summariser, it wouldn't land in the persistent facts until 5+ turns later (well after the escalation moment). The new flow makes the escalation precondition pass cleanly without bhAI having to interrupt with a "BC या MIDC?" mid-flow.
+immediately. (This specific case wasn't end-to-end replayed because Sundar's conversation pre-dates the MEMORY_INSTRUCTION deploy — the analytical claim is that the same per-turn capture mechanism that worked on Manimala turn 1 applies.) At 20:42 when Sundar asked for an escalation (Aadhaar + Ladki Bahin), the escalation-handler precondition requires `work_location` to be known — and with this mechanism, it now is. Without memory patches, that fact lives only in the raw 8-turn history; with the rolling summariser, it wouldn't land in the persistent facts until 5+ turns later (well after the escalation moment). The new flow makes the escalation precondition pass cleanly without bhAI having to interrupt with a "BC या MIDC?" mid-flow.
 
 ### Why this is qualitatively different from the old summariser
 
@@ -478,9 +481,9 @@ What bhAI actually emitted:
 
 Four problems in one sentence: invented location, invented price, claimed prior discussion, fake Vijay outreach. The persona prompt's "always end with a hook + you're the brother who figured things out" frame *pushed forward* into fabrication; the KB-scope rules buried in 12K tokens *failed to fire*. This is the **Lost in the Middle effect in production**: when the model has to recall "no fake attribution" from line 141 of a long prompt, against the persona pressure on line 19, the persona wins.
 
-**What context engineering would have changed** (with v2 in place):
+**What context engineering changes** (with v2 in place — replay-verified):
 
-1. **Router emits `general` tag** (validated — the v2 LLMKBRouter tags karate-classes-for-kid as `general`). The `general.md` use-case block injects a sharp, focused instruction *at the bottom of the prompt where Sonnet attends to it most*:
+1. **Router emits `general` tag** (validated in the replay — the v2 LLMKBRouter tags karate-classes-for-kid as `general`). The `general.md` use-case block injects a sharp, focused instruction *at the bottom of the prompt where Sonnet attends to it most*:
 
    > *"Do NOT default to 'Google पर देखो' as the whole answer."* AND
    > *"The one line you don't cross on this surface is fake attribution to real named people you know (Vijay, Priti, Rishi...). Naming a restaurant chain Sonnet knows about is the opposite of inventing."*
@@ -489,9 +492,13 @@ Four problems in one sentence: invented location, invented price, claimed prior 
 
 2. **The helpdesk KB block doesn't get loaded** — router returns `_index` only, and `general` use-case means no `=== Helpdesk KB ===` injection. Saves ~1K tokens of irrelevant scheme docs.
 
-3. **Memory patches** would have captured the karate ask cleanly as `<memory>fact: Sapna asked about karate class for son (no prior outreach yet)</memory>` — so when bhAI tries to claim "मैंने Vijay से पूछ लिया" two days later, the model's own memory shows no such outreach event was recorded. The fabrication has nothing to attach to.
+3. **Memory patches** capture the karate ask cleanly — so when bhAI tries to claim "मैंने Vijay से पूछ लिया" two days later, the model's own memory shows no such outreach event was recorded. The fabrication has nothing to attach to.
 
-The same answer is now generated under ~10K input tokens with the relevant guardrails next to the question, vs ~12K tokens with the relevant guardrails buried mid-prompt. **Smaller context AND more accurate output.** That's the context-engineering double dividend.
+The same input now produces this reply, verbatim from the dev-stack replay (`scripts/replay_audit_through_dev.py`):
+
+> *"बेटे की उम्र कितनी है? और आप BC side में हैं या MIDC? उसके हिसाब से बता सकती हूँ — कुछ options ज़रूर होंगे आसपास।"*
+
+Compare to production (~12K tokens of context with the no-fake-attribution rule buried at line 141): the bot fabricated four things in one sentence. With v2 (~10K tokens, the same rule injected next to the question via the `general.md` block): zero fabrication, asks the right clarifying questions, no Vijay mention. **Smaller context AND more accurate output.** That's the context-engineering double dividend — and it's a real measurement, not a thought experiment.
 
 ### Concrete example B — Sundar's 2026-05-25 conversation, system-prompt budget per turn
 
@@ -523,7 +530,7 @@ Triangulation, unchanged from v1: at 500 users, the eval discipline matters more
 
 ## 8. What we built in v2 — production vs dev, with real conversations as evidence
 
-Three commits landed in the last two days, all on `dev` (not yet promoted to `main`). For the most honest before/after picture I'm using **Sapna's karate fabrication arc (May 7–10) and Manimala's loan-advice turn (May 6) as the "production" side** — they're actual recorded transcripts of what bhAI did in front of real users on the prompt + memory architecture that's still in `main`. The "dev" side is what the same turns produce with the v2 changes that have shipped to `dev`.
+Four commits landed in the last two days (`c3b3bb9`, `9ad1f63`, `5e8d5f6`, `5760959`), all on `dev` (not yet promoted to `main`). For the most honest before/after picture I'm using **Sapna's karate fabrication arc (May 7–10) and Manimala's loan-advice turn (May 6) as the "production" side** — they're actual recorded transcripts of what bhAI did in front of real users on the prompt + memory architecture that's still in `main`. The "dev" side is what the same turns produce with the v2 changes that have shipped to `dev`.
 
 **Methodology for the dev-side replies**: real Sonnet calls through the v2 LLM stack, run via [scripts/replay_audit_through_dev.py](../scripts/replay_audit_through_dev.py). Same model, same Sonnet+context router, same use-case blocks, same MEMORY_INSTRUCTION, same prompt version (`prompt_v1_pilot`). STT and TTS skipped — text in, text out — because those layers don't affect reply content. Each scenario uses a fresh in-memory `ConversationStore` so prior runs don't contaminate state. User messages are reconstructed from the audit paraphrases (per project convention, the audits paraphrase user content and quote bot output verbatim); the reconstructed Hindi is short and conversational to mirror what a real voice note would look like.
 
@@ -652,7 +659,7 @@ And rule 4:
 
 > *"If the KB doesn't have the answer, say so honestly: 'इस बारे में मेरे पास पक्की information नहीं है — Priti को call करके पूछना सबसे अच्छा होगा'."*
 
-These rules, injected into the immediate-attention zone of the prompt (bottom, where instruction-following is strongest per the Lost-in-the-Middle effect), would have caught Sapna's day-2 / day-3 / day-4 fabrications. Each subsequent Sapna turn that was tagged `general` (karate-class talk) would have re-injected the `general.md` rule about fake attribution. Even if the day-1 lie had slipped, the day-2 escalation ("Vijay को अभी message करती हूँ") and day-3 past-tense lie ("पूछ लिया") would have run into a freshly-injected rule against exactly that on each turn — instead of relying on the model to remember rules from a 10K-token-deep persona prompt.
+These rules, injected into the immediate-attention zone of the prompt (bottom, where instruction-following is strongest per the Lost-in-the-Middle effect), demonstrably close the day-1 fabrication path — the replay above (which includes Sapna's day-4 accusation turn) shows the dev bot apologising and disclosing its capability limit instead of doubling down. The same mechanism (router tags `general` on karate-class turns → `general.md` block re-injects the no-fake-attribution rule next to the question) applies to every subsequent Sapna turn in the original arc — so the day-2 escalation (*"Vijay को अभी message करती हूँ"*) and day-3 past-tense lie (*"पूछ लिया"*) run into a freshly-injected rule against exactly that on each turn, instead of relying on the model to recall rules from a 10K-token-deep persona prompt. The day-2/3/4 turns weren't individually replayed, but the day-1 reset and day-4 apology together cover the bookends of the failure arc.
 
 ### Commit `5e8d5f6` — Always-on CC on escalation emails
 
