@@ -263,6 +263,25 @@ def test_route_handles_case_insensitive_labels(kb_with_helpdesk):
     assert result.use_cases == ["grievance"]
 
 
+def test_route_finance_advice_tag_recognised(kb_with_helpdesk):
+    """finance_advice is in the allowlist (covers loan/EMI decisions)."""
+    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES: finance_advice")
+    result = router.route("₹1 lakh ka loan le rahi hu, EMI ₹8000")
+    assert result.use_cases == ["finance_advice"]
+
+
+def test_route_finance_advice_distinct_from_finance(kb_with_helpdesk):
+    """The router treats data-lookup (finance) and decision-help
+    (finance_advice) as distinct tags; both can be emitted, but they
+    have different semantics in the use-case blocks."""
+    router = _make_router(
+        kb_with_helpdesk, "KB: _index\nUSE_CASES: finance, finance_advice"
+    )
+    result = router.route("salary kab aayegi aur ₹1 lakh loan le lu kya")
+    assert "finance" in result.use_cases
+    assert "finance_advice" in result.use_cases
+
+
 # ── conversation_history context ──────────────────────────────────────
 
 

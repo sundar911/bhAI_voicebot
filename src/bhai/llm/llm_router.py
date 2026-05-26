@@ -44,7 +44,13 @@ DEFAULT_MODEL = "claude-sonnet-4-6"
 DEFAULT_CONTEXT_TURNS = 4
 
 # Fixed allowlist. Anything the router LLM emits outside this set is dropped.
-VALID_USE_CASES = ("grievance", "finance", "scheme_kb", "general")
+VALID_USE_CASES = (
+    "grievance",
+    "finance",
+    "finance_advice",
+    "scheme_kb",
+    "general",
+)
 
 
 _ROUTER_INSTRUCTIONS = """You are a router for bhAI, a Hindi voice bot for Mumbai artisans.
@@ -64,10 +70,11 @@ KB topics available:
 {topics}
 
 USE_CASES allowlist (multi-label OK):
-  grievance   — workplace problem, pay dispute, supervisor/co-worker conflict, harassment, family situation bleeding into work
-  finance     — user asking about their OWN salary, PF, EPF, loan repayment, EMI, salary slip (NOT general money advice, NOT government-scheme payments like Ladki Bahin — those are scheme_kb)
-  scheme_kb   — user asking about a government scheme or document (Aadhaar, PAN, voter ID, ration card, ESIC, marriage cert, PMMY, PMJAY, Ladki Bahin, etc.) — overlaps with a non-empty KB line
-  general     — everyday "stuff you'd Google": restaurants, kids' classes, brands, recipes, prices, opinions on common decisions
+  grievance      — workplace problem, pay dispute, supervisor/co-worker conflict, harassment, family situation bleeding into work
+  finance        — user asking to LOOK UP a number from their own records: salary received this month, PF balance, EPF contribution, loan repayment status, EMI auto-deducted. Data lookup, not advice.
+  finance_advice — user discussing a financial DECISION: should I take this loan, is this EMI affordable, should I make this business investment, can I afford this purchase, how do I plan for X cost. ANY discussion of a loan / EMI / business investment / large purchase that calls for math (breakeven, cash-flow, debt-service ratio) is finance_advice — not just finance.
+  scheme_kb      — user asking about a government scheme or document (Aadhaar, PAN, voter ID, ration card, ESIC, marriage cert, PMMY, PMJAY, Ladki Bahin, etc.) — overlaps with a non-empty KB line
+  general        — everyday "stuff you'd Google": restaurants, kids' classes, brands, recipes, prices, opinions on common decisions
 
 Leave USE_CASES empty for pure companion chitchat (greetings, "how are you", talking about food/weather/family with no specific ask).
 
@@ -133,6 +140,28 @@ Current: Mudra loan chahiye chhota business ke liye
 Output:
 KB: scheme_pmmy
 USE_CASES: scheme_kb
+
+Prior:
+  (none)
+Current: ₹1 lakh ka naya loan le rahi hu saree business ke liye, ₹8000 EMI hai, kar lu kya?
+Output:
+KB: _index
+USE_CASES: finance_advice
+
+Prior:
+  User: ₹1 lakh ka naya loan le rahi hu, ₹8000 EMI hai
+  bhAI: aur abhi koi EMI chal rahi hai?
+Current: haan ₹5000 ka pehle ka chal raha hai, par wo khatam hone wala hai
+Output:
+KB: _index
+USE_CASES: finance_advice
+
+Prior:
+  (none)
+Current: salary slip aayi nahi abhi tak, kya hua?
+Output:
+KB: _index
+USE_CASES: finance
 """
 
 
