@@ -773,6 +773,13 @@ class BaseLLM(ABC):
         Devanagari Hindi text never contains asterisks/backticks, so we
         can safely scrub them. Leading bullet/numbered list markers and
         markdown headings are also stripped.
+
+        Note: phone-number stripping is NOT done here. That's handled
+        independently by ``inference/webhooks/telegram_webhook._extract_phone_numbers``,
+        which both strips the digits from the voice text AND assembles a
+        labelled Telegram text message ("📞 Contact: Priti (BC) – ...") for
+        the user. Keeping the two in sync is intentional: the webhook owns
+        the contact-number text-message channel end-to-end.
         """
         if not text:
             return text

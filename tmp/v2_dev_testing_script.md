@@ -411,7 +411,9 @@ Tick these off before promoting to main:
 
 ---
 
-## Graduation procedure — dev → main, with v1/v2 tags
+## Graduation procedure — dev → main, with v1.0 / v1.5 tags
+
+**Note on versioning** (updated 2026-05-26 evening): the originally-planned "v2" promotion is now being tagged as **v1.5** instead. The "true v2" is a future release driven by a new direction Sid and Sundar are aligning on — implementation is pending. This v1.5 push is the architectural cleanup + use-case routing + memory patches + finance_advice + math discipline + escalation CC + phone-number text-sending work.
 
 **Once you're happy with the sign-off above**, the promotion procedure is:
 
@@ -449,8 +451,8 @@ Validated by 17-scenario manual test against the dev Telegram bot
 (see tmp/v2_dev_testing_script.md). Architectural rationale in
 tmp/architecture_workflow_vs_agent.md (Executive Summary at the top)."
 
-# 4. Tag the new main HEAD as v2.0.0
-git tag -a v2.0.0 -m "v2 — multi-label routing + self-edited memory + math discipline (500-user ready)
+# 4. Tag the new main HEAD as v1.5.0
+git tag -a v1.5.0 -m "v2 — multi-label routing + self-edited memory + math discipline (500-user ready)
 
 Major architectural upgrade from the v1 pilot:
 
@@ -486,12 +488,12 @@ fabrication, Manimala loan advice) through the v2 LLM stack — the
 production failures don't reproduce on the new architecture.
 Documented in tmp/architecture_workflow_vs_agent.md."
 
-git push origin v2.0.0
+git push origin v1.5.0
 git push origin main
 
 # 5. Verify on GitHub
 # Visit https://github.com/sundar911/bhAI_voicebot/releases
-# Both v1.0.0 and v2.0.0 should appear. Promote the v2.0.0 tag to a
+# Both v1.0.0 and v1.5.0 should appear. Promote the v1.5.0 tag to a
 # "Release" on GitHub if you want a public release notes page.
 ```
 

@@ -208,6 +208,12 @@ def test_strip_markdown_preserves_mid_sentence_dash():
     assert BaseLLM._strip_markdown(text) == text
 
 
+# Phone-number extraction is owned by the webhook
+# (inference/webhooks/telegram_webhook._extract_phone_numbers) — it's been
+# wired since 2026-04-28 (commit 48b6233c). Tests for that flow live in
+# test_telegram_webhook.py.
+
+
 # ── _parse_emotion_segments ───────────────────────────────────────────
 
 

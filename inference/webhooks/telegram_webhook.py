@@ -738,6 +738,11 @@ def process_message(
         run_dir=run_dir,
         phone_id=phone_id,
     )
+    # Phone-number text dispatch is handled inside _synthesize_and_send_voice
+    # via _extract_phone_numbers (added 2026-04-28 in commit 48b6233c). The
+    # extractor strips digits from voice_text AND sends a labelled
+    # Telegram text message ("📞 Contact: Priti (BC) – 7738561086") when
+    # numbers are present in the LLM reply.
 
     # ── Escalation: send email to impact team + follow-up confirmation ──
     # Scheduled AFTER the promise voice note above so the user always hears
