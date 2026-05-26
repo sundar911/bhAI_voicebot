@@ -60,12 +60,22 @@ class EmailClient:
             )
         return self._creds
 
-    async def send(self, to: List[str], subject: str, html_body: str) -> bool:
+    async def send(
+        self,
+        to: List[str],
+        subject: str,
+        html_body: str,
+        cc: Optional[List[str]] = None,
+    ) -> bool:
         """Send an HTML email via Gmail API. Returns True on success, False
         on any failure.
 
+        ``cc`` is optional; addresses already in ``to`` are silently
+        removed from ``cc`` to avoid duplicate delivery to the same
+        recipient.
+
         Failures are logged with the error string but no PII (recipient
-        addresses are internal Tiny Miracles emails — we log count, not
+        addresses are internal Tiny Miracles emails — we log counts, not
         addresses).
         """
         if not (self.client_id and self.client_secret and self.refresh_token):
@@ -77,11 +87,19 @@ class EmailClient:
             logger.warning("EmailClient.send called with empty recipient list")
             return False
 
+        # Dedupe cc against to (case-insensitive) so a recipient already on
+        # To: doesn't also receive a Cc: copy.
+        to_set_lower = {addr.lower() for addr in to}
+        cc_deduped = (
+            [addr for addr in cc if addr.lower() not in to_set_lower] if cc else []
+        )
+
         try:
-            await asyncio.to_thread(self._send_sync, to, subject, html_body)
+            await asyncio.to_thread(self._send_sync, to, subject, html_body, cc_deduped)
             logger.info(
-                "Escalation email sent (recipients=%d, subject_len=%d)",
+                "Escalation email sent (recipients=%d, cc=%d, subject_len=%d)",
                 len(to),
+                len(cc_deduped),
                 len(subject),
             )
             return True
@@ -89,7 +107,13 @@ class EmailClient:
             logger.error("Escalation email send failed: %s", e)
             return False
 
-    def _send_sync(self, to: List[str], subject: str, html_body: str) -> None:
+    def _send_sync(
+        self,
+        to: List[str],
+        subject: str,
+        html_body: str,
+        cc: Optional[List[str]] = None,
+    ) -> None:
         creds = self._get_credentials()
         if not creds.valid:
             creds.refresh(GoogleAuthRequest())
@@ -97,6 +121,8 @@ class EmailClient:
         msg = EmailMessage()
         msg["From"] = self.sender_email
         msg["To"] = ", ".join(to)
+        if cc:
+            msg["Cc"] = ", ".join(cc)
         msg["Subject"] = subject
         msg.set_content("This email requires an HTML-capable client.")
         msg.add_alternative(html_body, subtype="html")

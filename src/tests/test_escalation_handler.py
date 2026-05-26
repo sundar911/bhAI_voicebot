@@ -30,8 +30,10 @@ class StubEmailClient:
         self._results = list(results)
         self.calls: list[dict] = []
 
-    async def send(self, to, subject, html_body):
-        self.calls.append({"to": to, "subject": subject, "html_body": html_body})
+    async def send(self, to, subject, html_body, cc=None):
+        self.calls.append(
+            {"to": to, "subject": subject, "html_body": html_body, "cc": cc or []}
+        )
         if self._results:
             return self._results.pop(0)
         return True
@@ -43,7 +45,7 @@ class RaisingEmailClient:
     def __init__(self):
         self.calls = 0
 
-    async def send(self, to, subject, html_body):
+    async def send(self, to, subject, html_body, cc=None):
         self.calls += 1
         raise RuntimeError("smtp blew up")
 
@@ -486,3 +488,126 @@ async def test_email_body_flags_missing_work_location(cfg_enabled, base_kwargs):
     body = email_client.calls[0]["html_body"]
     assert "UNKNOWN" in body
     assert "/LOC?]" in email_client.calls[0]["subject"]
+
+
+# ── CC propagation ───────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_escalation_cc_passed_to_email_client(base_kwargs):
+    """Config.escalation_cc is forwarded to email_client.send as cc=."""
+    cfg = Config(
+        gmail_client_id="x",
+        gmail_client_secret="y",
+        gmail_refresh_token="z",
+        gmail_sender_email="bhai@example.com",
+        escalation_recipients=("rishi@example.com",),
+        escalation_cc=("anu@example.com", "sundar@example.com"),
+        escalation_enabled=True,
+    )
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(config=cfg, email_client=email_client, **base_kwargs)
+    assert email_client.calls[0]["cc"] == ["anu@example.com", "sundar@example.com"]
+
+
+@pytest.mark.asyncio
+async def test_escalation_cc_empty_when_not_configured(base_kwargs):
+    """No CC configured → cc list is empty (not None)."""
+    cfg = Config(
+        gmail_client_id="x",
+        gmail_client_secret="y",
+        gmail_refresh_token="z",
+        gmail_sender_email="bhai@example.com",
+        escalation_recipients=("rishi@example.com",),
+        escalation_cc=(),
+        escalation_enabled=True,
+    )
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(config=cfg, email_client=email_client, **base_kwargs)
+    assert email_client.calls[0]["cc"] == []
+
+
+@pytest.mark.asyncio
+async def test_escalation_cc_passed_on_retry(base_kwargs):
+    """Cc list is forwarded on the retry attempt too, not just the first send."""
+    cfg = Config(
+        gmail_client_id="x",
+        gmail_client_secret="y",
+        gmail_refresh_token="z",
+        gmail_sender_email="bhai@example.com",
+        escalation_recipients=("rishi@example.com",),
+        escalation_cc=("anu@example.com",),
+        escalation_enabled=True,
+    )
+    email_client = StubEmailClient(results=[False, True])  # first fails, retry succeeds
+    await handle_escalation(config=cfg, email_client=email_client, **base_kwargs)
+    assert len(email_client.calls) == 2
+    assert email_client.calls[0]["cc"] == ["anu@example.com"]
+    assert email_client.calls[1]["cc"] == ["anu@example.com"]
+
+
+def test_email_client_dedupes_cc_against_to():
+    """If a CC address is already on To:, it's removed from CC to avoid dupes."""
+    import asyncio
+    from unittest.mock import patch
+
+    from bhai.integrations.email_client import EmailClient
+
+    client = EmailClient(
+        client_id="x",
+        client_secret="y",
+        refresh_token="z",
+        sender_email="bhai@example.com",
+    )
+
+    captured: dict = {}
+
+    def fake_send_sync(to, subject, html_body, cc=None):
+        captured["to"] = to
+        captured["cc"] = cc
+
+    with patch.object(client, "_send_sync", side_effect=fake_send_sync):
+        asyncio.run(
+            client.send(
+                to=["rishi@example.com", "anu@example.com"],
+                subject="x",
+                html_body="<p>x</p>",
+                cc=["anu@example.com", "sundar@example.com"],  # anu also on To
+            )
+        )
+
+    # anu is on To, so should be filtered out of cc
+    assert captured["cc"] == ["sundar@example.com"]
+    assert captured["to"] == ["rishi@example.com", "anu@example.com"]
+
+
+def test_email_client_cc_dedupe_is_case_insensitive():
+    """Casing differences (Anu@... vs anu@...) still count as a duplicate."""
+    import asyncio
+    from unittest.mock import patch
+
+    from bhai.integrations.email_client import EmailClient
+
+    client = EmailClient(
+        client_id="x",
+        client_secret="y",
+        refresh_token="z",
+        sender_email="bhai@example.com",
+    )
+
+    captured: dict = {}
+
+    def fake_send_sync(to, subject, html_body, cc=None):
+        captured["cc"] = cc
+
+    with patch.object(client, "_send_sync", side_effect=fake_send_sync):
+        asyncio.run(
+            client.send(
+                to=["Anu@Example.com"],
+                subject="x",
+                html_body="<p>x</p>",
+                cc=["anu@example.com"],
+            )
+        )
+
+    assert captured["cc"] == []

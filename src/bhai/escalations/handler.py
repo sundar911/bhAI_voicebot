@@ -209,14 +209,19 @@ async def handle_escalation(
         work_location=work_location,
     )
 
+    cc_list = list(getattr(config, "escalation_cc", ()) or ())
+
     logger.info(
-        "Escalation routing user=%s category=%s recipients=%d",
+        "Escalation routing user=%s category=%s recipients=%d cc=%d",
         phone_id,
         category_label,
         len(recipients),
+        len(cc_list),
     )
 
-    sent = await email_client.send(to=recipients, subject=subject, html_body=body)
+    sent = await email_client.send(
+        to=recipients, subject=subject, html_body=body, cc=cc_list
+    )
     if not sent:
         logger.warning(
             "Escalation email attempt 1 failed for user=%s, retrying in %ds",
@@ -224,7 +229,9 @@ async def handle_escalation(
             RETRY_DELAY_SECONDS,
         )
         await asyncio.sleep(RETRY_DELAY_SECONDS)
-        sent = await email_client.send(to=recipients, subject=subject, html_body=body)
+        sent = await email_client.send(
+            to=recipients, subject=subject, html_body=body, cc=cc_list
+        )
 
     confirm_text = CONFIRM_SUCCESS_HI if sent else CONFIRM_FAILURE_HI
     logger.info("Escalation final outcome user=%s sent=%s", phone_id, sent)
