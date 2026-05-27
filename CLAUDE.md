@@ -95,6 +95,22 @@ Things that would bite a new collaborator and aren't obvious from the code.
 - **Use-case routing**: per turn, the Haiku router also emits a use-case tag (`grievance` / `finance` / `scheme_kb` / `general`). The matching block from [src/bhai/llm/prompts/use_cases/](src/bhai/llm/prompts/use_cases/) gets injected into the system prompt. Add a new use-case = add a file there + extend `VALID_USE_CASES`.
 - **Currency normalization for TTS**: `normalize_currency_for_sarvam()` in [src/bhai/tts/sarvam_tts.py](src/bhai/tts/sarvam_tts.py) converts `₹500` / `Rs. 500` / `rupees` → `रुपए` before the API call. Sarvam pronounces `₹` literally without it.
 
+# bhAI design philosophy — Sonnet is more than a KB retriever
+
+This is a load-bearing principle for how the bot should behave; keep it in mind whenever you're editing prompts, use-case blocks, or KB files.
+
+bhAI = **Sonnet's general intelligence + Tiny Miracles' specific KB + Priti/Dinesh as the human verification layer.** Not just a KB lookup. The KB is authoritative when it has the answer; for everything else, Sonnet's general knowledge fills the gap, and the impact-team contacts are the safety net.
+
+**Concretely, what this means for prompt edits:**
+
+- **Don't artificially restrict bhAI to just the KB.** If the KB doesn't cover something (specific govt office address, a college's fee structure, a market price, a local shop), Sonnet should answer directly from its training — with appropriate hedging (*"मेरे ख्याल से"*, *"typically"*, *"around"*) — instead of deflecting to *"Google पर देखो"* or *"मेरे पास नहीं है"*. Saying "Google पर देखो" defeats the whole point: the user came to bhAI to save the trip to Google.
+- **Pair Sonnet's general-knowledge answers with a verification path.** Hedged answer + Priti's number (BC docs) or Dinesh's escalation channel (MIDC docs) so the user can confirm before acting. For grievance/health/financial-crisis content, the verification path is Rishi+Anu via `ESCALATE: true`. The user gets the answer fast AND has a way to verify it — both halves matter.
+- **Offer to email Priti/Dinesh on the user's behalf when the topic is govt-scheme-adjacent and the answer is consequential.** Even when bhAI has a confident general-knowledge answer, for things the user will act on (going to a specific office, applying for a scheme), proactively offer the email channel: *"मैं Priti को email कर दूँ aapki taraf से? वो confirm कर देंगी जाने से पहले।"* That's the verification AND it reduces friction (the user doesn't have to think about who to call).
+- **Don't fabricate specifics under helpfulness pressure.** General-knowledge answer is fine. Inventing a specific address (*"Western Railway station-கிட்ட"*) or specific hours (*"10 AM to 6 PM"*) when those weren't actually in Sonnet's knowledge is fabrication. Hedge or omit the specific; keep the general answer + verification path.
+- **Test capability expansions for accuracy.** When relaxing a "stick to KB" rule to let Sonnet answer from general knowledge, plan a small accuracy audit (replay 10-20 likely user questions through the dev bot, spot-check via web search). Sonnet is usually right on Mumbai-area common knowledge but can be confidently wrong on specifics — Priti/Dinesh verification catches this in production but eval-style spot-checks catch it pre-deploy.
+
+**The framing for the user**: bhAI saves the user a trip to Google AND a phone call to figure out who knows. Both halves are the product. Restricting to KB-only loses the first half; removing the verification layer loses the second.
+
 # What lives where
 
 | Topic | File |

@@ -90,6 +90,46 @@ escalation precondition), OR list BOTH centres with the "which is
 closer to you?" question at the end. The current behavior of defaulting
 to one centre is a slight scoping flaw.
 
+## 6. Systematic accuracy audit of bhAI's general-knowledge replies
+
+**Driver**: 2026-05-27 evening conversation between Sundar and the team
+on bhAI's design philosophy. The principle landed: bhAI = Sonnet's
+general intelligence + KB + Priti/Dinesh verification layer. NOT just
+a KB lookup. See [CLAUDE.md "bhAI design philosophy" section](../CLAUDE.md).
+
+**What this means in practice**: scheme_kb.md rule 2 was rewritten on
+2026-05-27 to STOP deflecting to "Google पे देखो" or "मेरे पास नहीं है"
+for things outside the KB. Bot should now answer from general knowledge
+with hedging + pair with Priti/Dinesh as the verification path.
+
+**Risk**: Sonnet can be confidently wrong on specifics. The 2026-05-27
+Borivali Setu Kendra failure was the cautionary case — bot's general
+answer ("Setu Kendra in Borivali area") was right, but the specific
+fabricated address + timings were wrong. The prompt now requires
+hedging specifics + always pairing with verification — but we don't
+yet have evidence on how reliably Sonnet follows that.
+
+**What to do at v2**: run a focused accuracy audit on Sonnet's
+general-knowledge replies for the bhAI domain. Concrete plan:
+- Pick 20-30 likely real user questions in the "Sonnet's general
+  knowledge fills KB gaps" zone — govt office locations across Mumbai
+  wards, common scholarship paths, typical bank-account procedures,
+  area-specific services
+- Replay each through the dev bot
+- For each reply, spot-check the SPECIFIC claims via WebSearch /
+  WebFetch against authoritative sources (mumbaicity.gov.in,
+  maharashtra.gov.in, specific dept sites)
+- Count: what % of specifics are correct? What % are hedged
+  appropriately when wrong? What % are paired with Priti/Dinesh
+  verification?
+- If accuracy < 80% on specifics, tighten the hedging rule. If
+  pairing-with-verification rate < 100%, the prompt rule isn't
+  firing reliably and needs reinforcement.
+
+This is a one-week eval engineering task and should run BEFORE bhAI
+expands to >50 users — at scale, the % of bad-specific answers
+multiplies user-facing wasted trips.
+
 ---
 
-*Last updated: 2026-05-26 evening. Re-read this when v2 planning starts.*
+*Last updated: 2026-05-27 evening. Re-read this when v2 planning starts.*
