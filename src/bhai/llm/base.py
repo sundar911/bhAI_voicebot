@@ -633,9 +633,17 @@ class BaseLLM(ABC):
         return {"summary": summary, "facts": facts}
 
     # Markers that indicate the model is narrating its own reasoning instead
-    # of speaking to the user. These English terms should NEVER appear in a
+    # of speaking to the user. These terms should NEVER appear in a
     # Hindi/Marathi/Gujarati voice note. If any of them shows up in a
     # paragraph, that paragraph is treated as leaked reasoning and dropped.
+    #
+    # The "KB" family was added 2026-05-27 after dev test caught bhAI saying
+    # "मेरे KB में college scholarship का detail नहीं है" — pure architectural
+    # jargon a non-technical user can't parse. The prompt now forbids these
+    # explicitly (scheme_kb.md rule 4); these markers are a defense-in-depth
+    # backstop when the prompt rule fails. We deliberately use multi-word
+    # phrases (not just "KB" alone) to avoid false positives on legitimate
+    # use of "KB" as a unit or product name.
     _REASONING_LEAK_MARKERS = (
         "system prompt",
         "anti-sycophancy",
@@ -647,6 +655,14 @@ class BaseLLM(ABC):
         "मुझे पहले",
         "let me think",
         "मुझे सोच",
+        "knowledge base",
+        "मेरे KB",
+        "मेरी KB",
+        "मेरे helpdesk",
+        "मेरी helpdesk",
+        "helpdesk KB",
+        "injected content",
+        "context window",
     )
 
     @staticmethod

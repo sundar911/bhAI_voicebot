@@ -121,6 +121,34 @@ def test_strip_reasoning_leak_drops_system_prompt_paragraph():
     assert "मणिमाला, नमस्ते" in cleaned
 
 
+def test_strip_reasoning_leak_drops_kb_jargon_paragraph():
+    """The 2026-05-27 dev test caught bhAI saying 'मेरे KB में... detail नहीं है'.
+    The KB family was added to the leak markers as a backstop; the
+    architectural-jargon paragraph should now be dropped, leaving the
+    actual useful general-knowledge paragraph."""
+    raw = (
+        "Scholarship की बात — मेरे KB में college scholarship का "
+        "specific detail नहीं है, तो मैं वहाँ से पक्की जानकारी नहीं दे सकती।\n\n"
+        "Maharashtra में government colleges की fees 5,000 से 15,000 रुपए "
+        "के around होती है। National scholarship portal scholarships.gov.in पर देखो।"
+    )
+    cleaned = BaseLLM._strip_reasoning_leak(raw)
+    assert "मेरे KB" not in cleaned
+    assert "Maharashtra में government colleges" in cleaned
+    assert "scholarships.gov.in" in cleaned
+
+
+def test_strip_reasoning_leak_drops_knowledge_base_english():
+    """The English form 'knowledge base' is also a markered leak."""
+    raw = (
+        "My knowledge base doesn't have this specific info.\n\n"
+        "But here's what I know: ये एक अच्छा scheme है।"
+    )
+    cleaned = BaseLLM._strip_reasoning_leak(raw)
+    assert "knowledge base" not in cleaned.lower()
+    assert "अच्छा scheme है" in cleaned
+
+
 def test_strip_reasoning_leak_drops_anti_sycophancy_marker():
     """References to internal prompt rules ('anti-sycophancy') are reasoning leakage."""
     raw = (
