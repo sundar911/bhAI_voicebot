@@ -7,7 +7,7 @@ We test the pure normalizer here (no network); the synthesize() wiring is
 covered by integration smoke elsewhere.
 """
 
-from bhai.tts.sarvam_tts import normalize_currency_for_sarvam
+from bhai.tts.sarvam_tts import detect_language_code, normalize_currency_for_sarvam
 
 
 def test_normalize_currency_single_amount():
@@ -90,3 +90,73 @@ def test_normalize_currency_rs_must_have_digit_after():
     assert "Rishi" in normalize_currency_for_sarvam("Rishi Sir")
     # 'Rs' followed by a non-digit word: should not substitute
     assert normalize_currency_for_sarvam("Rs corp") == "Rs corp"
+
+
+# ── detect_language_code ──────────────────────────────────────────────
+
+
+def test_detect_lang_devanagari_to_hindi():
+    """Devanagari script (Hindi/Marathi) → hi-IN."""
+    assert detect_language_code("नमस्ते भाई कैसे हो") == "hi-IN"
+
+
+def test_detect_lang_tamil():
+    """Tamil script → ta-IN. This is the 2026-05-27 dev-test case."""
+    assert detect_language_code("ஆமா, தமிழ்ல பேசலாமே") == "ta-IN"
+
+
+def test_detect_lang_telugu():
+    assert detect_language_code("నమస్తే అన్నా బాగున్నారా") == "te-IN"
+
+
+def test_detect_lang_malayalam():
+    assert detect_language_code("നമസ്കാരം ഏട്ടാ") == "ml-IN"
+
+
+def test_detect_lang_kannada():
+    assert detect_language_code("ನಮಸ್ಕಾರ ಅಣ್ಣ") == "kn-IN"
+
+
+def test_detect_lang_bengali():
+    assert detect_language_code("নমস্কার দাদা") == "bn-IN"
+
+
+def test_detect_lang_gujarati():
+    assert detect_language_code("નમસ્તે ભાઈ") == "gu-IN"
+
+
+def test_detect_lang_punjabi():
+    assert detect_language_code("ਸਤ ਸ੍ਰੀ ਅਕਾਲ ਭਾਈ") == "pa-IN"
+
+
+def test_detect_lang_odia():
+    assert detect_language_code("ନମସ୍କାର ଭାଇ") == "od-IN"
+
+
+def test_detect_lang_empty_returns_default():
+    assert detect_language_code("") == "hi-IN"
+    assert detect_language_code("   ") == "hi-IN"
+
+
+def test_detect_lang_pure_english_returns_en():
+    """No Indic script + Latin letters → en-IN (don't force Hindi voice)."""
+    assert detect_language_code("Hello there friend") == "en-IN"
+
+
+def test_detect_lang_mixed_picks_dominant_indic():
+    """Tamil dominant over English → ta-IN (the actual dev-test case
+    had 'Hindi-Marathi நல்லா' mixed; Tamil should win)."""
+    text = "Hindi-Marathi நல்லா வருது எனக்கு Sundar"
+    assert detect_language_code(text) == "ta-IN"
+
+
+def test_detect_lang_mixed_devanagari_with_english_words():
+    """Hindi reply with embedded English words (PAN, WhatsApp) →
+    still hi-IN, not en-IN."""
+    text = "PAN card के लिए ये documents लगेंगे"
+    assert detect_language_code(text) == "hi-IN"
+
+
+def test_detect_lang_custom_default():
+    """The default kwarg is honored when no script signal exists."""
+    assert detect_language_code("", default="mr-IN") == "mr-IN"
