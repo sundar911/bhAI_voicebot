@@ -105,6 +105,28 @@ class Config:
     azure_app_client_id: str = ""
     sharepoint_hostname: str = "tinymiraclesnl.sharepoint.com"
 
+    # Escalation emails (Gmail API + OAuth 2.0) — when ESCALATE: true fires,
+    # send an email to the impact team via the Gmail HTTPS API. SMTP doesn't
+    # work from Railway (outbound 25/465/587 blocked at the platform level).
+    # escalation_enabled auto-flips false if OAuth credentials are missing so
+    # dev/test runs never silently try to send.
+    # Capture the refresh token once via: uv run python scripts/gmail_oauth_setup.py
+    gmail_client_id: str = ""
+    gmail_client_secret: str = ""
+    gmail_refresh_token: str = ""
+    gmail_sender_email: str = ""  # the Workspace account that owns the refresh token
+    # Default escalation recipients (grievance / unknown category) — impact team
+    escalation_recipients: tuple = ()
+    # Per-office govt-docs routing. Empty tuple → falls back to default.
+    escalation_recipients_docs_bc: tuple = ()
+    escalation_recipients_docs_midc: tuple = ()
+    # Always-on CC list — every escalation email, regardless of category.
+    # Default is anu@tinymiracles.com (per-org policy: Anu has oversight of
+    # all escalations). Add an operator email (Sundar) here in Railway env
+    # to also receive deliverability confirmation. Comma-separated.
+    escalation_cc: tuple = ()
+    escalation_enabled: bool = False
+
 
 def load_config(env_path: Optional[Path] = None) -> Config:
     """
@@ -184,5 +206,48 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),
         sharepoint_hostname=os.getenv(
             "SHAREPOINT_HOSTNAME", "tinymiraclesnl.sharepoint.com"
+        ),
+        gmail_client_id=os.getenv("GMAIL_CLIENT_ID", ""),
+        gmail_client_secret=os.getenv("GMAIL_CLIENT_SECRET", ""),
+        gmail_refresh_token=os.getenv("GMAIL_REFRESH_TOKEN", ""),
+        gmail_sender_email=os.getenv("GMAIL_SENDER_EMAIL", ""),
+        escalation_recipients=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS",
+                "rishikesh@tinymiracles.com,anu@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_recipients_docs_bc=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS_DOCS_BC",
+                "priti@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_recipients_docs_midc=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS_DOCS_MIDC",
+                "dinesh@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_cc=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_CC",
+                "anu@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_enabled=(
+            bool(os.getenv("GMAIL_CLIENT_ID"))
+            and bool(os.getenv("GMAIL_CLIENT_SECRET"))
+            and bool(os.getenv("GMAIL_REFRESH_TOKEN"))
+            and bool(os.getenv("GMAIL_SENDER_EMAIL"))
+            and os.getenv("ESCALATION_ENABLED", "true").lower() == "true"
         ),
     )

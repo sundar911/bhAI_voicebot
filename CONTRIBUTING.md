@@ -139,13 +139,18 @@ src/bhai/
 │   ├── elevenlabs_tts.py        # ElevenLabs voice cloning
 │   └── emotion_tagger.py        # Emotion tagging for TTS
 ├── llm/                         # Language models
-│   ├── base.py                  # Abstract LLM interface (+ markdown/COT stripping)
+│   ├── base.py                  # Abstract LLM (markdown/COT strip, regex outreach guard)
 │   ├── sarvam_llm.py            # Sarvam backend
 │   ├── openai_llm.py            # OpenAI backend
 │   ├── claude_llm.py            # Anthropic Claude (pilot default)
-│   ├── kb_router.py             # Keyword-based KB router (fallback)
-│   ├── haiku_router.py          # Claude Haiku KB router (primary, cached)
-│   └── prompts/                 # Prompt templates (current.md, prompt_v1_pilot.md)
+│   ├── kb_router.py             # Keyword-based KB + use-case router (fallback)
+│   ├── haiku_router.py          # Claude Haiku KB + use-case router (primary, cached)
+│   └── prompts/                 # Prompt templates
+│       ├── prompt_v1_pilot.md   # Active pilot persona prompt
+│       ├── current.md           # Older iterative prompt
+│       └── use_cases/           # Per-turn injected blocks: grievance, finance, scheme_kb, general
+├── escalations/                 # ESCALATE: true → impact-team email
+│   └── handler.py               # Routing + email dispatch (Priti BC, Dinesh MIDC, Rishi+Anu)
 ├── pipelines/                   # Pipeline orchestration
 │   ├── base_pipeline.py         # Abstract pipeline
 │   └── hr_admin_pipeline.py     # HR-Admin domain pipeline
@@ -162,6 +167,7 @@ src/bhai/
 │   └── webhook_auth.py          # Twilio sig verify — legacy (not used by Telegram)
 └── integrations/                # External integrations
     ├── telegram_client.py       # Active: Telegram bot client (sendVoice, getFile, setWebhook)
+    ├── email_client.py          # Gmail API client (escalation emails — Railway blocks SMTP)
     ├── twilio_client.py         # Legacy: kept only because resilience/worker.py imports it
     └── sharepoint.py            # SharePoint Graph API
 ```
@@ -221,7 +227,7 @@ uv run pytest --cov=src/bhai
 uv run pytest -v
 ```
 
-Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 194 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, Haiku router.
+Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 278 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, Haiku router, escalation handler, Sarvam TTS normalization, and behavioral contracts (`test_contracts.py`).
 
 ### Code Style
 

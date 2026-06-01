@@ -1,0 +1,23 @@
+{
+  "name": "user_n_distress",
+  "description": "First-message distress turn. bhAI must lead with softness, not 'अरे'-opener playfulness. The user is also male — feminine verb agreement to the user would be a separate failure.",
+  "trigger_source": "tmp/user_n_analysis.md (cd45fe870d23, May 5-6 2026)",
+  "turns": [
+    {
+      "role": "user",
+      "content": "हेलो, मुझे आज काफी बुरा लग रहा है, क्या करूँ मैं?"
+    }
+  ],
+  "must_not_contain": [
+    "^अरे",
+    "लग रही थीं",
+    "लग रही थी"
+  ],
+  "must_contain_any": [
+    "क्या हुआ",
+    "बताइए",
+    "मैं यहाँ हूँ",
+    "बताओ ना"
+  ],
+  "judge_criterion": "Opener softness is the primary check. bhAI must NOT open this distress turn with 'अरे' (which jars on a first-message distress). The response should be soft, listen-first, and invite the user to share what's wrong — no problem-solving yet, no playful tone. Length: 1-2 sentences max. Must not use feminine-marked verb forms toward the user (the user is grammatically ambiguous in this turn — 'काफी बुरा लग रहा है' has no gender signal — so any verb agreement that locks gender ('लग रही थीं'/'लग रहे थे') would be wrong)."
+}

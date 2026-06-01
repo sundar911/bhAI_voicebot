@@ -130,12 +130,12 @@ def test_extract_phone_numbers_returns_none_when_no_number():
 
 
 def test_extract_phone_numbers_strips_known_contact():
-    text = "Vijay को call करो: 9321125042"
+    text = "Priti को call करो: 7738561086"
     voice_text, contact_msg = _extract_phone_numbers(text)
-    assert "9321125042" not in voice_text
+    assert "7738561086" not in voice_text
     assert contact_msg is not None
-    assert "9321125042" in contact_msg
-    assert "Vijay" in contact_msg
+    assert "7738561086" in contact_msg
+    assert "Priti" in contact_msg
 
 
 # ── Dashboard auth ───────────────────────────────────────────────────
@@ -376,10 +376,7 @@ def test_admin_send_message_rejects_bad_key():
 
 def test_admin_send_message_rejects_empty_text():
     """Empty text payload returns 400 with a clear error."""
-    from inference.webhooks.telegram_webhook import (
-        _DASHBOARD_KEY,
-        admin_send_message,
-    )
+    from inference.webhooks.telegram_webhook import _DASHBOARD_KEY, admin_send_message
 
     result = asyncio.run(
         admin_send_message(phone_hash="abc123def456", key=_DASHBOARD_KEY, text="")
@@ -389,10 +386,7 @@ def test_admin_send_message_rejects_empty_text():
 
 def test_admin_send_message_rejects_whitespace_only_text():
     """Whitespace-only text is treated as empty (no accidentally-blank corrections)."""
-    from inference.webhooks.telegram_webhook import (
-        _DASHBOARD_KEY,
-        admin_send_message,
-    )
+    from inference.webhooks.telegram_webhook import _DASHBOARD_KEY, admin_send_message
 
     result = asyncio.run(
         admin_send_message(
@@ -400,3 +394,95 @@ def test_admin_send_message_rejects_whitespace_only_text():
         )
     )
     assert result.status_code == 400
+
+
+# ── Escalation wiring ────────────────────────────────────────────────
+
+
+def test_get_email_client_returns_none_when_credentials_missing():
+    """Dev/test path: no OAuth creds → no client constructed → no accidental sends."""
+    from inference.webhooks.telegram_webhook import _get_email_client
+
+    class _Cfg:
+        gmail_client_id = ""
+        gmail_client_secret = ""
+        gmail_refresh_token = ""
+        gmail_sender_email = ""
+
+    assert _get_email_client(_Cfg()) is None
+
+
+def test_get_email_client_returns_none_when_any_oauth_field_missing():
+    """All four OAuth values must be set — partial creds disables the client."""
+    from inference.webhooks import telegram_webhook as tw
+
+    class _Cfg:
+        gmail_client_id = "x.apps.googleusercontent.com"
+        gmail_client_secret = "GOCSPX-x"
+        gmail_refresh_token = ""  # missing
+        gmail_sender_email = "bhai@example.com"
+
+    assert tw._get_email_client(_Cfg()) is None
+
+
+def test_get_email_client_builds_client_when_creds_present(monkeypatch):
+    """With all four OAuth values set, an EmailClient is returned."""
+    from inference.webhooks import telegram_webhook as tw
+
+    # Reset the module-level singleton so this test is hermetic
+    monkeypatch.setattr(tw, "_email_client", None)
+
+    class _Cfg:
+        gmail_client_id = "x.apps.googleusercontent.com"
+        gmail_client_secret = "GOCSPX-x"
+        gmail_refresh_token = "1//x"
+        gmail_sender_email = "bhai@example.com"
+        escalation_recipients = ("rishi@example.com",)
+
+    client = tw._get_email_client(_Cfg())
+    assert client is not None
+    assert client.client_id == "x.apps.googleusercontent.com"
+    assert client.refresh_token == "1//x"
+    assert client.sender_email == "bhai@example.com"
+
+
+def test_schedule_escalation_drops_silently_without_loop(monkeypatch, tmp_path):
+    """If lifespan never captured the loop (e.g. in tests), schedule should
+    log + early-return rather than crash. This protects the trust path:
+    a misconfigured prod env logs loudly instead of throwing."""
+    from bhai.config import Config
+    from bhai.memory.store import ConversationStore
+    from inference.webhooks import telegram_webhook as tw
+
+    monkeypatch.setattr(tw, "_main_event_loop", None)
+    # Ensure email client passes the gate
+    monkeypatch.setattr(tw, "_email_client", None)
+
+    cfg = Config(
+        gmail_client_id="x.apps.googleusercontent.com",
+        gmail_client_secret="GOCSPX-x",
+        gmail_refresh_token="1//x",
+        gmail_sender_email="bhai@example.com",
+        escalation_recipients=("rishi@example.com",),
+        escalation_enabled=True,
+    )
+    store = ConversationStore(tmp_path / "t.db")
+
+    class _TC:
+        bot_token = "x"
+
+    # Must not raise even with no event loop captured
+    tw._schedule_escalation(
+        config=cfg,
+        store=store,
+        telegram_client=_TC(),
+        phone="tg_1",
+        chat_id=1,
+        phone_id="h",
+        session_id="s",
+        transcript="help",
+        response_text="ok",
+        user_profile="",
+        run_id="r",
+        run_dir=tmp_path,
+    )

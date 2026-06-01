@@ -9,7 +9,7 @@ PAN, e-PAN, NSDL, UTIITSL, income tax PAN, Aadhaar e-KYC, PAN-Aadhaar link, dupl
 Any Indian citizen, NRI, or foreigner doing business in India.
 
 ### "Can I apply online?"
-You cannot get a PAN card instantly online. You need to prepare a few documents and visit a centre or contact Vijay or Priti for assistance.
+You cannot get a PAN card instantly online. You need to prepare a few documents and visit a centre or contact Priti (BC – 7738561086) or Dinesh (MIDC – no phone yet, bot can email Dinesh on the user's behalf) for assistance.
 
 ### "How long does PAN delivery take?"
 After successful application, a physical PAN card is delivered in approximately 15-20 working days.
@@ -24,7 +24,7 @@ Apply for a reprint or duplicate PAN card online at NSDL or UTIITSL portal. Ment
 Name, Father's Name, Date of Birth, Address, Photo, Signature, and Aadhaar linkage.
 
 ### "How to update PAN?"
-Visit the NSDL or UTIITSL portal online, or visit a PAN centre with required documents. Vijay or Priti can also assist.
+Visit the NSDL or UTIITSL portal online, or visit a PAN centre with required documents. Priti (BC – 7738561086) or Dinesh (MIDC, email-only — bot can escalate) can also assist.
 
 ### "What documents are needed for update?"
 Proof of identity and address relevant to the change. Aadhaar card is commonly required.
@@ -89,5 +89,5 @@ Bank account kholne ke liye, ITR file karne ke liye, ₹10 lakh se zyada ki prop
 - https://www.incometax.gov.in/iec/foportal/
 
 **Contact**:
-- Vijay (BC) – 9321125042
-- Priti (MIDC) – 7738561086
+- Priti (BC) – 7738561086
+- Dinesh (MIDC) – no phone number on file yet; the bot can email Dinesh directly via the consent-gated escalation flow.

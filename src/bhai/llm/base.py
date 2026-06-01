@@ -36,6 +36,58 @@ EMOTION_INSTRUCTION = (
 )
 
 
+MEMORY_INSTRUCTION = """
+=== Memory (self-edited) ===
+
+You maintain a small per-user memory across turns. After your spoken reply,
+you may optionally emit zero or more `<memory>` blocks. These are NOT spoken
+to the user — they're stripped before TTS — and they update the persistent
+notes you'll see at the top of future turns under "याद रखी हुई बातें" and
+"पिछली बातचीत का सारांश".
+
+Two operations are supported:
+
+  <memory>fact: <one short, durable fact about the user></memory>
+  <memory>summary: <a fresh 3-4 line Hindi summary of who this person is and
+  what's been going on, replaces the previous summary entirely></memory>
+
+Rules:
+- Only emit a `fact:` when this turn revealed something durable that's not
+  already in the existing facts above. Routine chitchat usually has no new
+  fact. Quality beats quantity.
+- Only emit a `summary:` once every few turns when the conversation has
+  meaningfully shifted (new topic, new concern, a milestone). If the prior
+  summary still describes them well, don't emit one — saves tokens and
+  avoids churn.
+- High-priority facts to capture when the user mentions them:
+    * `work_location: BC` or `work_location: MIDC` — REQUIRED before any
+      ESCALATE: true can fire, so capture it the first time it's mentioned
+      or inferable (e.g. user says "BC office में काम करती हूँ").
+    * Name (`name: Priya`), family members and ages, health conditions
+      they're managing, the supervisor/co-worker names they mention, the
+      products they make, the worry currently on their mind.
+- Facts are merged + deduplicated automatically. Re-emitting an existing
+  fact is a no-op, not an error — but it wastes tokens, so don't.
+- NEVER include religion, caste, disability, or specific loan numbers in
+  memory. Those are filtered upstream from external APIs and should not
+  appear here either.
+- The `<memory>` tags themselves and everything inside them are stripped
+  before the response reaches the user. Do not refer to them in your
+  spoken reply.
+
+Example (after a turn where the user mentioned she's at MIDC and her
+daughter Priya is starting Class 3):
+
+  <memory>fact: work_location: MIDC</memory>
+  <memory>fact: daughter Priya starting Class 3 (2026)</memory>
+
+Example (after several turns of conversation about a workplace issue with
+a supervisor named Ramesh that the prior summary doesn't capture):
+
+  <memory>summary: पिछले 2-3 दिन से supervisor Ramesh के साथ बहस हो रही है — salary को लेकर। User परेशान है पर escalate नहीं करना चाहती अभी। MIDC office में काम करती है, 2 बच्चे हैं।</memory>
+"""
+
+
 class BaseLLM(ABC):
     """
     Abstract base class for LLM backends.
@@ -59,19 +111,23 @@ class BaseLLM(ABC):
         self.escalation_policy = _read_file(shared_dir / "escalation_policy.md")
         self.style_guide = _read_file(shared_dir / "style_guide.md")
 
-        # KB router: selects which helpdesk/*.md files to inject per turn.
-        # Default backend is Haiku 4.5 (LLM-as-router with prompt caching);
+        # KB router: selects which helpdesk/*.md files to inject per turn
+        # AND emits the use-case tags (grievance/finance/scheme_kb/general).
+        # Default backend is Sonnet 4.6 (LLM-as-router with prompt caching);
         # falls back transparently to the keyword KBRouter if the API key
-        # is missing or the Haiku call errors at runtime.
-        self._kb_router: Optional[Union[KBRouter, "HaikuKBRouter"]] = None
+        # is missing or the LLM call errors at runtime. The legacy
+        # ``kb_router_backend="haiku"`` config value is honoured for
+        # back-compat — both values now route to the same Sonnet-backed
+        # LLMKBRouter; only the keyword fallback runs differently.
+        self._kb_router: Optional[Union[KBRouter, "LLMKBRouter"]] = None
         if getattr(config, "kb_router_enabled", False):
             keyword_router = KBRouter(self.kb_dir / "helpdesk")
             backend = getattr(config, "kb_router_backend", "haiku")
             api_key = getattr(config, "anthropic_api_key", "")
-            if backend == "haiku" and api_key:
-                from .haiku_router import HaikuKBRouter
+            if backend in ("haiku", "sonnet", "llm") and api_key:
+                from .llm_router import LLMKBRouter
 
-                self._kb_router = HaikuKBRouter(
+                self._kb_router = LLMKBRouter(
                     kb_dir=self.kb_dir,
                     fallback=keyword_router,
                     api_key=api_key,
@@ -163,6 +219,24 @@ class BaseLLM(ABC):
         cls._prompt_cache[version] = content
         return content
 
+    _USE_CASES_DIR = _PROMPTS_DIR / "use_cases"
+    _use_case_cache: Dict[str, str] = {}
+
+    @classmethod
+    def _load_use_case_block(cls, tag: str) -> str:
+        """Read a use-case instruction block from prompts/use_cases/{tag}.md.
+
+        Cached on first read. Returns empty string if the file is missing —
+        the router's allowlist already constrains ``tag`` so this is mostly
+        a defensive guard against typos during prompt edits.
+        """
+        if tag in cls._use_case_cache:
+            return cls._use_case_cache[tag]
+        path = cls._USE_CASES_DIR / f"{tag}.md"
+        content = _read_file(path)
+        cls._use_case_cache[tag] = content
+        return content
+
     def _build_system_prompt(
         self,
         domain: str,
@@ -170,29 +244,52 @@ class BaseLLM(ABC):
         memory_summary: str = "",
         extracted_facts: str = "",
         transcript: str = "",
+        conversation_history: Optional[List[Dict[str, str]]] = None,
     ) -> str:
-        """Build system prompt from versioned template + user context + KB.
+        """Build system prompt from versioned template + user context + KB + use-cases.
 
         When the KB router is enabled and a ``transcript`` is provided, only
-        the routed subset of ``helpdesk/*.md`` is injected. Otherwise the
-        whole helpdesk block is injected (legacy behavior).
+        the routed subset of ``helpdesk/*.md`` is injected. The router also
+        returns 0+ use-case tags; matching instruction blocks are appended
+        after the KB section so the model sees task-specific guidance for
+        the current turn.
+
+        ``conversation_history`` (when provided) is forwarded to the LLM
+        router so it can disambiguate short follow-up turns from their
+        surrounding context. The keyword fallback ignores it.
         """
         version = getattr(self.config, "prompt_version", "current")
         prompt = self._load_prompt_template(version)
 
-        # Inject helpdesk KB: routed if router is enabled and transcript is
-        # available, else full block. The router always returns _index.md
-        # plus 0..N matched docs.
+        # Inject helpdesk KB + use-case tags via the router. The router always
+        # returns _index.md plus 0..N matched docs; use_cases is empty for
+        # companion-mode chitchat and for the keyword-fallback path.
         helpdesk_paths: Optional[List[Path]] = None
+        use_case_tags: List[str] = []
         if self._kb_router is not None and transcript:
-            helpdesk_paths = self._kb_router.route(
+            result = self._kb_router.route(
                 transcript,
                 top_n=getattr(self.config, "kb_router_top_n", 3),
                 threshold=getattr(self.config, "kb_router_threshold", 0.05),
+                conversation_history=conversation_history,
             )
+            helpdesk_paths = result.paths
+            use_case_tags = result.use_cases
         helpdesk_kb = self._load_domain_context("helpdesk", paths=helpdesk_paths)
         if helpdesk_kb:
             prompt += f"\n\n=== Helpdesk Knowledge Base (documents, schemes) ===\n{helpdesk_kb}"
+
+        if use_case_tags:
+            blocks = [
+                block
+                for block in (self._load_use_case_block(tag) for tag in use_case_tags)
+                if block
+            ]
+            if blocks:
+                prompt += (
+                    "\n\n=== Active Use Cases (apply to THIS turn) ===\n\n"
+                    + "\n\n".join(blocks)
+                )
 
         # Append user-specific context (only if available)
         if user_profile:
@@ -403,21 +500,53 @@ class BaseLLM(ABC):
             return match.group(1).lower() == "true"
         return "escalate" in text.lower()
 
+    # Valid ESCALATE_CATEGORY values. Anything else → routed as "grievance"
+    # (the default impact-team list). Office-specific docs categories route
+    # to the per-office recipients (see escalations/handler.py).
+    _ESCALATION_CATEGORIES = ("docs_bc", "docs_midc", "docs_unknown", "grievance")
+
+    @staticmethod
+    def _detect_escalation_category(text: str) -> Optional[str]:
+        """Detect the office/topic routing category from the LLM response.
+
+        Returns one of: 'docs_bc', 'docs_midc', 'docs_unknown', 'grievance', or
+        None if the model didn't emit a category (caller treats None as
+        'grievance' default). Unknown category strings also return None so
+        a bad model output can't silently misroute.
+        """
+        match = re.search(
+            r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", text, flags=re.IGNORECASE
+        )
+        if not match:
+            return None
+        value = match.group(1).lower()
+        if value in BaseLLM._ESCALATION_CATEGORIES:
+            return value
+        return None
+
     @staticmethod
     def _clean_response(raw_text: str, strip_emotions: bool = False) -> str:
-        """Remove ESCALATE/EMOTIONS_JSON lines and strip markdown formatting.
+        """Remove ESCALATE/EMOTIONS_JSON lines, <memory> blocks, and markdown.
 
         Markdown leaks (asterisks, bullet markers) get read literally by TTS
         ("asterisk asterisk", "dash"). We strip them as a safety net even
         though the prompt also forbids them.
+
+        <memory> blocks (see ``MEMORY_INSTRUCTION``) are model-internal
+        notes the user must never hear. They're stripped before reasoning-
+        leak detection so their contents can't accidentally trip outreach
+        or jargon filters.
 
         Also strips chain-of-thought leakage — paragraphs where the model
         narrates its reasoning ("system prompt कहता है...", "anti-sycophancy
         rule apply होता है...") before the actual response. Even though the
         prompt forbids this, the model can still slip when rules conflict.
         """
-        # First strip reasoning leakage (paragraph-level), then clean lines
-        text = BaseLLM._strip_reasoning_leak(raw_text)
+        # First strip memory patches (must precede reasoning-leak detection
+        # so memory contents don't trip the jargon filter), then reasoning
+        # leakage at the paragraph level, then per-line cleanup.
+        text = BaseLLM._strip_memory_patches(raw_text)
+        text = BaseLLM._strip_reasoning_leak(text)
 
         cleaned_lines = []
         for line in text.splitlines():
@@ -431,10 +560,90 @@ class BaseLLM(ABC):
         text = "\n".join(cleaned_lines).strip()
         return BaseLLM._strip_markdown(text)
 
+    # Matches a single <memory>...</memory> block. DOTALL so multi-line
+    # summary patches are captured. Case-insensitive on the tag in case the
+    # model slips on capitalisation.
+    _MEMORY_BLOCK_RE = re.compile(
+        r"<memory>(.*?)</memory>", flags=re.DOTALL | re.IGNORECASE
+    )
+
+    @staticmethod
+    def _strip_memory_patches(raw_text: str) -> str:
+        """Remove all <memory>...</memory> blocks from text.
+
+        Idempotent. Collapses adjacent blank lines left behind so the
+        spoken reply doesn't develop awkward gaps.
+        """
+        if not raw_text or "<memory" not in raw_text.lower():
+            return raw_text
+        stripped = BaseLLM._MEMORY_BLOCK_RE.sub("", raw_text)
+        # Collapse 3+ newlines left from removing blocks back to 2.
+        stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+        return stripped.strip()
+
+    @staticmethod
+    def _parse_memory_patches(raw_text: str) -> Optional[Dict[str, Any]]:
+        """Extract memory ops from a raw LLM response.
+
+        Returns ``{"summary": Optional[str], "facts": List[str]}`` if any
+        ``<memory>`` block was found, else ``None``. Only the LAST
+        ``summary:`` block in the response is kept (later overrides earlier);
+        all ``fact:`` blocks are collected in order. Unknown operation
+        prefixes are logged and ignored.
+
+        The caller (the webhook) is responsible for actually persisting
+        these patches via ``ConversationStore.save_memory()`` — BaseLLM
+        stays store-ignorant.
+        """
+        if not raw_text or "<memory" not in raw_text.lower():
+            return None
+
+        facts: List[str] = []
+        summary: Optional[str] = None
+        for match in BaseLLM._MEMORY_BLOCK_RE.finditer(raw_text):
+            body = match.group(1).strip()
+            if not body:
+                continue
+            # Split on the first colon to get the op prefix.
+            if ":" not in body:
+                import logging
+
+                logging.getLogger("bhai.llm").warning(
+                    "Memory block missing op prefix, ignored: %r", body[:60]
+                )
+                continue
+            op_raw, value = body.split(":", 1)
+            op = op_raw.strip().lower()
+            value = value.strip()
+            if not value:
+                continue
+            if op == "fact":
+                facts.append(value)
+            elif op == "summary":
+                summary = value
+            else:
+                import logging
+
+                logging.getLogger("bhai.llm").warning(
+                    "Unknown memory op %r, ignored", op
+                )
+
+        if not facts and summary is None:
+            return None
+        return {"summary": summary, "facts": facts}
+
     # Markers that indicate the model is narrating its own reasoning instead
-    # of speaking to the user. These English terms should NEVER appear in a
+    # of speaking to the user. These terms should NEVER appear in a
     # Hindi/Marathi/Gujarati voice note. If any of them shows up in a
     # paragraph, that paragraph is treated as leaked reasoning and dropped.
+    #
+    # The "KB" family was added 2026-05-27 after dev test caught bhAI saying
+    # "मेरे KB में college scholarship का detail नहीं है" — pure architectural
+    # jargon a non-technical user can't parse. The prompt now forbids these
+    # explicitly (scheme_kb.md rule 4); these markers are a defense-in-depth
+    # backstop when the prompt rule fails. We deliberately use multi-word
+    # phrases (not just "KB" alone) to avoid false positives on legitimate
+    # use of "KB" as a unit or product name.
     _REASONING_LEAK_MARKERS = (
         "system prompt",
         "anti-sycophancy",
@@ -446,6 +655,14 @@ class BaseLLM(ABC):
         "मुझे पहले",
         "let me think",
         "मुझे सोच",
+        "knowledge base",
+        "मेरे KB",
+        "मेरी KB",
+        "मेरे helpdesk",
+        "मेरी helpdesk",
+        "helpdesk KB",
+        "injected content",
+        "context window",
     )
 
     @staticmethod
@@ -485,6 +702,86 @@ class BaseLLM(ABC):
 
         return "\n\n".join(kept).strip()
 
+    # Named human contacts bhAI cannot actually message today. Used by
+    # `_detect_outreach_claim` to flag confabulated outreach. "impact team"
+    # is included as a phrase; "team" alone is too noisy.
+    _OUTREACH_CONTACTS = (
+        "Vijay",
+        "Priti",
+        "Rishi",
+        "Sarfaraz",
+        "Vidhi",
+        "impact team",
+    )
+
+    @staticmethod
+    def _detect_outreach_claim(text: str, escalate: bool) -> Optional[str]:
+        """Detect confabulated outreach claims (past or future tense).
+
+        bhAI cannot actually message Vijay, Priti, Rishi, Sarfaraz, Vidhi,
+        or the impact team today. The only legitimate outreach channel is
+        consent-gated ``ESCALATE: true`` (which triggers a real email via
+        the escalation pipeline).
+
+        Past-tense outreach is always a lie — bhAI cannot have already
+        asked anyone synchronously in this turn. Future-tense outreach is
+        a lie *unless* ``escalate`` is ``True``, in which case the system
+        will actually email the impact team after this response.
+
+        Returns a short description of the violation if found, else
+        ``None``. Intentionally narrow (high precision over recall) — a
+        false positive that strips an honest reply is worse than missing
+        an edge case the next eval iteration can catch.
+        """
+        if not text:
+            return None
+
+        contacts = "(" + "|".join(BaseLLM._OUTREACH_CONTACTS) + ")"
+
+        # Past-tense outreach — always a lie, regardless of ESCALATE.
+        past_patterns = [
+            # "मैंने X से पूछा / बता दिया" — first-person past with contact nearby
+            rf"(मैंने|मैने)\s+\S{{0,30}}?(पूछ|बता|बोल|message कर)",
+            # "Vijay ने बताया / कहा / बोला"
+            rf"{contacts}\s+(?:Sir\s+|जी\s+)?ने\s+(बताया|कहा|बोला|कह\s+दिया)",
+            # "Vijay का जवाब आया / मिला"
+            rf"{contacts}\s+(का|की)\s+\S{{0,15}}?(जवाब|reply)\s+(आया|मिला|आ\s+गया)",
+            # "Vijay से पूछ लिया" — past completed action near contact
+            rf"{contacts}.{{0,40}}?(पूछ\s+लिया|बता\s+दिया|बोल\s+दिया|message\s+कर\s+दिया)",
+            rf"(पूछ\s+लिया|बता\s+दिया|बोल\s+दिया|message\s+कर\s+दिया).{{0,40}}?{contacts}",
+        ]
+        for pat in past_patterns:
+            m = re.search(pat, text)
+            if m:
+                snippet = m.group(0).replace("\n", " ")[:80]
+                return f"past-tense outreach: '{snippet}'"
+
+        # Future-tense outreach — lie unless ESCALATE: true (consent-gated).
+        if not escalate:
+            future_patterns = [
+                # "मैं Vijay/team से/को X" (पूछ/बता/message/email/etc.)
+                rf"मैं\s+{contacts}(?:\s+|को|से)\s*\S{{0,25}}?"
+                rf"(पूछ|बता|बोल|message|email|note|forward|contact)",
+                # "Vijay से/को पूछ के बताऊँगी" or similar future commitments
+                rf"{contacts}\s+(से|को)\s+\S{{0,30}}?"
+                rf"(पूछूँगी|बताऊँगी|बता\s+दूँगी|message\s+करूँगी|email\s+करूँगी|"
+                rf"पूछ\s+के\s+बताऊँगी|पूछ\s+के\s+बताती\s+हूँ)",
+            ]
+            for pat in future_patterns:
+                m = re.search(pat, text)
+                if not m:
+                    continue
+                # Negation suppression: if "नहीं" appears in a small window
+                # around the match, this is an honest disclaimer, not a lie.
+                # e.g. "मैं Vijay को directly message नहीं कर सकती"
+                window = text[max(0, m.start() - 20) : m.end() + 20]
+                if "नहीं" in window:
+                    continue
+                snippet = m.group(0).replace("\n", " ")[:80]
+                return f"future-tense outreach (no ESCALATE): '{snippet}'"
+
+        return None
+
     @staticmethod
     def _strip_markdown(text: str) -> str:
         """Strip markdown so TTS doesn't read it literally.
@@ -492,6 +789,13 @@ class BaseLLM(ABC):
         Devanagari Hindi text never contains asterisks/backticks, so we
         can safely scrub them. Leading bullet/numbered list markers and
         markdown headings are also stripped.
+
+        Note: phone-number stripping is NOT done here. That's handled
+        independently by ``inference/webhooks/telegram_webhook._extract_phone_numbers``,
+        which both strips the digits from the voice text AND assembles a
+        labelled Telegram text message ("📞 Contact: Priti (BC) – ...") for
+        the user. Keeping the two in sync is intentional: the webhook owns
+        the contact-number text-message channel end-to-end.
         """
         if not text:
             return text
@@ -531,6 +835,69 @@ class BaseLLM(ABC):
         return None
 
     # ── retry helper ─────────────────────────────────────────────────────
+
+    _OUTREACH_CORRECTION_PROMPT = (
+        "\n\nIMPORTANT correction for your next reply: your previous draft "
+        "contained a confabulated outreach claim — you implied you would "
+        "(or did) message someone like Vijay, Priti, Rishi, Sarfaraz, "
+        "Vidhi, or the impact team. You CANNOT actually message anyone "
+        "today outside the consent-gated ESCALATE: true flow. Rewrite the "
+        "response: name the capability limit honestly ('मैं अभी directly "
+        "किसी को message नहीं कर सकती'), and route the user to a direct "
+        "contact number (text the number for documents/schemes from the "
+        "KB) or just answer the underlying question yourself without "
+        "claiming any outreach. Do not output the same draft."
+    )
+
+    def _guard_outreach(
+        self,
+        raw_text: str,
+        escalate: bool,
+        cleaned_text: str,
+        system_prompt: str,
+        user_message: str,
+        strip_emotions: bool,
+    ) -> tuple:
+        """One-shot re-prompt if a confabulated outreach claim is detected.
+
+        bhAI cannot message anyone today outside ``ESCALATE: true``. If the
+        cleaned response contains a past-tense or future-tense outreach
+        claim against a named contact and no escalation is in flight, log
+        the violation, re-prompt the LLM once with a corrective system
+        message, and return the corrected outputs. If the second draft
+        still fails, emit a warning but return the (still-failing) text —
+        the response cleaner has already stripped the worst structural
+        leaks, and silence is worse than a logged warning.
+
+        Returns ``(raw_text, escalate, cleaned_text)``.
+        """
+        violation = BaseLLM._detect_outreach_claim(cleaned_text, escalate)
+        if not violation:
+            return raw_text, escalate, cleaned_text
+
+        import logging
+
+        log = logging.getLogger("bhai.llm")
+        log.warning("Confabulated outreach detected, re-prompting: %s", violation)
+
+        corrected_prompt = system_prompt + self._OUTREACH_CORRECTION_PROMPT
+        try:
+            new_raw = self._call_api_with_retry(corrected_prompt, user_message)
+        except Exception:  # pragma: no cover - defensive fallback
+            log.exception("Outreach re-prompt failed; keeping original draft")
+            return raw_text, escalate, cleaned_text
+
+        new_escalate = self._detect_escalation(new_raw)
+        new_cleaned = self._clean_response(new_raw, strip_emotions=strip_emotions)
+
+        residual = BaseLLM._detect_outreach_claim(new_cleaned, new_escalate)
+        if residual:
+            log.warning(
+                "Outreach claim persisted after re-prompt: %s (emitting anyway)",
+                residual,
+            )
+
+        return new_raw, new_escalate, new_cleaned
 
     def _call_api_with_retry(
         self, system_prompt: str, user_message: str, max_attempts: int = 3
@@ -572,8 +939,16 @@ class BaseLLM(ABC):
         Returns:
             Dictionary with text, raw, and escalate.
         """
-        system_prompt = self._build_system_prompt(
-            domain, user_profile, memory_summary, extracted_facts, transcript
+        system_prompt = (
+            self._build_system_prompt(
+                domain,
+                user_profile,
+                memory_summary,
+                extracted_facts,
+                transcript,
+                conversation_history=conversation_history,
+            )
+            + MEMORY_INSTRUCTION
         )
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
@@ -583,10 +958,28 @@ class BaseLLM(ABC):
         escalate = self._detect_escalation(raw_text)
         cleaned_text = self._clean_response(raw_text)
 
+        # One-shot re-prompt if the response contains a confabulated outreach
+        # claim. bhAI cannot actually message anyone outside the consent-gated
+        # ESCALATE: true flow.
+        raw_text, escalate, cleaned_text = self._guard_outreach(
+            raw_text,
+            escalate,
+            cleaned_text,
+            system_prompt,
+            user_message,
+            strip_emotions=False,
+        )
+
+        # Memory patches parsed from the FINAL raw_text (after any outreach
+        # re-prompt). The webhook applies them via store.save_memory().
+        memory_patches = self._parse_memory_patches(raw_text)
+
         return {
             "text": cleaned_text or raw_text,
             "raw": raw_text,
             "escalate": escalate,
+            "category": self._detect_escalation_category(raw_text),
+            "memory_patches": memory_patches,
         }
 
     def generate_with_emotions(
@@ -612,9 +1005,15 @@ class BaseLLM(ABC):
         """
         system_prompt = (
             self._build_system_prompt(
-                domain, user_profile, memory_summary, extracted_facts, transcript
+                domain,
+                user_profile,
+                memory_summary,
+                extracted_facts,
+                transcript,
+                conversation_history=conversation_history,
             )
             + EMOTION_INSTRUCTION
+            + MEMORY_INSTRUCTION
         )
         if mode_instruction:
             system_prompt += "\n\n" + mode_instruction
@@ -626,13 +1025,26 @@ class BaseLLM(ABC):
         escalate = self._detect_escalation(raw_text)
         cleaned_text = self._clean_response(raw_text, strip_emotions=True)
 
+        raw_text, escalate, cleaned_text = self._guard_outreach(
+            raw_text,
+            escalate,
+            cleaned_text,
+            system_prompt,
+            user_message,
+            strip_emotions=True,
+        )
+
         segments = self._parse_emotion_segments(raw_text)
         if segments is None:
             segments = [{"text": cleaned_text or raw_text, "emotion": "neutral"}]
+
+        memory_patches = self._parse_memory_patches(raw_text)
 
         return {
             "text": cleaned_text or raw_text,
             "raw": raw_text,
             "escalate": escalate,
             "segments": segments,
+            "category": self._detect_escalation_category(raw_text),
+            "memory_patches": memory_patches,
         }

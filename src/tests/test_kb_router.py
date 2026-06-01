@@ -80,17 +80,18 @@ def test_router_always_includes_index(helpdesk_kb):
     """Index file is included even when transcript is empty or unrelated."""
     router = KBRouter(helpdesk_kb)
     result = router.route("")
-    assert result == [helpdesk_kb / "_index.md"]
+    assert result.paths == [helpdesk_kb / "_index.md"]
+    assert result.use_cases == []
 
     result = router.route("तू कैसा है")
-    assert result == [helpdesk_kb / "_index.md"]
+    assert result.paths == [helpdesk_kb / "_index.md"]
 
 
 def test_router_matches_aadhaar_query(helpdesk_kb):
     """Query about Aadhaar returns aadhaar.md alongside index."""
     router = KBRouter(helpdesk_kb)
     result = router.route("Aadhaar update kaise karu")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert "_index.md" in names
     assert "aadhaar.md" in names
 
@@ -99,7 +100,7 @@ def test_router_matches_via_keywords_block(helpdesk_kb):
     """Sukanya scheme is matched even though filename starts with 'scheme_'."""
     router = KBRouter(helpdesk_kb)
     result = router.route("Sukanya yojana eligibility क्या है")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     assert "scheme_sukanya_samriddhi.md" in names
 
 
@@ -109,15 +110,15 @@ def test_router_respects_top_n(helpdesk_kb):
     # Query that touches multiple docs
     result = router.route("Aadhaar PAN Sukanya", top_n=1, threshold=0.0)
     # 1 index + 1 scored doc = 2 entries max
-    assert len(result) == 2
-    assert result[0].name == "_index.md"
+    assert len(result.paths) == 2
+    assert result.paths[0].name == "_index.md"
 
 
 def test_router_threshold_filters_weak_matches(helpdesk_kb):
     """Off-topic query with no token overlap routes to index only."""
     router = KBRouter(helpdesk_kb)
     result = router.route("monsoon mein train ki bhid")
-    assert result == [helpdesk_kb / "_index.md"]
+    assert result.paths == [helpdesk_kb / "_index.md"]
 
 
 def test_router_score_prefers_filename_stem(helpdesk_kb):
@@ -128,7 +129,7 @@ def test_router_score_prefers_filename_stem(helpdesk_kb):
     """
     router = KBRouter(helpdesk_kb)
     result = router.route("Aadhaar")
-    names = [p.name for p in result]
+    names = [p.name for p in result.paths]
     # aadhaar.md must be present; pan_card.md may or may not, but if
     # both score, aadhaar.md must rank first among scored docs.
     assert "aadhaar.md" in names
@@ -139,7 +140,7 @@ def test_router_score_prefers_filename_stem(helpdesk_kb):
 def test_router_handles_missing_dir(tmp_path):
     """Non-existent directory yields a router that returns empty list."""
     router = KBRouter(tmp_path / "does_not_exist")
-    assert router.route("anything") == []
+    assert router.route("anything").paths == []
 
 
 def test_router_without_index(tmp_path):
@@ -152,4 +153,12 @@ def test_router_without_index(tmp_path):
     )
     router = KBRouter(helpdesk)
     result = router.route("voter ID kaise milega")
-    assert result == [helpdesk / "voter_id.md"]
+    assert result.paths == [helpdesk / "voter_id.md"]
+
+
+def test_router_use_cases_always_empty(helpdesk_kb):
+    """Keyword router never emits use-cases — that's Haiku's job."""
+    router = KBRouter(helpdesk_kb)
+    assert router.route("Aadhaar PAN").use_cases == []
+    assert router.route("").use_cases == []
+    assert router.route("supervisor harassment salary").use_cases == []

@@ -15,13 +15,27 @@ import logging
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Tuple
 
 from ..resilience.faq_cache import _tokenize
 
 logger = logging.getLogger("bhai.llm.kb_router")
 
 INDEX_FILE = "_index.md"
+
+
+@dataclass
+class RouteResult:
+    """Output of a single routing decision.
+
+    ``paths`` is the ordered list of KB files to inject into the system
+    prompt (always starts with ``_index.md`` when present). ``use_cases``
+    is the set of use-case tags Haiku emitted from the fixed allowlist;
+    the keyword fallback always returns an empty list here.
+    """
+
+    paths: List[Path] = field(default_factory=list)
+    use_cases: List[str] = field(default_factory=list)
 
 
 @dataclass
@@ -131,20 +145,30 @@ class KBRouter:
         transcript: str,
         top_n: int = 3,
         threshold: float = 0.25,
-    ) -> List[Path]:
-        """Return the list of doc paths to inject for this transcript.
+        conversation_history: Optional[List[Dict[str, str]]] = None,
+    ) -> RouteResult:
+        """Return the docs to inject + (always empty) use-cases for this transcript.
 
         Always includes ``_index.md`` (when present) followed by up to
         ``top_n`` scored docs whose score >= threshold. The threshold is
         on a 0..1.5 scale (containment + stem bonus, see ``_score``).
+
+        ``conversation_history`` is accepted for signature parity with
+        :class:`LLMKBRouter.route` and ignored — keyword scoring only
+        looks at the current transcript.
+
+        The keyword router never emits use-cases — that decision needs the
+        contextual judgment the LLM router provides. When the keyword
+        router is running (i.e. the LLM router is down), the system prompt
+        gets no use-case block, which is the safer default than a wrong tag.
         """
-        results: List[Path] = []
+        paths: List[Path] = []
         if self.index_path is not None:
-            results.append(self.index_path)
+            paths.append(self.index_path)
 
         query_tokens = _tokenize(transcript) if transcript else set()
         if not query_tokens or not self.profiles:
-            return results
+            return RouteResult(paths=paths, use_cases=[])
 
         scored = [
             (_score(query_tokens, prof), path) for path, prof in self.profiles.items()
@@ -153,7 +177,7 @@ class KBRouter:
 
         for score, path in scored[:top_n]:
             if score >= threshold:
-                results.append(path)
+                paths.append(path)
                 logger.debug("kb_router match: file=%s score=%.3f", path.name, score)
 
-        return results
+        return RouteResult(paths=paths, use_cases=[])

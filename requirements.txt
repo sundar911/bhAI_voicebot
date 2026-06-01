@@ -38,6 +38,7 @@ click==8.3.2
 cryptography==46.0.7
     # via
     #   bhai-voice-bot (pyproject.toml)
+    #   google-auth
     #   msal
     #   pyjwt
 distro==1.9.0
@@ -56,12 +57,33 @@ frozenlist==1.8.0
     # via
     #   aiohttp
     #   aiosignal
+google-api-core==2.30.3
+    # via google-api-python-client
+google-api-python-client==2.196.0
+    # via bhai-voice-bot (pyproject.toml)
+google-auth==2.53.0
+    # via
+    #   bhai-voice-bot (pyproject.toml)
+    #   google-api-core
+    #   google-api-python-client
+    #   google-auth-httplib2
+    #   google-auth-oauthlib
+google-auth-httplib2==0.4.0
+    # via google-api-python-client
+google-auth-oauthlib==1.4.0
+    # via bhai-voice-bot (pyproject.toml)
+googleapis-common-protos==1.75.0
+    # via google-api-core
 h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
 httpcore==1.0.9
     # via httpx
+httplib2==0.31.2
+    # via
+    #   google-api-python-client
+    #   google-auth-httplib2
 httpx==0.28.1
     # via
     #   anthropic
@@ -87,6 +109,8 @@ multidict==6.7.1
     # via
     #   aiohttp
     #   yarl
+oauthlib==3.3.1
+    # via requests-oauthlib
 openai==2.30.0
     # via bhai-voice-bot (pyproject.toml)
 openpyxl==3.1.5
@@ -95,6 +119,17 @@ propcache==0.4.1
     # via
     #   aiohttp
     #   yarl
+proto-plus==1.28.0
+    # via google-api-core
+protobuf==7.35.0
+    # via
+    #   google-api-core
+    #   googleapis-common-protos
+    #   proto-plus
+pyasn1==0.6.3
+    # via pyasn1-modules
+pyasn1-modules==0.4.2
+    # via google-auth
 pycparser==3.0
     # via cffi
 pydantic==2.12.5
@@ -115,6 +150,8 @@ pyjwt==2.12.1
     # via
     #   msal
     #   twilio
+pyparsing==3.3.2
+    # via httplib2
 python-dotenv==1.2.2
     # via bhai-voice-bot (pyproject.toml)
 python-multipart==0.0.24
@@ -125,8 +162,12 @@ requests==2.33.1
     # via
     #   bhai-voice-bot (pyproject.toml)
     #   elevenlabs
+    #   google-api-core
     #   msal
+    #   requests-oauthlib
     #   twilio
+requests-oauthlib==2.0.0
+    # via google-auth-oauthlib
 rich==14.3.3
     # via bhai-voice-bot (pyproject.toml)
 sniffio==1.3.1
@@ -155,6 +196,8 @@ typing-inspection==0.4.2
     # via
     #   fastapi
     #   pydantic
+uritemplate==4.2.0
+    # via google-api-python-client
 urllib3==2.6.3
     # via requests
 uvicorn==0.44.0
