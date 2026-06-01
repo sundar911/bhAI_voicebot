@@ -107,7 +107,14 @@ class Config:
     # is configurable too — defaults to the current "nano-banana" Flash image
     # model but can be overridden as the API evolves.
     nanobanana_api_key: str = ""
-    nanobanana_model: str = "gemini-2.5-flash-image-preview"
+    # Default to the stable Flash image model. Available alternatives at the
+    # time of writing (confirmed via ListModels against a real key):
+    #   - gemini-2.5-flash-image (stable Flash, our default — cheapest)
+    #   - gemini-3.1-flash-image (newer Flash, similar cost)
+    #   - gemini-3-pro-image / nano-banana-pro-preview (Pro tier, higher
+    #     quality, higher cost — worth A/B-testing for production once the
+    #     pipeline is validated)
+    nanobanana_model: str = "gemini-2.5-flash-image"
     nanobanana_endpoint: str = "https://generativelanguage.googleapis.com/v1beta/models"
     # Google Programmable Search — separate API key + Custom Search Engine ID.
     # The CSE must be created in the Google Cloud Console (one-time setup).
@@ -218,16 +225,18 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             os.getenv("NUDGE_CHECK_INTERVAL_SECONDS", "300")
         ),
         nudge_active_user_days=int(os.getenv("NUDGE_ACTIVE_USER_DAYS", "7")),
-        # nanobanana / Gemini image gen — accept any of three env-var names.
+        # nanobanana / Gemini image gen — accept any of four env-var names.
+        # GOOGLE_API_KEY is the generic Google name; we check it last so a
+        # service-specific name (NANOBANANA / GEMINI / GOOGLE_GENAI) wins
+        # if both happen to be set.
         nanobanana_api_key=(
             os.getenv("NANOBANANA_API_KEY")
             or os.getenv("GEMINI_API_KEY")
             or os.getenv("GOOGLE_GENAI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
             or ""
         ),
-        nanobanana_model=os.getenv(
-            "NANOBANANA_MODEL", "gemini-2.5-flash-image-preview"
-        ),
+        nanobanana_model=os.getenv("NANOBANANA_MODEL", "gemini-2.5-flash-image"),
         nanobanana_endpoint=os.getenv(
             "NANOBANANA_ENDPOINT",
             "https://generativelanguage.googleapis.com/v1beta/models",
