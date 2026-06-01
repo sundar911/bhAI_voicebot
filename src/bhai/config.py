@@ -100,6 +100,22 @@ class Config:
     nudge_check_interval_seconds: int = 300  # How often the loop wakes
     nudge_active_user_days: int = 7  # Only nudge users active in last N days
 
+    # v2 proactive thinking agent — tool API keys.
+    # nanobanana = Google Gemini image generation (kickoff naming). We accept
+    # any of NANOBANANA_API_KEY / GEMINI_API_KEY / GOOGLE_GENAI_API_KEY in env
+    # so whichever name the operator chose in .env just works. The model name
+    # is configurable too — defaults to the current "nano-banana" Flash image
+    # model but can be overridden as the API evolves.
+    nanobanana_api_key: str = ""
+    nanobanana_model: str = "gemini-2.5-flash-image-preview"
+    nanobanana_endpoint: str = "https://generativelanguage.googleapis.com/v1beta/models"
+    # Google Programmable Search — separate API key + Custom Search Engine ID.
+    # The CSE must be created in the Google Cloud Console (one-time setup).
+    # If either is missing, web_search returns a clear "not configured" error
+    # rather than failing the whole agent loop.
+    google_search_api_key: str = ""
+    google_search_cse_id: str = ""
+
     # Azure / SharePoint (for transcription pipeline)
     azure_tenant_id: str = ""
     azure_app_client_id: str = ""
@@ -202,6 +218,22 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             os.getenv("NUDGE_CHECK_INTERVAL_SECONDS", "300")
         ),
         nudge_active_user_days=int(os.getenv("NUDGE_ACTIVE_USER_DAYS", "7")),
+        # nanobanana / Gemini image gen — accept any of three env-var names.
+        nanobanana_api_key=(
+            os.getenv("NANOBANANA_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_GENAI_API_KEY")
+            or ""
+        ),
+        nanobanana_model=os.getenv(
+            "NANOBANANA_MODEL", "gemini-2.5-flash-image-preview"
+        ),
+        nanobanana_endpoint=os.getenv(
+            "NANOBANANA_ENDPOINT",
+            "https://generativelanguage.googleapis.com/v1beta/models",
+        ),
+        google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY", ""),
+        google_search_cse_id=os.getenv("GOOGLE_SEARCH_CSE_ID", ""),
         azure_tenant_id=os.getenv("AZURE_TENANT_ID", ""),
         azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),
         sharepoint_hostname=os.getenv(
