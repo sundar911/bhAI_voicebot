@@ -241,7 +241,13 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             "NANOBANANA_ENDPOINT",
             "https://generativelanguage.googleapis.com/v1beta/models",
         ),
-        google_search_api_key=os.getenv("GOOGLE_SEARCH_API_KEY", ""),
+        # Google Search shares Google's project API key by default — same
+        # GOOGLE_API_KEY works for both Custom Search and Gemini once Custom
+        # Search API is enabled in the project. Operator can override with
+        # a dedicated GOOGLE_SEARCH_API_KEY if they want separate quotas.
+        google_search_api_key=(
+            os.getenv("GOOGLE_SEARCH_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+        ),
         google_search_cse_id=os.getenv("GOOGLE_SEARCH_CSE_ID", ""),
         azure_tenant_id=os.getenv("AZURE_TENANT_ID", ""),
         azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),

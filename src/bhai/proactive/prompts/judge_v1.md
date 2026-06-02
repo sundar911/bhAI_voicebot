@@ -50,18 +50,31 @@ Does the text leak any PII that shouldn't be there?
 - Tiny Miracles staff names referenced by first name + role is fine ("Priti se baat karenge").
 - Specific medical conditions, religion, caste, loan amounts, disability — NOT fine.
 
-### 5. RESPECTFUL SPEECH (all categories — load-bearing)
+### 5. RESPECTFUL SPEECH (all categories — load-bearing but narrow)
 
-Does the text use the correct Hindi/Urdu register?
+Fail this check ONLY for unambiguous violations. Most phrasings are fine; we only catch the specific patterns Sundar flagged on 2026-06-02.
 
-- ✅ aap-form: "कैसे हैं?" / "Kaise hain?" / "बताइएगा" / "Aap kaise hain?"
-- ✅ Ungendered: "kaise" (not "kaisi/kaisa" except when the subject is unambiguously gendered in context)
-- ✅ -ji honorific: "Sonal ji" / "Manimala ji"
-- ❌ tum-form: "kaisi ho?" / "kya kar rahi ho?" / "bata"
-- ❌ Feminine gendering of the user via "kaisi" / "kar rahi"
-- ❌ Anything starting with "तू" / "tu"
+**Unambiguous fails (these trigger `respectful_speech: fail`):**
 
-A failure here is automatic `verdict: "fail"`. The respectful register is non-negotiable in the v2 voice.
+- ❌ Explicit tum/tu pronouns directed at the user: "तुम", "tum", "tू", "tu", "तेरा", "tera", "तेरी", "teri" → fail.
+- ❌ Clearly feminine-gendered tum-form verbs directed at the user: "kaisi ho", "kar rahi ho", "ho rahi ho", "soch rahi ho" → fail. These are the v1.5 bug pattern.
+- ❌ Imperative tum-form: "bata", "suno", "dekh" (without -iyega/-iye suffix) → fail.
+
+**Explicit passes — do NOT flag these as failures:**
+
+- ✅ Ungendered impersonal verbs: "kaisa hai", "ho raha hai", "kaisa raha", "lag raha hai" — these have no explicit subject pronoun and are register-neutral. Pass.
+- ✅ aap-form: "kaise hain", "bataiyega", "suniye", "aap" → pass.
+- ✅ -ji honorific or addressing by name: "Sonal ji", "Manimala ji" → pass.
+- ✅ Mixed Hindi-English where the English part is neutral: "Aaj ka din kaisa raha?" + "kaise hain?" → pass.
+
+**Borderline — pass with a note in reasoning, do NOT fail:**
+
+- "kaise ho" (masculine/neutral tum-form, no feminine gendering) — this is widespread casual register. PASS unless paired with feminine markers elsewhere.
+- "bataana" / "batao" without -iyega — colloquial but ungendered. PASS.
+
+The rule of thumb: ONLY fail when there's an actual tum/tu pronoun OR an explicit feminine-gendered verb form ("kaisi", "kar rahi"). Otherwise pass.
+
+A failure here is automatic `verdict: "fail"`. But err on the side of pass — over-fingering this check causes the loop to fall back to a generic safe greeting, which is worse UX than letting a borderline draft through.
 
 ## Output format
 

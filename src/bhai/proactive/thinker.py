@@ -306,6 +306,28 @@ class ProactiveThinker:
             tool_results_full.append(result)
             tool_outputs_for_draft[tool_name] = self._summarize_tool_result(result)
 
+        # If the candidate was tool-dependent and EVERY tool failed, demote
+        # category from "artifact" → "substantive" so the draft pass doesn't
+        # describe an artifact that doesn't exist. The chosen candidate is
+        # mutated in place; brainstorm_candidates preserves the original.
+        if (
+            chosen.tools_needed
+            and tool_results_full
+            and all(not r.ok for r in tool_results_full)
+        ):
+            logger.info(
+                "all tools failed for %s; demoting category artifact→substantive",
+                agent_input.phone_hash,
+            )
+            chosen = BrainstormCandidate(
+                category="substantive",
+                summary=chosen.summary + " (tool unavailable; verbal-only response)",
+                trace=chosen.trace,
+                tools_needed=[],
+                why_now=chosen.why_now,
+            )
+            tool_outputs_for_draft = {}
+
         # 4 + 5. Draft + judge with retry loop. Always lands on SOME text.
         draft_text = ""
         judge_verdict: Dict[str, Any] = {}
