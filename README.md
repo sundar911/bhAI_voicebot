@@ -109,8 +109,9 @@ bhAI_voice_bot/
 │   ├── tts/               # Text-to-speech (Sarvam bulbul:v3, ElevenLabs)
 │   ├── llm/               # Language model backends (Sarvam, OpenAI, Claude)
 │   │   ├── prompts/       # Persona prompt + per-use-case blocks (use_cases/)
-│   │   ├── haiku_router.py # Haiku KB + use-case classifier
+│   │   ├── llm_router.py  # Sonnet 4.6 KB + use-case classifier (was haiku_router.py)
 │   │   └── kb_router.py   # Keyword fallback router
+│   ├── proactive/         # Brainstorm→critique→tools→draft→judge agent for nudges
 │   ├── escalations/       # ESCALATE: true → Gmail API → impact team
 │   ├── pipelines/         # Processing pipelines (base + hr_admin)
 │   ├── memory/            # Encrypted store, summarizer, self-edited memory
@@ -118,7 +119,7 @@ bhAI_voice_bot/
 │   ├── security/          # Encryption (Fernet), webhook auth, rate limiting
 │   └── integrations/      # Telegram, Twilio (legacy), SharePoint, email_client
 │
-├── src/tests/             # Test suite (278 tests, incl. test_contracts.py)
+├── src/tests/             # Test suite (435 tests, incl. test_contracts.py + test_proactive_*)
 │
 ├── knowledge_base/        # Domain knowledge (editable by TM team)
 │   ├── shared/            # Cross-domain (escalation, style)
@@ -223,11 +224,11 @@ uv run python inference/web/chat_server.py
 
 - **STT**: Sarvam AI (saaras:v3) — statistically validated as best across 7 models on 175 Hindi recordings
 - **LLM**: Claude Sonnet (pilot default), Sarvam (sarvam-105b), or OpenAI (gpt-4o-mini) — configurable via `LLM_BACKEND`
-- **TTS**: Sarvam AI (`bulbul:v3`, suhani voice) or ElevenLabs (voice cloning)
+- **TTS**: Sarvam AI (`bulbul:v3`, suhani voice — auto-detects script and switches between Hindi/Marathi/Tamil/Telugu/Bengali/Punjabi/Gujarati/Kannada/Malayalam/Odia per call) or ElevenLabs (voice cloning)
 - **Messaging**: Telegram bot (replaces Twilio/WhatsApp)
 - **Security**: Fernet encryption for PII at rest, Telegram secret-token webhook auth
 - **Framework**: Python, FastAPI, pydub
-- **KB retrieval**: Claude Haiku routes each query to 1-3 helpdesk files + emits a use-case tag (`grievance` / `finance` / `scheme_kb` / `general`) for prompt scoping (see [ARCHITECTURE.md §5-6](ARCHITECTURE.md))
+- **KB retrieval**: Claude Sonnet 4.6 routes each query to 1-3 helpdesk files + emits a use-case tag (`grievance` / `finance` / `finance_advice` / `scheme_kb` / `general`) for prompt scoping (see [ARCHITECTURE.md §5-6](ARCHITECTURE.md))
 - **Escalation**: `ESCALATE: true` from the LLM triggers a Gmail-API email to the impact team, routed per-office (Priti for BC docs, Dinesh for MIDC docs, Rishi+Anu for grievance)
 - **Memory**: per-user encrypted SQLite. Background summarizer + Letta-style self-edited memory (LLM emits `<memory>` blocks)
 - **Anti-confabulation**: regex backstop on every LLM response detects past-tense / unconsented future-tense outreach claims and re-prompts the model
