@@ -338,3 +338,71 @@ def test_delete_old_messages(store):
     remaining = store.get_recent_messages(phone)
     assert len(remaining) == 1
     assert "recent" in remaining[0]["content"]
+
+
+# ── nudge_history (anti-relentless dedup) ─────────────────────────────
+
+
+def test_record_and_list_nudge_history(store):
+    """record_nudge_text appends; list_recent_nudge_texts returns decrypted
+    texts in chronological order, scoped per phone."""
+    phone_a = "tg_apple"
+    phone_b = "tg_banana"
+
+    assert store.list_recent_nudge_texts(phone_a) == []
+
+    store.record_nudge_text(phone_a, "morning", "Manimala ji, namaste!")
+    store.record_nudge_text(phone_a, "night", "Shaam ho gayi — aaj ka din kaisa raha?")
+    # Other phone's row must NOT leak in.
+    store.record_nudge_text(phone_b, "morning", "Sonal ji, namaste!")
+
+    texts_a = store.list_recent_nudge_texts(phone_a, days=14)
+    assert len(texts_a) == 2
+    # Chronological — morning was inserted before night.
+    assert texts_a[0] == "Manimala ji, namaste!"
+    assert "Shaam ho gayi" in texts_a[1]
+
+    texts_b = store.list_recent_nudge_texts(phone_b, days=14)
+    assert texts_b == ["Sonal ji, namaste!"]
+
+
+def test_nudge_history_respects_days_cutoff(store):
+    """list_recent_nudge_texts ignores rows older than the cutoff."""
+    phone = "tg_cutoff"
+    # Backdate one row by 30 days via direct SQL (mirrors test_delete_old_messages).
+    old_ts = (datetime.now(IST) - timedelta(days=30)).isoformat()
+    store._conn.execute(
+        "INSERT INTO nudge_history (phone, slot, sent_at, text_enc) "
+        "VALUES (?, ?, ?, ?)",
+        (phone, "morning", old_ts, store._encrypt("old nudge from a month ago")),
+    )
+    store._conn.commit()
+    # And a fresh row via the public API.
+    store.record_nudge_text(phone, "night", "fresh from today")
+
+    recent = store.list_recent_nudge_texts(phone, days=14)
+    assert recent == ["fresh from today"]
+
+
+def test_nudge_history_text_is_encrypted_at_rest(store, tmp_db):
+    """Raw .db bytes must not contain the plaintext nudge body — Fernet
+    column encryption mirrors `messages.content_enc` and `memory.summary_enc`.
+    """
+    plaintext = "Manimala ji, namaste — yeh secret nudge text hai"
+    store.record_nudge_text("tg_enc", "morning", plaintext)
+    raw = tmp_db.read_bytes()
+    assert plaintext.encode("utf-8") not in raw
+
+
+def test_delete_user_also_clears_nudge_history(store):
+    """delete_user must wipe nudge_history rows for the deleted phone too —
+    privacy. Other users' rows survive."""
+    phone = "tg_to_delete"
+    other = "tg_survivor"
+    store.record_nudge_text(phone, "morning", "to be deleted")
+    store.record_nudge_text(other, "morning", "to survive")
+
+    store.delete_user(phone)
+
+    assert store.list_recent_nudge_texts(phone) == []
+    assert store.list_recent_nudge_texts(other) == ["to survive"]
