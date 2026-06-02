@@ -261,89 +261,143 @@ class TestThinkSubstantiveHappyPath:
         assert "nanobanana" in draft_user_msg
 
 
-# ── Substantive loop — silent-day paths ────────────────────────────
+# ── Substantive loop — retry + fallback (never silent-day, per 2026-06-02) ──
 
 
-class TestThinkSubstantiveSilentDay:
-    def test_critique_picks_silent_day(self):
+class TestThinkSubstantiveRetryAndFallback:
+    def test_critique_chosen_index_negative_falls_back_to_first(self):
+        """Critique returning -1 used to mean silent-day at v1.0. At v1.1 we
+        fall back to candidate 0 and proceed with draft+judge."""
         anth = FakeAnthropic()
-        silent = json.dumps(
-            {
-                "chosen_index": -1,
-                "verdicts": [],
-                "silent_day_reason": "all candidates relentless",
-            }
+        negative = json.dumps({"chosen_index": -1, "verdicts": []})
+        anth.set_responses(
+            [
+                _brainstorm_canned(2),
+                negative,
+                "Sonal ji, namaste! आज का दिन कैसा रहा?",
+                _judge_canned("pass"),
+            ]
         )
-        anth.set_responses([_brainstorm_canned(2), silent])
         t = _thinker(anth, FakeToolRunner())
         result = t.think_substantive(_agent_input(), slot="morning")
-        assert result.category == "silent-day"
-        assert "relentless" in (result.silent_day_reason or "")
-        # No draft / judge calls.
-        assert len(anth.calls) == 2
+        assert result.category != "silent-day"
+        assert "Sonal ji" in (result.text or "")
+        assert len(anth.calls) == 4
 
-    def test_draft_returns_silent_day_token(self):
-        anth = FakeAnthropic()
-        anth.set_responses([_brainstorm_canned(1), _critique_canned(0), "<silent-day>"])
-        t = _thinker(anth, FakeToolRunner())
-        result = t.think_substantive(_agent_input(), slot="morning")
-        assert result.category == "silent-day"
-        assert "draft" in (result.silent_day_reason or "")
-        # No judge call when draft self-silents.
-        assert len(anth.calls) == 3
-
-    def test_judge_fails_returns_silent_day(self):
+    def test_draft_silent_day_token_triggers_retry(self):
+        """If a stale v1.0 prompt still emits <silent-day>, treat it as a
+        draft failure and retry — never propagate it through."""
         anth = FakeAnthropic()
         anth.set_responses(
             [
                 _brainstorm_canned(1),
                 _critique_canned(0),
-                "अरे, draft text here",
+                "<silent-day>",  # first draft attempt
+                "Sonal ji, namaste! कैसे हैं आज?",  # retry
+                _judge_canned("pass"),
+            ]
+        )
+        t = _thinker(anth, FakeToolRunner())
+        result = t.think_substantive(_agent_input(), slot="morning")
+        assert result.category != "silent-day"
+        assert "Sonal ji" in (result.text or "")
+
+    def test_judge_fails_then_passes_on_retry(self):
+        """Judge rejects first draft, retry with feedback, second draft passes."""
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                _brainstorm_canned(1),
+                _critique_canned(0),
+                "अरे Sonal, kaisi ho?",  # tum + feminine → fails
                 _judge_canned("fail"),
+                "Sonal ji, namaste! कैसे हैं?",  # respectful → passes
+                _judge_canned("pass"),
             ]
         )
         t = _thinker(anth, FakeToolRunner())
         result = t.think_substantive(_agent_input(), slot="night")
-        assert result.category == "silent-day"
-        assert "judge_failed" in (result.silent_day_reason or "")
+        assert result.category != "silent-day"
+        assert result.text == "Sonal ji, namaste! कैसे हैं?"
         assert result.judge_verdict is not None
-        assert result.judge_verdict["verdict"] == "fail"
+        assert result.judge_verdict["verdict"] == "pass"
 
-    def test_brainstorm_returns_empty_silent_day(self):
+    def test_all_draft_retries_fail_uses_safe_fallback_greeting(self):
+        """After max_draft_retries failures, fall back to hand-authored
+        aap-form greeting. NudgeCandidate still carries text."""
         anth = FakeAnthropic()
-        anth.set_responses([json.dumps({"candidates": []})])
+        anth.set_responses(
+            [
+                _brainstorm_canned(1),
+                _critique_canned(0),
+                "bad 1",
+                _judge_canned("fail"),
+                "bad 2",
+                _judge_canned("fail"),
+                "bad 3",
+                _judge_canned("fail"),
+            ]
+        )
         t = _thinker(anth, FakeToolRunner())
         result = t.think_substantive(_agent_input(), slot="morning")
-        assert result.category == "silent-day"
-        assert len(anth.calls) == 1
+        assert result.category != "silent-day"
+        assert "namaste" in (result.text or "")
+        assert result.judge_verdict is not None
+        assert result.judge_verdict["verdict"] == "fallback"
 
-
-# ── Substantive loop — error handling ────────────────────────────
-
-
-class TestThinkSubstantiveErrors:
-    def test_brainstorm_unparseable_silent_day(self):
+    def test_brainstorm_empty_uses_fallback_candidate(self):
+        """Empty brainstorm → synthesize a safe candidate → proceed normally."""
         anth = FakeAnthropic()
-        anth.set_responses(["this is not json at all"])
+        anth.set_responses(
+            [
+                json.dumps({"candidates": []}),  # empty
+                _critique_canned(0),
+                "Sonal ji, namaste! आज का दिन कैसा रहा?",
+                _judge_canned("pass"),
+            ]
+        )
         t = _thinker(anth, FakeToolRunner())
         result = t.think_substantive(_agent_input(), slot="morning")
-        assert result.category == "silent-day"
+        assert result.category != "silent-day"
+        assert "Sonal ji" in (result.text or "")
 
-    def test_critique_unparseable_silent_day(self):
+    def test_brainstorm_unparseable_falls_back_to_candidate(self):
         anth = FakeAnthropic()
-        anth.set_responses([_brainstorm_canned(2), "garbage"])
+        anth.set_responses(
+            [
+                "this is not json at all",  # brainstorm fails
+                _critique_canned(0),
+                "Sonal ji, namaste!",
+                _judge_canned("pass"),
+            ]
+        )
         t = _thinker(anth, FakeToolRunner())
         result = t.think_substantive(_agent_input(), slot="morning")
-        assert result.category == "silent-day"
-        assert "parse" in (result.silent_day_reason or "").lower()
+        assert result.category != "silent-day"
+        assert result.text is not None
+
+    def test_critique_unparseable_falls_back_to_first(self):
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                _brainstorm_canned(2),
+                "garbage",  # critique parse fails
+                "Sonal ji, namaste!",
+                _judge_canned("pass"),
+            ]
+        )
+        t = _thinker(anth, FakeToolRunner())
+        result = t.think_substantive(_agent_input(), slot="morning")
+        assert result.category != "silent-day"
+        assert result.text is not None
 
     def test_invalid_slot_raises(self):
         t = _thinker(FakeAnthropic(), FakeToolRunner())
         with pytest.raises(ValueError):
-            t.think_substantive(_agent_input(), slot="afternoon")  # not allowed
+            t.think_substantive(_agent_input(), slot="afternoon")
 
 
-# ── Joke loop ────────────────────────────────────────────────────
+# ── Joke loop — retry + fallback ────────────────────────────────
 
 
 class TestThinkJoke:
@@ -351,7 +405,7 @@ class TestThinkJoke:
         anth = FakeAnthropic()
         anth.set_responses(
             [
-                "मेरा दिमाग chip से चलता है, फिर भी कल पूरा दिन गिनती भूल गई थी।",
+                "एक चोर ने मेरा calendar चुरा लिया।",
                 _judge_canned("pass"),
             ]
         )
@@ -359,27 +413,56 @@ class TestThinkJoke:
         result = t.think_joke(_agent_input())
         assert result.slot == "afternoon"
         assert result.category == "joke"
-        assert result.text is not None
-        assert "दिमाग" in result.text
+        assert "calendar" in (result.text or "")
 
-    def test_silent_day_token(self):
-        anth = FakeAnthropic()
-        anth.set_responses(["<silent-day>"])
-        t = _thinker(anth, FakeToolRunner())
-        result = t.think_joke(_agent_input())
-        assert result.category == "silent-day"
-        # Joke pass doesn't call judge if it self-silents.
-        assert len(anth.calls) == 1
-
-    def test_judge_fails(self):
+    def test_silent_day_token_triggers_retry(self):
+        """v1.0 joke prompt could return <silent-day>; v1.1 treats it as a
+        draft failure and retries."""
         anth = FakeAnthropic()
         anth.set_responses(
             [
-                "Some inappropriate joke",
+                "<silent-day>",  # bad first attempt
+                "एक चोर ने मेरा calendar चुरा लिया।",  # second attempt
+                _judge_canned("pass"),
+            ]
+        )
+        t = _thinker(anth, FakeToolRunner())
+        result = t.think_joke(_agent_input())
+        assert result.category == "joke"
+        assert "calendar" in (result.text or "")
+
+    def test_judge_rejects_first_joke_picks_another(self):
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                "Bad joke",
+                _judge_canned("fail"),
+                "एक चोर ने मेरा calendar चुरा लिया।",
+                _judge_canned("pass"),
+            ]
+        )
+        t = _thinker(anth, FakeToolRunner())
+        result = t.think_joke(_agent_input())
+        assert result.category == "joke"
+        assert "calendar" in (result.text or "")
+
+    def test_all_joke_retries_fail_uses_vault_fallback(self):
+        """After max_joke_retries, fall back to the first vault joke
+        unconditionally."""
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                "Bad 1",
+                _judge_canned("fail"),
+                "Bad 2",
+                _judge_canned("fail"),
+                "Bad 3",
                 _judge_canned("fail"),
             ]
         )
         t = _thinker(anth, FakeToolRunner())
         result = t.think_joke(_agent_input())
-        assert result.category == "silent-day"
-        assert "joke judge_failed" in (result.silent_day_reason or "")
+        assert result.category == "joke"
+        assert result.text is not None  # vault fallback always returns something
+        assert result.judge_verdict is not None
+        assert result.judge_verdict["verdict"] == "fallback"

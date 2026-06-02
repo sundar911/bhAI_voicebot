@@ -259,43 +259,42 @@ class ProactiveThinker:
         tool_runner: ToolRunnerLike,
         model: Optional[str] = None,
         max_tokens: int = 2048,
+        max_draft_retries: int = 3,
+        max_joke_retries: int = 3,
     ):
         self.config = config
         self.anthropic = anthropic_caller
         self.tools = tool_runner
         self.model = model or "claude-sonnet-4-6"
         self.max_tokens = max_tokens
+        self.max_draft_retries = max_draft_retries
+        self.max_joke_retries = max_joke_retries
 
     # ── Substantive slot loop ──────────────────────────────────────
 
     def think_substantive(self, agent_input: AgentInput, slot: str) -> NudgeCandidate:
-        """Run the full agent loop for a morning or night substantive slot."""
+        """Run the full agent loop for a morning or night substantive slot.
 
+        Per Sundar's 2026-06-02 directive: never silent-day. On judge failure,
+        retry the draft (with feedback) up to `max_draft_retries` times. If
+        every retry fails, fall back to a safe gendered-neutral aap-form
+        greeting tied to the chosen candidate's trace — better to send a
+        plain check-in than nothing.
+        """
         if slot not in ("morning", "night"):
             raise ValueError(f"think_substantive expects morning|night, got {slot!r}")
 
-        # 1. Brainstorm.
+        # 1. Brainstorm. If empty, synthesize a fallback so we always proceed.
         candidates = self._brainstorm(agent_input, slot)
         if not candidates:
-            return NudgeCandidate(
-                slot=slot,
-                category="silent-day",
-                silent_day_reason="brainstorm returned no candidates",
-            )
+            candidates = [self._fallback_candidate(agent_input)]
 
-        # 2. Critique.
-        chosen_idx, verdicts, silent_reason = self._critique(
+        # 2. Critique. If parser failed (-1), fall back to first candidate.
+        chosen_idx, verdicts, least_bad_note = self._critique(
             agent_input, candidates, slot
         )
-        if chosen_idx == -1 or chosen_idx >= len(candidates):
-            return NudgeCandidate(
-                slot=slot,
-                category="silent-day",
-                silent_day_reason=silent_reason or "critique chose silent-day",
-                brainstorm_candidates=candidates,
-                critique_verdicts=verdicts,
-            )
-
+        if chosen_idx < 0 or chosen_idx >= len(candidates):
+            chosen_idx = 0
         chosen = candidates[chosen_idx]
 
         # 3. Tools (optional, depends on candidate).
@@ -307,32 +306,48 @@ class ProactiveThinker:
             tool_results_full.append(result)
             tool_outputs_for_draft[tool_name] = self._summarize_tool_result(result)
 
-        # 4. Draft.
-        draft_text = self._draft(agent_input, chosen, tool_outputs_for_draft, slot)
-        if draft_text.strip() == "<silent-day>":
-            return NudgeCandidate(
-                slot=slot,
-                category="silent-day",
-                silent_day_reason="draft returned silent-day",
-                chosen_candidate=chosen,
-                brainstorm_candidates=candidates,
-                critique_verdicts=verdicts,
-                tool_results=[self._tool_result_to_dict(r) for r in tool_results_full],
+        # 4 + 5. Draft + judge with retry loop. Always lands on SOME text.
+        draft_text = ""
+        judge_verdict: Dict[str, Any] = {}
+        prior_feedback = ""
+        prior_drafts: List[str] = []
+        for attempt in range(self.max_draft_retries):
+            draft_text = self._draft(
+                agent_input,
+                chosen,
+                tool_outputs_for_draft,
+                slot,
+                prior_feedback=prior_feedback,
+                prior_drafts=prior_drafts,
             )
-
-        # 5. Judge.
-        judge_verdict = self._judge(agent_input, draft_text, chosen, slot)
-        if judge_verdict.get("verdict") == "fail":
-            return NudgeCandidate(
-                slot=slot,
-                category="silent-day",
-                silent_day_reason=f"judge_failed: {judge_verdict.get('reasoning', '')}",
-                chosen_candidate=chosen,
-                brainstorm_candidates=candidates,
-                critique_verdicts=verdicts,
-                judge_verdict=judge_verdict,
-                tool_results=[self._tool_result_to_dict(r) for r in tool_results_full],
+            if draft_text.strip() == "<silent-day>":
+                # The v1 prompt could return this; the v1.1 prompt forbids
+                # it but we defensively treat it as a draft failure and retry.
+                prior_feedback = (
+                    "previous attempt returned <silent-day>; you MUST produce "
+                    "actual voice-note text, no silent-day output allowed"
+                )
+                prior_drafts.append(draft_text)
+                continue
+            judge_verdict = self._judge(agent_input, draft_text, chosen, slot)
+            if judge_verdict.get("verdict") == "pass":
+                break
+            prior_feedback = judge_verdict.get("reasoning", "") or (
+                "judge rejected the draft for an unstated reason"
             )
+            prior_drafts.append(draft_text)
+        else:
+            # Every retry failed. Fall back to a safe minimal greeting so we
+            # still send something — Sundar's "never silent-day" rule.
+            draft_text = self._safe_fallback_greeting(agent_input, slot, chosen)
+            judge_verdict = {
+                "verdict": "fallback",
+                "checks": {},
+                "reasoning": (
+                    f"used safe fallback after {self.max_draft_retries} judge "
+                    f"failures; last feedback: {prior_feedback}"
+                ),
+            }
 
         # Resolve artifact path from the first artifact-producing tool result.
         artifact_path: Optional[Path] = None
@@ -358,40 +373,57 @@ class ProactiveThinker:
     def think_joke(self, agent_input: AgentInput) -> NudgeCandidate:
         """Compose a single joke for the afternoon slot.
 
-        Simpler than the substantive loop — no brainstorm or critique
-        passes, just joke-pick + judge.
+        Per Sundar's 2026-06-02 directive: never silent-day on jokes. If the
+        judge rejects a joke, re-invoke the joke pass with the rejected
+        text excluded; retry up to `max_joke_retries` times. If every retry
+        fails, fall back to the first vault joke unconditionally.
         """
-        joke_text = self._joke(agent_input)
-        if joke_text.strip() == "<silent-day>":
-            return NudgeCandidate(
-                slot="afternoon",
-                category="silent-day",
-                silent_day_reason="joke pass returned silent-day",
-            )
-
-        # Reuse the judge for jokes too — same four checks, narrower scope.
-        # We pass a stub "candidate" so the judge prompt still has context.
         stub_candidate = BrainstormCandidate(
             category="joke",
-            summary="self-deprecating joke from vault",
-            trace="joke vault (jokes_v1_hi.md)",
+            summary="dad-joke from vault",
+            trace="joke vault (jokes_v1_*.md)",
             tools_needed=[],
             why_now="afternoon mood lift",
         )
-        judge_verdict = self._judge(agent_input, joke_text, stub_candidate, "afternoon")
-        if judge_verdict.get("verdict") == "fail":
-            return NudgeCandidate(
-                slot="afternoon",
-                category="silent-day",
-                silent_day_reason=f"joke judge_failed: {judge_verdict.get('reasoning', '')}",
-                judge_verdict=judge_verdict,
-            )
 
+        prior_jokes: List[str] = []
+        judge_verdict: Dict[str, Any] = {}
+        joke_text = ""
+        for attempt in range(self.max_joke_retries):
+            joke_text = self._joke(agent_input, exclude_jokes=prior_jokes)
+            stripped = joke_text.strip()
+            if stripped == "<silent-day>" or stripped in prior_jokes:
+                # v1.1 forbids silent-day; treat as "try again". Same for
+                # exact-text repeats.
+                prior_jokes.append(stripped)
+                continue
+            judge_verdict = self._judge(
+                agent_input, joke_text, stub_candidate, "afternoon"
+            )
+            if judge_verdict.get("verdict") == "pass":
+                return NudgeCandidate(
+                    slot="afternoon",
+                    category="joke",
+                    text=joke_text,
+                    judge_verdict=judge_verdict,
+                )
+            prior_jokes.append(stripped)
+
+        # All retries failed — fall back to the first vault joke
+        # unconditionally so we always send something.
+        fallback_text = self._fallback_joke()
         return NudgeCandidate(
             slot="afternoon",
             category="joke",
-            text=joke_text,
-            judge_verdict=judge_verdict,
+            text=fallback_text,
+            judge_verdict={
+                "verdict": "fallback",
+                "checks": {},
+                "reasoning": (
+                    f"used fallback vault joke after {self.max_joke_retries} "
+                    f"judge failures; last text: {joke_text!r}"
+                ),
+            },
         )
 
     # ── Pass implementations ──────────────────────────────────────
@@ -482,6 +514,9 @@ class ProactiveThinker:
         chosen: BrainstormCandidate,
         tool_outputs: Dict[str, Any],
         slot: str,
+        *,
+        prior_feedback: str = "",
+        prior_drafts: Optional[List[str]] = None,
     ) -> str:
         system = load_draft_prompt()
         chosen_json = json.dumps(
@@ -499,6 +534,14 @@ class ProactiveThinker:
         if tool_outputs:
             extra["Tool Outputs"] = json.dumps(
                 tool_outputs, ensure_ascii=False, indent=2
+            )
+        if prior_drafts and prior_feedback:
+            # Tell the model what went wrong last time + what to avoid.
+            extra["Previous Attempts (failed judge)"] = (
+                "\n---\n".join(prior_drafts)
+                + f"\n\n=== Judge feedback ===\n{prior_feedback}\n\n"
+                "Produce a different draft that addresses the feedback above. "
+                "Do NOT silent-day."
             )
         user = self._build_user_message(
             agent_input=agent_input, slot=slot, extra_sections=extra
@@ -556,10 +599,23 @@ class ProactiveThinker:
                 "reasoning": f"judge_parse_error: {e}",
             }
 
-    def _joke(self, agent_input: AgentInput) -> str:
+    def _joke(
+        self,
+        agent_input: AgentInput,
+        *,
+        exclude_jokes: Optional[List[str]] = None,
+    ) -> str:
         system = load_joke_prompt()
-        vault = load_joke_vault(language="hi")
-        extra = {"Joke Vault (Hindi v1)": vault}
+        extra: Dict[str, str] = {
+            "Joke Vault (Hindi v1)": load_joke_vault(language="hi"),
+            "Joke Vault (English v1)": load_joke_vault(language="en"),
+        }
+        if exclude_jokes:
+            extra["Already Tried This Slot (do not repeat)"] = (
+                "\n---\n".join(exclude_jokes)
+                + "\n\nPick a DIFFERENT joke — vault preferred, fresh-compose only "
+                "if vault is exhausted. Do NOT silent-day."
+            )
         user = self._build_user_message(
             agent_input=agent_input, slot="afternoon", extra_sections=extra
         )
@@ -657,3 +713,80 @@ class ProactiveThinker:
                 str(result.artifact_path) if result.artifact_path else None
             ),
         }
+
+    # ── Fallbacks (Sundar's "never silent-day" rule) ──────────────────
+
+    def _fallback_candidate(self, agent_input: AgentInput) -> BrainstormCandidate:
+        """Synthesize a minimal safe candidate when brainstorm returns empty.
+
+        Used only when the brainstorm pass parser-errors or returns zero
+        candidates. The candidate just instructs the draft pass to send a
+        warm aap-form check-in tied to the user's name (or "didi" if no
+        name is known).
+        """
+        name = ""
+        for f in agent_input.dossier.core_facts:
+            if f.lower().startswith("naam:") or f.lower().startswith("name:"):
+                name = f.split(":", 1)[1].strip()
+                break
+        addressed = name or "दीदी"
+        return BrainstormCandidate(
+            category="substantive",
+            summary=f"Warm aap-form check-in with {addressed}",
+            trace="fallback — brainstorm returned no candidates",
+            tools_needed=[],
+            why_now=(
+                "always-send-something fallback; brainstorm couldn't surface a "
+                "specific thread but a respectful check-in is still welcome"
+            ),
+        )
+
+    def _safe_fallback_greeting(
+        self,
+        agent_input: AgentInput,
+        slot: str,
+        chosen: BrainstormCandidate,
+    ) -> str:
+        """Minimal aap-form greeting used after all draft retries fail.
+
+        Hand-authored template guaranteed to pass the respectful-speech
+        check. Sundar's rule: better a plain greeting than nothing.
+        """
+        name = ""
+        for f in agent_input.dossier.core_facts:
+            if f.lower().startswith("naam:") or f.lower().startswith("name:"):
+                name = f.split(":", 1)[1].strip()
+                break
+        addressed = f"{name} ji" if name else "दीदी"
+        if slot == "morning":
+            return (
+                f"{addressed}, namaste! आज का दिन कैसा शुरू हो रहा है? "
+                "बताइएगा जब time मिले — सुनना है मुझे।"
+            )
+        # night
+        return (
+            f"{addressed}, namaste! आज का दिन कैसा रहा? "
+            "बताइएगा जब आराम से बैठें — सुनने का मन है।"
+        )
+
+    def _fallback_joke(self) -> str:
+        """First joke from the Hindi vault — guaranteed-safe fallback when
+        every joke-pass retry fails the judge."""
+        vault = load_joke_vault(language="hi")
+        lines = vault.splitlines()
+        in_joke = False
+        for line in lines:
+            stripped = line.strip()
+            if stripped.startswith("## Joke"):
+                in_joke = True
+                continue
+            if in_joke and stripped.startswith("*tags:"):
+                continue
+            if (
+                in_joke
+                and stripped
+                and not stripped.startswith("#")
+                and not stripped.startswith("---")
+            ):
+                return stripped
+        return "एक चोर ने मेरा calendar चुरा लिया। बेचारे को साल भर की जेल हो जाएगी अब।"

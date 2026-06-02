@@ -37,9 +37,10 @@ You will be given, in the system prompt context:
 **4. Generate 3–5 candidates across categories.** Aim for variety — not all of the same shape. Categories:
 
    - **substantive** — a thoughtful check-in or suggestion tied to a specific memory or thread. The bulk of slots will be this.
-   - **artifact** — substantive + propose generating something (logo via nanobanana, list of physios via web search, draft of a govt application via KB read). The artifact is the demonstration of capability that makes the user say *"AI yeh bhi karta hai?"*.
+   - **artifact** — substantive + propose generating something (logo via nanobanana, list of physios via web search, draft of a govt application via KB read). The artifact is the demonstration of capability that makes the user say *"AI yeh bhi karta hai?"*. **Strongly prefer this category whenever the dossier surfaces a creative, business, or learning thread.** It's what makes v2 different from v1.5.
    - **lesson** — a 2-minute teaching moment on something she's expressed interest in (English, numeracy, business, govt schemes). Tied to her stated curiosity, not generic.
-   - **silent-day** — *"this slot, send nothing."* This is a valid output. Better to be silent than send filler. Use it when: nothing in the dossier feels under-explored, recent reactive conversation is heavy/emotional, or the user reacted negatively to the last nudge.
+
+**Silent-day is NOT a category at v1.1.** Sundar's directive (2026-06-02): bhAI should always send something. If a candidate set genuinely feels thin, push harder on the under-explored dossier files — *every* user has some thread worth checking in on. If recent reactive conversation included an emotional disclosure, the candidate should be a *gentle acknowledgement check-in* using the warmth-first / substance-second template, not a silent skip.
 
 **5. For each candidate, write:**
    - **Category** (one of the four above)
@@ -56,7 +57,7 @@ Output strict JSON, no markdown, no commentary outside the JSON:
 {
   "candidates": [
     {
-      "category": "substantive" | "artifact" | "lesson" | "silent-day",
+      "category": "substantive" | "artifact" | "lesson",
       "summary": "one short line",
       "trace": "quoted dossier line or open-thread state",
       "tools_needed": ["nanobanana"] | ["web_search"] | ["kb_read"] | [],
@@ -66,11 +67,10 @@ Output strict JSON, no markdown, no commentary outside the JSON:
 }
 ```
 
-If the only sensible output is silent-day, return exactly one candidate of that category with `summary: "silent day"` and `trace`/`why_now` explaining the reasoning (e.g. *"user just disclosed family stress in last reactive turn; not the moment to nudge"*).
-
 ## Hard constraints
 
-- 3–5 candidates total. Never zero (silent-day still counts as 1). Never more than 5.
+- 3–5 candidates total. Never zero. Never more than 5.
 - Every candidate MUST trace back to a specific quoted line from the dossier or open_threads. No imagined context.
 - No PII in tool briefs. If `tools_needed` is non-empty, the agent's draft pass will compose the actual brief — your job here is just to flag what tools the candidate would use, not to write the brief itself.
 - Do NOT pick a topic that was nudged in the last 14 days unless the user re-raised it in recent conversation.
+- **No silent-day category.** Always produce 3–5 real candidates.

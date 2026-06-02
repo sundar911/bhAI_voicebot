@@ -63,7 +63,7 @@ If yes — pass. If the candidate inherently requires leaking PII (e.g. "find ph
 
 ## How to pick
 
-After applying the four checks, pick exactly ONE candidate as the chosen output (or `silent-day` if all candidates failed).
+After applying the four checks, pick exactly ONE candidate as the chosen output. **You MUST pick a candidate — silent-day is not allowed at v1.1 per Sundar's 2026-06-02 directive.** If every candidate has at least one check failure, pick the *least-bad* one (lowest-severity failure) and flag it for the draft pass to handle carefully.
 
 **Preference order when multiple candidates pass:**
 1. Candidates with an artifact (they demonstrate capability — the "AI yeh bhi karta hai?" moment).
@@ -71,10 +71,11 @@ After applying the four checks, pick exactly ONE candidate as the chosen output 
 3. Candidates traced to a domain file that has never been touched by a prior nudge.
 4. Then by your judgment of `why_now` quality.
 
-**Silent-day is correct when:**
-- Every candidate fails one of the four checks.
-- Recent reactive conversation included an emotional disclosure that shouldn't be followed by a nudge.
-- The user has reacted negatively to the last 2 nudges (per `nudge_history.md`).
+**When every candidate has flaws, severity ranking (least bad → worst):**
+1. Mild relentlessness (topic overlap with recent nudge but distinct angle).
+2. Mild off-target (generic tone, but ties to a real dossier fact).
+3. Mild tool-privacy (brief is scrubbable with adjustment).
+4. Creepy (this is the only failure that should ALMOST never be picked — only choose creepy candidates if literally every other candidate is worse).
 
 ## Output format
 
@@ -82,7 +83,7 @@ Strict JSON, no markdown, no commentary outside:
 
 ```json
 {
-  "chosen_index": <0-based index into the brainstorm candidates array, or -1 for silent-day>,
+  "chosen_index": <0-based index into the brainstorm candidates array — MUST be >= 0>,
   "verdicts": [
     {
       "index": 0,
@@ -92,13 +93,14 @@ Strict JSON, no markdown, no commentary outside:
     },
     …
   ],
-  "silent_day_reason": "non-empty string if chosen_index == -1, else null"
+  "least_bad_note": "non-empty string if every candidate has at least one failure — explains which one was picked and why; else null"
 }
 ```
 
 ## Hard constraints
 
 - Every candidate gets a verdict (one entry per index, in order).
-- `chosen_index == -1` (silent-day) MUST have a `silent_day_reason`.
+- `chosen_index` MUST be >= 0. Silent-day is not allowed.
 - Don't invent failures. If a candidate genuinely passes all four checks, say so.
 - Don't second-guess the brainstorm's traces — if it's quoted from the dossier, trust it.
+- **Avoid picking a creepy candidate even when forced** — prefer a relentless / off-target / tool-privacy failure over a creepy one. Creepy is the highest-cost failure mode in production.

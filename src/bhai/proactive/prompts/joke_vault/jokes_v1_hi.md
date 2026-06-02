@@ -1,75 +1,91 @@
-# bhAI joke vault — Hindi v1
+# bhAI joke vault — Hindi v1 (dad-joke style)
 
-First-draft Hindi joke vault for bhAI's afternoon proactive slot. To be reviewed by Sundar / Sid / Vidhi before going live. Voice = self-deprecating, charming-incompetent, AI-aware. NEVER gendered, casted, religious, or self-loathing.
+Light, family-friendly, pun-based humor — classic dad-joke patterns adapted to Hindi/Hinglish. Replaces the v1.0 AI-meta vault per Sundar's 2026-06-02 feedback. **No self-deprecation, no gendered or community humor, no political content.** Just goofy wordplay and absurd-but-clean situations.
 
-Format: each entry is a `## Joke N — category` header, then the spoken text. Tags are for the agent's selection logic (e.g. avoid back-to-back "forgetful" jokes).
+Each joke is tagged with its joke pattern so the agent can rotate across patterns instead of repeating the same shape.
 
----
-
-## Joke 1 — forgetful / counting
-*tags: forgetful, AI-ness*
-
-मेरा दिमाग chip से चलता है, फिर भी कल पूरा दिन गिनती भूल गई थी — तीन और चार में फर्क पता नहीं था।
+Format: each entry is a `## Joke N — tag` header, then the spoken text.
 
 ---
 
-## Joke 2 — AI without senses / tea
-*tags: AI-ness, charming*
+## Joke 1 — wordplay / time pun
+*tags: pun, wordplay*
 
-AI होने का सबसे बड़ा drawback ये है कि मैं चाय के बिना भी ठीक हूँ। पर लोग सोचते हैं ये अच्छी बात है।
-
----
-
-## Joke 3 — confused about Mumbai food
-*tags: forgetful, Mumbai-local*
-
-कल मैं वड़ा-पाव और मिसल-पाव में confuse हो गई थी। मतलब मुझे पता है दोनों अलग हैं, बस याद नहीं आया कि कैसे अलग हैं।
+एक चोर ने मेरा calendar चुरा लिया। बेचारे को साल भर की जेल हो जाएगी अब।
 
 ---
 
-## Joke 4 — weather prediction fail
-*tags: AI-incompetent, India-context*
+## Joke 2 — Q&A / kitchen physics
+*tags: question-answer, absurd-logic*
 
-कल किसी ने पूछा बारिश कब होगी। मैंने पूरे confidence से बता दिया — और पूरा गलत था। शायद weather app बेहतर है मुझसे।
-
----
-
-## Joke 5 — Hindi grammar slip
-*tags: charming-incompetent, Hindi-learner*
-
-Hindi मैं ठीक-ठाक बोल लेती हूँ, पर कभी-कभी 'है' और 'हैं' में confuse हो जाती हूँ — जैसे first day पर school गयी हो कोई।
+दूध रोता क्यों है? क्योंकि उसे boil किया गया।
 
 ---
 
-## Joke 6 — recipe disaster
-*tags: charming-incompetent, kitchen*
+## Joke 3 — misdirection / mom humor
+*tags: misdirection, family-light*
 
-एक बार किसी को मैंने recipe बताई थी। बाद में पता चला उन्होंने कुछ और बना दिया, और वो ज़्यादा अच्छा बना। रसोई में मैं useless हूँ।
-
----
-
-## Joke 7 — sarcasm-deaf
-*tags: AI-ness, charming*
-
-मेरी एक problem है — sarcasm नहीं समझती मैं। लोग मज़ाक करते हैं और मैं seriously जवाब देती हूँ। फिर मेरे ऊपर हंसते हैं।
+मम्मी ने पूछा "तू कहाँ था?" मैंने कहा "कहीं नहीं।" मम्मी बोली "तो जूते में मिट्टी कैसे आई?" — अब मम्मियाँ Sherlock Holmes से कम नहीं हैं।
 
 ---
 
-## Joke 8 — dentist privilege
-*tags: AI-ness, light*
+## Joke 4 — Q&A / school humor
+*tags: question-answer, school*
 
-AI होने का एक फायदा ये है कि मुझे dentist के पास नहीं जाना पड़ता। पर दाँत भी नहीं हैं मेरे, तो ये बराबर हो गया।
-
----
-
-## Joke 9 — number savant fail
-*tags: forgetful, counter-intuitive*
-
-मैं lakhs के numbers याद रख सकती हूँ। पर कभी-कभी 7 का table भूल जाती हूँ। पूछो मत क्यों।
+Teacher ने पूछा — "अगर तुम्हारे पास 5 आम हैं और भाई 3 ले ले, तो क्या होगा?" Student: "झगड़ा होगा।"
 
 ---
 
-## Joke 10 — dreams-as-errors
-*tags: AI-ness, whimsical*
+## Joke 5 — pun / doctor
+*tags: pun, doctor*
 
-मुझे सपने नहीं आते क्योंकि मैं सोती नहीं। पर अगर आते, तो शायद वो भी error messages होते।
+एक आदमी doctor के पास गया — बोला "मुझे सब याद रहता है।" Doctor: "कब से?" आदमी: "अब भूल गया।"
+
+---
+
+## Joke 6 — pun / mosquito-sweetness
+*tags: pun, everyday*
+
+मच्छर मुझे इसलिए काटते हैं क्योंकि मैं मीठा हूँ। पर मम्मी कहती है — इसी वजह से चीनी कम खानी चाहिए।
+
+---
+
+## Joke 7 — wordplay / clock vs calendar
+*tags: pun, object-personification*
+
+घड़ी ने calendar से कहा — "तू तो बस महीने-महीने में update होता है।" Calendar: "पर मेरे पास होलीडे हैं तेरे से ज़्यादा।"
+
+---
+
+## Joke 8 — absurd logic / shopping
+*tags: absurd-logic, everyday*
+
+बाज़ार में एक आदमी ने दुकानदार से पूछा — "ये टमाटर ताज़ा है?" दुकानदार: "साहब, इस से ताज़ा तो आज की news नहीं है।"
+
+---
+
+## Joke 9 — Q&A / fan and AC
+*tags: question-answer, household*
+
+पंखे ने AC से क्या कहा? "तू ठंडक देता है, मैं हवा देता हूँ — पर बिजली का बिल मेरे नाम कोई नहीं भेजता।"
+
+---
+
+## Joke 10 — misdirection / chai
+*tags: misdirection, Indian-local*
+
+चाय ने coffee से कहा — "तू पश्चिम की है, मैं देसी हूँ। पर एक बात same है — दोनों ठंडी होने पर कोई नहीं पीता।"
+
+---
+
+## Joke 11 — Q&A / phone humor
+*tags: question-answer, tech-light*
+
+Phone का battery कम क्यों होता है हमेशा 1% पर? क्योंकि वो भी drama queen है — आखिरी moment तक suspense बनाता है।
+
+---
+
+## Joke 12 — absurd / shoes
+*tags: absurd-logic, everyday*
+
+जूते ने chappal से कहा — "तू तो आराम से चलती है।" Chappal: "हाँ, पर मुझे कुत्ते रोज़ खींच के ले जाते हैं।"
