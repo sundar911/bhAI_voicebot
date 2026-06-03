@@ -250,19 +250,45 @@ class ConversationStore:
         )
         self._conn.commit()
 
-    def record_nudge_text(self, phone: str, slot: str, text: str) -> None:
+    def record_nudge_text(
+        self,
+        phone: str,
+        slot: str,
+        text: str,
+        *,
+        at: Optional[str] = None,
+    ) -> None:
         """Append a delivered nudge to `nudge_history`, encrypted at rest.
 
         Called by `_maybe_nudge_one` right after a successful send so the
         next firing for this user can see what's already been sent and avoid
         repeating it (Rule 4 of NUDGE_INSTRUCTION).
+
+        `at` overrides the current-time stamp — used by the one-shot
+        backfill script (scripts/backfill_nudge_history.py) to preserve
+        original send timestamps when seeding the table from existing
+        message history. Format: ISO 8601 string matching the timestamp
+        format used elsewhere in this store.
         """
+        sent_at = at if at is not None else _now_iso()
         self._conn.execute(
             """INSERT INTO nudge_history (phone, slot, sent_at, text_enc)
                VALUES (?, ?, ?, ?)""",
-            (phone, slot, _now_iso(), self._encrypt(text)),
+            (phone, slot, sent_at, self._encrypt(text)),
         )
         self._conn.commit()
+
+    def list_nudge_history_keys(self, phone: str) -> set[tuple[str, str]]:
+        """Return the (slot, sent_at) pairs already recorded for this phone.
+
+        Used by the backfill script as a cheap idempotency check — re-runs
+        skip rows already inserted on a previous pass, so the backfill is
+        safe to invoke multiple times.
+        """
+        rows = self._conn.execute(
+            "SELECT slot, sent_at FROM nudge_history WHERE phone = ?", (phone,)
+        ).fetchall()
+        return {(r[0], r[1]) for r in rows}
 
     def list_recent_nudge_texts(self, phone: str, days: int = 14) -> List[str]:
         """Return decrypted nudge texts delivered to this phone in the last

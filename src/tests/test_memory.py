@@ -406,3 +406,34 @@ def test_delete_user_also_clears_nudge_history(store):
 
     assert store.list_recent_nudge_texts(phone) == []
     assert store.list_recent_nudge_texts(other) == ["to survive"]
+
+
+def test_record_nudge_text_with_explicit_timestamp(store):
+    """record_nudge_text accepts `at=` to override the timestamp — needed by
+    the backfill script to preserve original send times."""
+    phone = "tg_backfill"
+    past = (datetime.now(IST) - timedelta(days=10)).isoformat()
+    store.record_nudge_text(phone, "morning", "old nudge from 10 days ago", at=past)
+
+    # 14-day window catches it.
+    assert store.list_recent_nudge_texts(phone, days=14) == [
+        "old nudge from 10 days ago"
+    ]
+    # 7-day window excludes it.
+    assert store.list_recent_nudge_texts(phone, days=7) == []
+
+
+def test_list_nudge_history_keys_idempotency(store):
+    """list_nudge_history_keys returns the (slot, sent_at) set that the
+    backfill script uses to skip already-seeded rows."""
+    phone = "tg_keys"
+    ts1 = (datetime.now(IST) - timedelta(days=5)).isoformat()
+    ts2 = (datetime.now(IST) - timedelta(days=4)).isoformat()
+    store.record_nudge_text(phone, "morning", "n1", at=ts1)
+    store.record_nudge_text(phone, "night", "n2", at=ts2)
+
+    keys = store.list_nudge_history_keys(phone)
+    assert keys == {("morning", ts1), ("night", ts2)}
+
+    # Different phone's keys must not bleed in.
+    assert store.list_nudge_history_keys("tg_other") == set()
