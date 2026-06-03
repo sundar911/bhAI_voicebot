@@ -144,13 +144,19 @@ src/bhai/
 │   ├── openai_llm.py            # OpenAI backend
 │   ├── claude_llm.py            # Anthropic Claude (pilot default)
 │   ├── kb_router.py             # Keyword-based KB + use-case router (fallback)
-│   ├── haiku_router.py          # Claude Haiku KB + use-case router (primary, cached)
+│   ├── llm_router.py            # Claude Sonnet 4.6 KB + use-case router (primary, cached)
 │   └── prompts/                 # Prompt templates
 │       ├── prompt_v1_pilot.md   # Active pilot persona prompt
 │       ├── current.md           # Older iterative prompt
-│       └── use_cases/           # Per-turn injected blocks: grievance, finance, scheme_kb, general
+│       └── use_cases/           # Per-turn injected blocks: grievance, finance, finance_advice, scheme_kb, general
 ├── escalations/                 # ESCALATE: true → impact-team email
-│   └── handler.py               # Routing + email dispatch (Priti BC, Dinesh MIDC, Rishi+Anu)
+│   └── handler.py               # Routing + email dispatch (Priti BC, Dinesh MIDC, Rishi+Anu, always-on CC)
+├── proactive/                   # Brainstorm→critique→tools→draft→judge agent for nudges (v2)
+│   ├── thinker.py               # ProactiveThinker — orchestrates the agent loop
+│   ├── dossier_loader.py        # Per-user context bundle for the brainstorm pass
+│   ├── agent_input.py           # Structures input to each agent pass
+│   ├── tools/                   # Tools the agent can call (memory probe, KB lookup, etc.)
+│   └── scrubbers/               # PII / safety scrubbers applied to drafts
 ├── pipelines/                   # Pipeline orchestration
 │   ├── base_pipeline.py         # Abstract pipeline
 │   └── hr_admin_pipeline.py     # HR-Admin domain pipeline
@@ -227,7 +233,7 @@ uv run pytest --cov=src/bhai
 uv run pytest -v
 ```
 
-Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 278 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, Haiku router, escalation handler, Sarvam TTS normalization, and behavioral contracts (`test_contracts.py`).
+Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 435 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, LLM router (Sonnet), escalation handler, Sarvam TTS normalization + language detection, behavioral contracts (`test_contracts.py`), and the proactive agent loop (`test_proactive_*` modules — agent_input, dossier, scrubbers, thinker, tools).
 
 ### Code Style
 

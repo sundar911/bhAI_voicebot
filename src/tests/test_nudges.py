@@ -342,8 +342,11 @@ def test_build_nudge_prompts_includes_nudge_instruction():
     )
     assert "<<SYSTEM PROMPT BODY>>" in sys_p
     assert "=== Nudge Mode ===" in sys_p
-    assert "1-2 sentences MAX" in sys_p
-    assert "No markdown" in sys_p
+    # v1.5 backport markers — respectful aap-form + warmth-first + anti-relentless.
+    assert "AAP-FORM ONLY" in sys_p
+    assert "WARMTH FIRST" in sys_p
+    assert "NO EMOJIS" in sys_p
+    assert "Recently Sent Nudges" in sys_p
     llm._build_system_prompt.assert_called_once_with(
         "hr_admin",
         "Yashoda, works at Andheri",
@@ -392,4 +395,55 @@ def test_nudge_instruction_forbids_escalate_emotions():
     """The nudge text must be plain — no ESCALATE/EMOTIONS_JSON post-processing."""
     assert "ESCALATE" in NUDGE_INSTRUCTION
     assert "EMOTIONS_JSON" in NUDGE_INSTRUCTION
+
+
+def test_build_nudge_prompts_injects_recent_nudge_texts():
+    """When recent_nudge_texts is provided, the user message includes a
+    'Recently Sent Nudges' anti-relentless block that lists each one."""
+    llm = _stub_llm()
+    _, user_p = build_nudge_prompts(
+        llm,
+        domain="hr_admin",
+        slot=SLOT_MORNING,
+        user_profile="",
+        memory_summary="",
+        extracted_facts="",
+        recent_messages=[],
+        recent_nudge_texts=[
+            "Manimala ji, namaste! Aaj kaise hain?",
+            "Manimala ji, shaam ho gayi — aaj ka din kaisa raha?",
+        ],
+    )
+    assert "Recently Sent Nudges" in user_p
+    assert "do NOT repeat" in user_p
+    assert "Manimala ji, namaste! Aaj kaise hain?" in user_p
+    assert "shaam ho gayi" in user_p
+
+
+def test_build_nudge_prompts_omits_history_block_when_empty():
+    """No recent_nudge_texts → no 'Recently Sent Nudges' section."""
+    llm = _stub_llm()
+    _, user_p = build_nudge_prompts(
+        llm,
+        domain="hr_admin",
+        slot=SLOT_MORNING,
+        user_profile="",
+        memory_summary="",
+        extracted_facts="",
+        recent_messages=[],
+        recent_nudge_texts=[],
+    )
+    assert "Recently Sent Nudges" not in user_p
+
+    # Same when None is passed (back-compat with callers that don't supply it).
+    _, user_p_none = build_nudge_prompts(
+        llm,
+        domain="hr_admin",
+        slot=SLOT_MORNING,
+        user_profile="",
+        memory_summary="",
+        extracted_facts="",
+        recent_messages=[],
+    )
+    assert "Recently Sent Nudges" not in user_p_none
     assert "no" in NUDGE_INSTRUCTION.lower()

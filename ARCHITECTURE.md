@@ -102,13 +102,14 @@ Greeting detection: `_detect_greeting()` checks if message is short (<50 chars) 
 
 ---
 
-## 5. KB Retrieval (Haiku-routed)
+## 5. KB Retrieval (LLM-routed)
 
 > **Replaces** the old FAQ short-circuit (dropped in commit `cd5c113`). Every reply now runs through the main LLM; the KB router only decides what content gets *injected* into the system prompt.
 
-**`HaikuKBRouter.route()`** — `src/bhai/llm/haiku_router.py`
+**`LLMKBRouter.route()`** — `src/bhai/llm/llm_router.py` (renamed from `haiku_router.py` in commit `9ad1f63`)
 
-- Per user turn, Claude Haiku 4.5 reads the user's transcript + a topic index (`knowledge_base/helpdesk/_index.md`) and returns 1-3 relevant file stems (e.g., `["aadhaar", "scheme_pmjay"]`)
+- Per user turn, **Claude Sonnet 4.6** (upgraded from Haiku 4.5 in `9ad1f63`) reads the user's transcript + recent conversation context + the topic index (`knowledge_base/helpdesk/_index.md`) and returns 1-3 relevant file stems (e.g., `["aadhaar", "scheme_pmjay"]`)
+- The recent-context input is what fixed follow-up disambiguation: "what about my husband?" now correctly carries forward the scheme-eligibility context from the prior turn
 - Prompt-caching via `cache_control: {type: "ephemeral"}` keeps the topic-index tokens cheap across turns
 - The matched files' full contents are then loaded from `knowledge_base/helpdesk/{stem}.md` and concatenated into the system prompt under `=== Helpdesk KB ===`
 - Falls back to a keyword-based `KBRouter` (`src/bhai/llm/kb_router.py`) on any Haiku failure — network, timeout, missing key, malformed response
@@ -134,7 +135,7 @@ System Prompt:
 │  + === User Profile ===                             │  ← from knowledge_base/users/{phone}.md
 │  + === Memory Summary ===                           │  ← rolling 3-4 line Hindi summary
 │  + === Remembered Facts ===                         │  ← bullet list of key details
-│  + === Helpdesk KB ===                              │  ← Haiku-routed 1-3 files (see §5)
+│  + === Helpdesk KB ===                              │  ← LLM-routed 1-3 files (see §5)
 │  + === Use Case ===                                 │  ← Haiku-tagged block: see §6a
 │  + === Emotion Annotation ===                       │  ← EMOTIONS_JSON format instruction
 │  + === Memory Patch Instruction ===                 │  ← <memory>...</memory> protocol (§9)
@@ -196,14 +197,15 @@ Used by ElevenLabs TTS for voice modulation. Sarvam TTS ignores emotions.
 
 ### Use-case routing (commit `c3b3bb9`)
 
-In addition to the KB files chosen by `HaikuKBRouter`, the same Haiku call also emits a **use-case tag** for the turn. The tag selects a use-case-specific instruction block that gets injected into the system prompt alongside the KB content.
+In addition to the KB files chosen by `LLMKBRouter`, the same Haiku call also emits a **use-case tag** for the turn. The tag selects a use-case-specific instruction block that gets injected into the system prompt alongside the KB content.
 
 Valid tags (`VALID_USE_CASES`):
 
 | Tag | When it fires | What the block teaches |
 |-----|---------------|------------------------|
 | `grievance` | Workplace conflict, pay, harassment, HR concerns | How to listen first, name the pattern, ESCALATE flow with consent |
-| `finance` | User's own salary, PF/EPF, loans, EMIs | Math-first response shape, anti-sycophancy on financial decisions |
+| `finance` | User's own salary, PF/EPF, loans, EMIs | Anti-sycophancy on financial decisions, listen-first shape |
+| `finance_advice` | Math-shaped questions (EMI, total interest, savings rate, "should I take this loan?") | Math-discipline block: do the calculation explicitly, show the burden vs income, then advise (commit `5760959`) |
 | `scheme_kb` | Govt schemes / documents (Aadhaar, PAN, ESIC, etc.) | Use the KB content faithfully, defer to named contacts (Priti BC / Dinesh MIDC) for paperwork |
 | `general` | Restaurants, recipes, prices, opinions, daily life | Answer like a friend would — don't punt to Google, give concrete options |
 
@@ -282,6 +284,7 @@ Env vars required for the pipeline:
 - `GMAIL_CLIENT_ID`, `GMAIL_CLIENT_SECRET`, `GMAIL_REFRESH_TOKEN`, `GMAIL_SENDER_EMAIL`
 - `ESCALATION_RECIPIENTS` (default fallback)
 - `ESCALATION_RECIPIENTS_DOCS_BC`, `ESCALATION_RECIPIENTS_DOCS_MIDC` (per-office overrides)
+- `ESCALATION_CC` (always-on CC list, commit `5e8d5f6`) — recipients on every outgoing escalation regardless of category. Default use: Sundar for audit visibility.
 - `ESCALATION_ENABLED` (kill switch)
 
 If `ESCALATION_ENABLED=false` or any credential is missing, the handler logs the would-be email and returns gracefully — no user-facing failure.
@@ -361,7 +364,9 @@ Two scrubs run on every LLM response before TTS:
 
 2. **`BaseLLM._strip_reasoning_leak()`** (`src/bhai/llm/base.py:452-486`) — splits on blank lines and drops any paragraph containing internal-jargon markers (`"system prompt"`, `"anti-sycophancy"`, `"TTS engine"`, `"let me think"`, `"मुझे सोच"`, etc.). Last-paragraph fallback if everything strips. Catches chain-of-thought leakage where the LLM accidentally narrates its reasoning into the user-facing reply (commit `75f9a1c`).
 
-3. **`normalize_currency_for_sarvam()`** (`src/bhai/tts/sarvam_tts.py:18-54`, commit `a5c5024`) — runs immediately before the Sarvam API call. Converts `₹500` → `500 रुपए`, `₹500-800` → `500 से 800 रुपए`, `Rs. 500` → `रुपए 500`, and `rupees`/`rupee` → `रुपए`. Sarvam's TTS pronounces `₹` literally (as a sound, not a word) without this normalization.
+3. **`detect_language_code()`** (`src/bhai/tts/sarvam_tts.py:52-85`, commit `5dc11a8`) — picks the Sarvam `target_language_code` per call by counting characters in 9 Indic Unicode blocks (Devanagari→`hi-IN`, Bengali→`bn-IN`, Gurmukhi→`pa-IN`, Gujarati→`gu-IN`, Odia→`od-IN`, Tamil→`ta-IN`, Telugu→`te-IN`, Kannada→`kn-IN`, Malayalam→`ml-IN`). Falls back to `hi-IN` for empty/punctuation-only text, `en-IN` only when Latin letters are present with zero Indic chars. Before this fix, Tamil/Telugu/Bengali replies were force-fed through Sarvam's Hindi voice ("Sundar!" was read as "Sundar factorial" in the 2026-05-27 dev test).
+
+4. **`normalize_currency_for_sarvam()`** (`src/bhai/tts/sarvam_tts.py:88-124`, commit `a5c5024`) — runs immediately before the Sarvam API call, but **only for Devanagari output** (`hi-IN` / `mr-IN`). Converts `₹500` → `500 रुपए`, `₹500-800` → `500 से 800 रुपए`, `Rs. 500` → `रुपए 500`, and `rupees`/`rupee` → `रुपए`. Other Indic scripts handle currency natively in Sarvam's voice models, so they skip this normalization.
 
 ### Text-to-Speech
 
