@@ -208,6 +208,56 @@ def test_strip_markdown_preserves_mid_sentence_dash():
     assert BaseLLM._strip_markdown(text) == text
 
 
+# ── _strip_emoji ──────────────────────────────────────────────────────
+
+
+def test_strip_emoji_removes_common_emojis():
+    """Folded-hands, smileys, check marks all get scrubbed before TTS sees them."""
+    assert BaseLLM._strip_emoji("Namaste 🙏 Manimala ji!") == "Namaste Manimala ji!"
+    assert BaseLLM._strip_emoji("😄😄😄 Sab theek hai") == "Sab theek hai"
+    assert BaseLLM._strip_emoji("Done ✅") == "Done"
+
+
+def test_strip_emoji_preserves_devanagari():
+    """Indic codepoints live below U+0E00 — they must NOT be touched."""
+    text = "अरे, सब ठीक है ना? बेटी कैसी है?"
+    assert BaseLLM._strip_emoji(text) == text
+
+
+def test_strip_emoji_preserves_tamil_and_gujarati():
+    """The exact prod-bug case: Tamil nudges with 🙏 had the emoji leak but
+    the Tamil text must stay intact end-to-end."""
+    assert BaseLLM._strip_emoji("மணிமாலா ஜி") == "மணிமாலா ஜி"
+    assert BaseLLM._strip_emoji("બહાર ગઈ") == "બહાર ગઈ"
+    # The canonical Manimala prod-bug nudge: same Tamil text, emoji gone.
+    assert (
+        BaseLLM._strip_emoji("மணிமாலா, காலை வணக்கம்! 🙏 இன்னைக்கு easy-ஆ இருக்கா?")
+        == "மணிமாலா, காலை வணக்கம்! இன்னைக்கு easy-ஆ இருக்கா?"
+    )
+
+
+def test_strip_emoji_handles_empty_string():
+    assert BaseLLM._strip_emoji("") == ""
+
+
+def test_strip_emoji_collapses_double_spaces_from_removed_emojis():
+    """Mid-sentence emoji removal leaves 'word  word' — collapse to one space."""
+    assert BaseLLM._strip_emoji("Hi 😊 there") == "Hi there"
+
+
+def test_strip_emoji_handles_zwj_sequences():
+    """ZWJ-joined family emojis are stripped cleanly (ZWJ U+200D is in the pattern)."""
+    # Family man+woman+boy: U+1F468 U+200D U+1F469 U+200D U+1F466
+    assert BaseLLM._strip_emoji("Bachche 👨‍👩‍👦 ke saath") == "Bachche ke saath"
+
+
+def test_strip_emoji_strips_dingbats_and_misc_symbols():
+    """Sun, snowflake, sparkle, checkmark — all in misc-symbols / dingbats."""
+    assert BaseLLM._strip_emoji("Aaj ☀ achha din") == "Aaj achha din"
+    assert BaseLLM._strip_emoji("Done ✔") == "Done"
+    assert BaseLLM._strip_emoji("Magic ✨") == "Magic"
+
+
 # ── _parse_emotion_segments ───────────────────────────────────────────
 
 
@@ -430,6 +480,41 @@ def test_generate_falls_back_safely_when_unparseable(tmp_knowledge_base):
     assert "not json" not in result["text"]
     # parsed=False signals callers (e.g. nudges) to skip rather than send it.
     assert result["parsed"] is False
+
+
+def test_generate_strips_emoji_from_out(tmp_knowledge_base):
+    """End-to-end: a model that returns emojis in `out` produces text
+    without them, while cot and the rest of the parsed result flow
+    through normally."""
+    cfg = load_config()
+    payload = (
+        '{"cot": "internal reasoning — 🙏 emoji here is fine, cot never reaches TTS", '
+        '"out": "Namaste 🙏 Manimala ji! आज का दिन कैसा रहा? 😊"}'
+    )
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["parsed"] is True
+    # No emoji codepoints in any user-facing text.
+    assert "🙏" not in result["text"]
+    assert "😊" not in result["text"]
+    # Devanagari and ASCII survive.
+    assert "Namaste" in result["text"]
+    assert "Manimala ji" in result["text"]
+    assert "आज का दिन कैसा रहा" in result["text"]
+    # cot is unaffected — it's reasoning, never spoken.
+    assert "🙏" in result["cot"]
+
+
+def test_generate_strips_emoji_from_markdown_emphasis(tmp_knowledge_base):
+    """`*✨*` becomes empty: markdown strips the asterisks first, emoji-scrub
+    removes the sparkle — no stray asterisks left orphaned."""
+    cfg = load_config()
+    payload = '{"cot": "x", "out": "*✨* ठीक है ना?"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["text"].strip() == "ठीक है ना?"
+    assert "*" not in result["text"]
+    assert "✨" not in result["text"]
 
 
 def test_generate_with_emotions_returns_single_neutral_segment(tmp_knowledge_base):

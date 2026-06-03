@@ -647,6 +647,47 @@ class BaseLLM(ABC):
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
+    # Unicode blocks that are mostly emoji / symbol pictographs. Stripping
+    # these prevents Sarvam TTS from reading them as their literal Unicode
+    # names ("face with tears of joy"). Devanagari and other Indic scripts
+    # live in lower code points (U+0900-U+0DFF, U+0B80-U+0BFF, etc.) and
+    # are NOT in this pattern.
+    _EMOJI_PATTERN = re.compile(
+        "["
+        "\U0001f300-\U0001f5ff"  # symbols & pictographs
+        "\U0001f600-\U0001f64f"  # emoticons
+        "\U0001f680-\U0001f6ff"  # transport & map
+        "\U0001f700-\U0001f77f"  # alchemical
+        "\U0001f780-\U0001f7ff"  # geometric shapes ext.
+        "\U0001f800-\U0001f8ff"  # supplemental arrows-c
+        "\U0001f900-\U0001f9ff"  # supplemental symbols & pictographs
+        "\U0001fa00-\U0001fa6f"  # chess
+        "\U0001fa70-\U0001faff"  # symbols & pictographs ext-a
+        "\U00002600-\U000026ff"  # misc symbols (☀ ☔ ⚽ etc.)
+        "\U00002700-\U000027bf"  # dingbats (✂ ✔ ✨ etc.)
+        "\U0000fe00-\U0000fe0f"  # variation selectors
+        "\U0000200d"  # ZWJ
+        "]+",
+        flags=re.UNICODE,
+    )
+
+    @staticmethod
+    def _strip_emoji(text: str) -> str:
+        """Remove Unicode emoji codepoints.
+
+        Sarvam TTS reads emojis as their Unicode names ("face with tears
+        of joy") — unusable in a voice note. We strip them here so the
+        structured-output `out` text never carries them to TTS or to the
+        Telegram message body. Indic scripts are NOT affected (they live
+        below U+0E00 and outside every range in _EMOJI_PATTERN).
+        """
+        if not text:
+            return text
+        cleaned = BaseLLM._EMOJI_PATTERN.sub("", text)
+        # Mid-sentence emoji removal leaves "word  word" — collapse the gap.
+        cleaned = re.sub(r" {2,}", " ", cleaned)
+        return cleaned.strip()
+
     @staticmethod
     def _parse_emotion_segments(raw_text: str) -> Optional[List[dict]]:
         """Extract EMOTIONS_JSON line from raw LLM output and parse it."""
@@ -765,7 +806,9 @@ class BaseLLM(ABC):
         if cot:
             logger.info("cot: %s", cot[:300])
 
-        text = self._strip_markdown(out).strip()
+        # Order matters: markdown first (so `*✨*` doesn't leave stray asterisks),
+        # then emoji codepoint removal.
+        text = self._strip_emoji(self._strip_markdown(out)).strip()
         if not text:
             # Parsed but empty after markdown stripping — treat as a failure too.
             text = _FALLBACK_OUT
