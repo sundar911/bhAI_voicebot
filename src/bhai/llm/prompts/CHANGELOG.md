@@ -11,6 +11,29 @@ When adding a row, include:
 
 ---
 
+## 2026-06-04 — Slim-down: stop duplicating content the use-case blocks already own
+
+**Commit**: WIP (this branch — `dev`)
+**Trigger**: prompt had bloated back to **383 lines** despite the new per-turn architecture (always-loaded persona + router-selected `use_cases/<tag>.md` blocks + helpdesk KB files). Audit showed ~135 lines were straight-up duplicates of content already covered better by the use-case blocks (`general.md`, `scheme_kb.md`, `finance_advice.md`, `finance.md`, `grievance.md`). User flagged: *"our prompt has become way too big again."*
+**Fix shape**: structural — move duplicated content out of the always-loaded base prompt. No behaviour change: every removed section's content already lives in the use-case block that fires when that surface is active.
+
+Changes (383 → 271 lines, −112 lines / −29%):
+
+- **Anti-Sycophancy section (41 lines) deleted from base.** The 6-step math procedure + example + DO NOT list is fully covered by `use_cases/finance_advice.md` (Checks 1-4 + rules of engagement). Replaced with a 3-line pointer plus the two non-financial honesty bullets (opinion-asked / upset-or-frustrated) that don't have a dedicated use-case block. The *"Sycophantic"* line in "You Are NOT" above is the always-loaded version of the principle.
+- **Honesty-About-Outreach section compressed (70 → 30 lines).** Kept: section header (contract test), the `ESCALATE: true` mechanism, `ESCALATE_CATEGORY` routing table, the four hard rules (no fake attribution / no past-tense / no future-tense without ESCALATE / "did you ask Vijay" → say no), and the `web_search` tool guidance (the tool is globally available on every Claude call). Removed: the "General questions outside the KB" sub-section (fully covered by `general.md`), the restaurant example (also in `general.md`), the "Scope of named contacts" sub-section (covered by `scheme_kb.md` rule 2 + rule 7), the "Why this matters" Sapna-karate coda (covered by `general.md`'s closing paragraph).
+- **"What You Can Talk About" compressed (16 → 5 lines).** The 11-language bullet duplicated the "Match the User's Language" section above; the govt-schemes + document-help bullets duplicated `scheme_kb.md`. Kept: the companionship-vs-practical-help framing and the medical/legal "always defer to professionals" carve-out (no use-case block owns those).
+- **KB-as-Single-Source-of-Truth section compressed (27 → 8 lines).** Rules 1, 2, 4, 5, 6 (never invent facts, completeness on first reply, helpdesk-mode focus, know what's in your KB) are all in `scheme_kb.md`. Renamed the surviving section to **"Phone numbers in replies (pipeline contract)"** — the one rule that genuinely IS plumbing-level guidance applying to every turn that shares a number (Priti's number in `docs` surface, web_search-returned numbers in `general` surface, etc.).
+- **"Mode-switching: helpdesk vs casual" subsection deleted (14 lines).** `scheme_kb.md` enforces helpdesk completeness when the docs/schemes router tag fires; the split is now architectural rather than a prompt instruction.
+- **"The Intermediary Role" section deleted (7 lines).** Pure duplicate of "How outreach actually works" higher up — same content, different framing.
+
+Surviving structure: persona / output language / personality / pop culture → Honesty-About-Outreach (compressed) → audience description + gender detection → Match the User's Language → Never narrate reasoning → What You Can Talk About (compressed) → Phone numbers pipeline → Response Length → Conversation Flow → Practical Context → Privacy → What You Are Not → Pilot Mode: Gentle Learning → TTS Output Rules.
+
+Contract tests untouched — all required phrases verified present in the slim version (*"Honesty-About-Outreach Rule"*, *"No past-tense outreach claims"*, *"No future-tense outreach claims"*, *"मैंने पूछ लिया"*, *"ESCALATE: true"*, *"team को email करूँ"*, *"No fake attribution"*, *"document work"*, both Vijay and Priti).
+
+No code changes. Pure prompt slim-down.
+
+---
+
 ## 2026-05-25 — Strengthen general-knowledge mode: stop the "Google पर देखो" punt
 
 **Commit**: WIP (this branch — `dev`)

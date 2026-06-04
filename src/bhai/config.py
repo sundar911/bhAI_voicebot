@@ -100,6 +100,18 @@ class Config:
     nudge_check_interval_seconds: int = 300  # How often the loop wakes
     nudge_active_user_days: int = 7  # Only nudge users active in last N days
 
+    # Reactive web_search (Claude server-side tool).
+    # When enabled, ClaudeLLM passes a web_search tool to the Anthropic Messages
+    # API so the model can ground specifics it doesn't know (local clinics,
+    # current scheme details, "box cricket venues in Bandra" etc.) instead of
+    # confabulating or punting the user to Google. Anthropic enforces the
+    # per-call cap server-side via `max_uses`. Default off; enable in dev first.
+    web_search_enabled: bool = False
+    web_search_max_uses_per_call: int = 3
+    # Tool identifier — Anthropic versions this per release. Override via
+    # WEB_SEARCH_TOOL_NAME if a newer version ships.
+    web_search_tool_name: str = "web_search_20250305"
+
     # Azure / SharePoint (for transcription pipeline)
     azure_tenant_id: str = ""
     azure_app_client_id: str = ""
@@ -202,6 +214,11 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             os.getenv("NUDGE_CHECK_INTERVAL_SECONDS", "300")
         ),
         nudge_active_user_days=int(os.getenv("NUDGE_ACTIVE_USER_DAYS", "7")),
+        web_search_enabled=os.getenv("WEB_SEARCH_ENABLED", "false").lower() == "true",
+        web_search_max_uses_per_call=int(
+            os.getenv("WEB_SEARCH_MAX_USES_PER_CALL", "3")
+        ),
+        web_search_tool_name=os.getenv("WEB_SEARCH_TOOL_NAME", "web_search_20250305"),
         azure_tenant_id=os.getenv("AZURE_TENANT_ID", ""),
         azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),
         sharepoint_hostname=os.getenv(
