@@ -235,14 +235,15 @@ def test_prompt_template_contains_outreach_honesty_rule():
 
     # The hard ban on confabulated outreach must remain explicit. Both past-
     # and future-tense outreach are lies; the only legitimate outreach
-    # channel is consent-gated ESCALATE: true (which now actually emails the
-    # impact team — per the 2026-05-22 capability-honesty update). The
-    # prompt must continue to require consent + future-tense phrasing.
+    # channel is the consent-gated `escalate: true` JSON field (which now
+    # actually emails the impact team — per the 2026-05-22 capability-honesty
+    # update, carried into the cot/out contract). The prompt must continue to
+    # require consent + future-tense phrasing.
     must_contain = [
         "No past-tense outreach claims",
-        "No future-tense outreach claims",  # without ESCALATE: true, a lie
+        "No future-tense outreach claims",  # without escalate: true, a lie
         "मैंने पूछ लिया",  # explicitly banned past tense example
-        "ESCALATE: true",  # the legitimate outreach channel
+        "escalate: true",  # the legitimate outreach channel (cot/out JSON field)
         "team को email करूँ",  # the consent question that must appear before emailing
         "No fake attribution",
     ]

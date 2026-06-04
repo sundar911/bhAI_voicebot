@@ -75,6 +75,10 @@ class Config:
     # System prompt version — loaded from src/bhai/llm/prompts/{version}.md
     prompt_version: str = "current"
 
+    # cot/out structured output: how many times to re-call the LLM when its
+    # JSON can't be parsed before giving up to the safe canned fallback.
+    llm_json_max_attempts: int = 3
+
     # Resilience
     ack_enabled: bool = True  # Send immediate ack on voice notes
     retry_max_attempts: int = 3  # Per-call retry attempts
@@ -197,6 +201,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         elevenlabs_speed=float(os.getenv("ELEVENLABS_SPEED", "1.0")),
         tts_backend=os.getenv("TTS_BACKEND", "sarvam"),
         prompt_version=os.getenv("PROMPT_VERSION", "current"),
+        llm_json_max_attempts=int(os.getenv("LLM_JSON_MAX_ATTEMPTS", "3")),
         ack_enabled=os.getenv("ACK_ENABLED", "true").lower() == "true",
         retry_max_attempts=int(os.getenv("RETRY_MAX_ATTEMPTS", "3")),
         queue_max_attempts=int(os.getenv("QUEUE_MAX_ATTEMPTS", "5")),

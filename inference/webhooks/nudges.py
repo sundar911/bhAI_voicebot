@@ -27,7 +27,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from src.bhai.config import Config
 from src.bhai.llm import create_llm
-from src.bhai.llm.base import BaseLLM
+from src.bhai.llm.base import _JSON_OUTPUT_INSTRUCTION, BaseLLM
 from src.bhai.memory.store import ConversationStore
 
 logger = logging.getLogger("bhai.nudges")
@@ -306,9 +306,10 @@ HARD CONSTRAINTS (both cases)
 - Ask AT MOST one short question.
 - Match the user's number language (Hindi word if they use Hindi, English
   digits if English).
-- No "ESCALATE:" line, no "EMOTIONS_JSON:" line — just the plain text.
 
-Output ONLY the nudge text. Nothing else.
+The nudge message is the "out" field of your JSON response (see the output
+format below). Do any planning silently in "cot"; "out" is just the check-in
+the user hears — nothing else.
 """
 
 
@@ -336,6 +337,7 @@ def build_nudge_prompts(
         llm._build_system_prompt(domain, user_profile, memory_summary, extracted_facts)
         + "\n\n"
         + NUDGE_INSTRUCTION
+        + _JSON_OUTPUT_INSTRUCTION
     )
 
     parts = []
@@ -368,8 +370,15 @@ def generate_nudge_text(
     recent_messages: List[Dict[str, str]],
     recent_nudge_texts: Optional[List[str]] = None,
     domain: str = "hr_admin",
-) -> str:
-    """Generate the nudge text via the LLM. Returns cleaned plain text."""
+) -> Optional[str]:
+    """Generate the nudge text via the LLM.
+
+    Runs through the same cot/out JSON contract as normal replies, so reasoning
+    can never leak into the spoken nudge. Returns the parsed "out" (cot is
+    logged server-side, never delivered), or ``None`` if the JSON could not be
+    parsed even after retries — the caller should then SKIP this nudge rather
+    than speak the canned fallback as an unprompted "say it again?" message.
+    """
     system_prompt, user_message = build_nudge_prompts(
         llm,
         domain=domain,
@@ -380,8 +389,11 @@ def generate_nudge_text(
         recent_messages=recent_messages,
         recent_nudge_texts=recent_nudge_texts,
     )
-    raw = llm._call_api_with_retry(system_prompt, user_message)
-    return BaseLLM._clean_response(raw)
+    result = llm._generate_structured(system_prompt, user_message)
+    if not result.get("parsed", True):
+        logger.warning("Nudge cot/out parse failed; skipping nudge (no fallback send).")
+        return None
+    return result["text"]
 
 
 # ── Scheduler loop ────────────────────────────────────────────────────
@@ -541,8 +553,12 @@ def build_and_generate_nudge(
     slot: str,
     store: ConversationStore,
     config: Config,
-) -> str:
-    """Pull the user's context from the store and run the LLM. Returns cleaned text."""
+) -> Optional[str]:
+    """Pull the user's context from the store and run the LLM.
+
+    Returns the nudge text, or ``None`` when generation failed to produce a
+    valid cot/out reply — the caller skips sending in that case.
+    """
     llm = create_llm(config)
     user_profile = llm.load_user_profile(phone)
 
