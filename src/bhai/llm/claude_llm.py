@@ -32,52 +32,88 @@ class ClaudeLLM(BaseLLM):
     def model_name(self) -> str:
         return self.config.anthropic_model
 
-    # Seed the assistant turn with the start of the JSON object. This forces
-    # the model to begin inside the structured contract (cot first, in order)
-    # and makes it physically impossible to emit preamble or chain-of-thought
-    # before the JSON — the leak is prevented at generation time, not scrubbed
-    # afterwards. We re-attach the prefill to the returned text before parsing.
-    _PREFILL = '{"cot":'
+    # Token budget. With adaptive thinking on, this covers thinking + the
+    # visible response — and thinking on a math-heavy turn (loan EMI
+    # cross-impact, scheme eligibility walkthrough) can easily eat 1500-3000
+    # tokens. 2048 was too tight (smoke test 2/3 truncated). 8192 leaves
+    # comfortable headroom for both halves; Anthropic's adaptive-thinking
+    # docs recommend 8000-16000 for production.
+    _MAX_TOKENS = 8192
 
-    # Higher than the old 1024: cot + out share the budget, so leave headroom
-    # for a complete out (long helpdesk answers) after the reasoning.
-    _MAX_TOKENS = 2048
+    # JSON schema for the structured reply, enforced via
+    # `output_config.format`. Two required fields: `out` (the spoken reply,
+    # which carries any in-body <memory> blocks and ESCALATE_CATEGORY line
+    # that the downstream parser extracts) and `escalate` (boolean consent
+    # gate for the email flow). Chain-of-thought goes into the model's
+    # `thinking` block, NOT into this object.
+    _RESPONSE_SCHEMA: dict = {
+        "type": "object",
+        "properties": {
+            "out": {
+                "type": "string",
+                "description": (
+                    "The message the user hears, in the user's language "
+                    "(Hindi in Devanagari by default). Goes straight to TTS "
+                    "after stripping <memory>...</memory> blocks and any "
+                    "ESCALATE_CATEGORY: line."
+                ),
+            },
+            "escalate": {
+                "type": "boolean",
+                "description": (
+                    "True ONLY when the user has explicitly consented to "
+                    "emailing the impact team on this turn. Default false."
+                ),
+            },
+        },
+        "required": ["out", "escalate"],
+        "additionalProperties": False,
+    }
 
     def _call_api(self, system_prompt: str, user_message: str) -> str:
-        """Plain call — NO JSON prefill.
+        """Plain call — NO structured-output enforcement.
 
         Used by callers that expect free-form text (summarizer, nudges).
-        These must NOT be forced into the cot/out JSON contract, or their
-        output gets corrupted (and, for nudges, leaks JSON straight to
-        the user).
+        These must NOT be forced into the JSON envelope, or their output
+        gets corrupted (and, for nudges, leaks JSON straight to the user).
         """
-        return self._messages_create(system_prompt, user_message, prefill="")
+        return self._messages_create(system_prompt, user_message, structured=False)
 
     def _call_api_json(self, system_prompt: str, user_message: str) -> str:
-        """Structured cot/out call — prefill forces valid JSON and kills any
-        preamble/chain-of-thought before the object."""
-        return self._messages_create(system_prompt, user_message, prefill=self._PREFILL)
+        """Structured {out, escalate} call.
+
+        Uses `output_config.format` (Anthropic GA 2026-02-04) to enforce
+        the JSON schema via grammar-constrained decoding, and adaptive
+        thinking for chain-of-thought separation (the thinking block is
+        returned alongside the JSON text block and never reaches TTS).
+
+        Replaces the legacy assistant-prefill approach, which Sonnet 4.6
+        rejects with `400: This model does not support assistant message
+        prefill` — extended thinking and prefill are mutually exclusive.
+        """
+        return self._messages_create(system_prompt, user_message, structured=True)
 
     def _messages_create(
-        self, system_prompt: str, user_message: str, prefill: str
+        self, system_prompt: str, user_message: str, structured: bool
     ) -> str:
         messages: list = [{"role": "user", "content": user_message}]
-        if prefill:
-            messages.append({"role": "assistant", "content": prefill})
 
         # When web_search is enabled, pass the Anthropic server-side tool so
         # the model can ground specifics it doesn't know (local clinics, "box
         # cricket near Grant Road", etc.). Anthropic executes the search
         # server-side and merges results into the response — no client-side
-        # tool_use loop needed. max_uses enforced server-side. Works on both
-        # plain and JSON-prefill paths; for cot/out the search output lands
-        # inside the `out` field.
+        # tool_use loop needed. max_uses enforced server-side. Coexists
+        # cleanly with `output_config.format` (verified by
+        # scripts/spike_structured_output.py on 2026-06-04).
         kwargs: dict = {
             "model": self.config.anthropic_model,
             "max_tokens": self._MAX_TOKENS,
             "system": system_prompt,
             "messages": messages,
-            "temperature": 0.4,
+            # Adaptive thinking (structured path) requires temperature=1.
+            # The plain path keeps a lower temperature for tighter free-form
+            # output (summarizer/nudges).
+            "temperature": 1.0 if structured else 0.4,
         }
         if self.config.web_search_enabled:
             kwargs["tools"] = [
@@ -87,6 +123,21 @@ class ClaudeLLM(BaseLLM):
                     "max_uses": self.config.web_search_max_uses_per_call,
                 }
             ]
+
+        # Structured path: schema enforcement + adaptive thinking. Both
+        # passed via `extra_body` because anthropic-python 0.84 doesn't
+        # surface these params as first-class kwargs yet; the SDK forwards
+        # the dict verbatim into the request body.
+        if structured:
+            kwargs["extra_body"] = {
+                "output_config": {
+                    "format": {
+                        "type": "json_schema",
+                        "schema": self._RESPONSE_SCHEMA,
+                    }
+                },
+                "thinking": {"type": "adaptive"},
+            }
 
         response = self.client.messages.create(**kwargs)
 
@@ -98,14 +149,12 @@ class ClaudeLLM(BaseLLM):
             )
 
         # Concatenate ALL TextBlocks. With web_search, the model can emit
-        # multiple text segments interleaved with server-tool-use and
-        # web_search_tool_result blocks; taking only the first would drop
-        # the actual answer in many cases. For cot/out + web_search this
-        # produces JSON spanning multiple blocks (newline between blocks
-        # is whitespace, valid inside JSON).
+        # multiple text segments interleaved with server_tool_use,
+        # web_search_tool_result, and thinking blocks; the structured-output
+        # JSON lands in the FINAL text block (after every search resolves),
+        # so concatenating all text blocks with a newline is safe — newlines
+        # are valid JSON whitespace between/inside the object.
         from anthropic.types import TextBlock
 
         text_parts = [b.text for b in response.content if isinstance(b, TextBlock)]
-        text = "\n".join(text_parts)
-        # Re-attach the prefill so the parser sees the complete JSON object.
-        return (prefill + text).strip()
+        return "\n".join(text_parts).strip()

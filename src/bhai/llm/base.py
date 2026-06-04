@@ -94,37 +94,36 @@ a supervisor named Ramesh that the prior summary doesn't capture):
 """
 
 
-# ── Structured output contract (cot / out) ────────────────────────────────
+# ── Structured output contract (out / escalate) ───────────────────────────
 # The model returns a JSON object with two keys:
-#   "cot" — private chain-of-thought (logged for debugging, NEVER delivered)
-#   "out" — the spoken reply (the ONLY thing sent to TTS / saved / shown)
-# This replaces post-hoc reasoning-scrubbing: reasoning gets a dedicated home,
-# so it structurally cannot leak into "out". cot is generated BEFORE out (field
-# order matters) so the reasoning actually conditions the answer.
+#   "out"      — the spoken reply (the ONLY thing sent to TTS / saved / shown)
+#   "escalate" — boolean consent gate for the impact-team email flow
+#
+# Chain-of-thought separation is handled by Claude's extended (adaptive)
+# thinking on Sonnet 4.6 — the model's reasoning lives in a separate
+# `thinking` content block that's never concatenated with `out` and never
+# reaches TTS. We do NOT include a `cot` field here: 4.6 rejects assistant
+# prefill (the old mechanism that forced `cot` first), and adaptive thinking
+# already provides the same CoT-vs-speech separation more reliably.
 _JSON_OUTPUT_INSTRUCTION = (
     "\n\n=== OUTPUT FORMAT (STRICT — follow exactly) ===\n"
     "Respond with ONE JSON object and nothing else — no prose, no code fences, "
     "before or after:\n"
-    '{"cot": "<your private reasoning>", "out": "<the message the user hears>", '
-    '"escalate": false}\n\n'
-    '"cot" is your private scratchpad — the user NEVER sees it. Think here about: '
-    "which language/script to mirror, the user's gender from their grammar, what the "
-    "knowledge base says, any anti-sycophancy math, and what to ask next. Keep it "
-    "brief (2-3 sentences) so it doesn't crowd out the reply.\n"
+    '{"out": "<the message the user hears>", "escalate": false}\n\n'
     '"out" is the ONLY thing the user receives, spoken aloud by a TTS engine:\n'
     "- Devanagari script, natural spoken Hindi/Marathi, mirroring the user.\n"
     "- Short — 1-3 sentences (longer only for a documents/scheme answer that needs "
     "completeness).\n"
-    "- NO markdown, NO asterisks, NO English meta-words, NO mention of rules, the "
-    'prompt, or "cot".\n'
+    "- NO markdown, NO asterisks, NO emojis, NO English meta-words, NO mention "
+    "of the system prompt or these rules.\n"
     "- It must read like something a real बहन says out loud: zero reasoning, zero "
-    "narration.\n"
+    "narration. Do all your thinking privately — the user only hears `out`.\n"
     '"escalate" is a boolean — set true ONLY after the user has explicitly '
     "consented to emailing their issue to the impact team (the consent-gated "
     "escalation flow described in the system prompt); otherwise false. When true, "
     'keep "out" in future tense (the email sends after this turn).\n\n'
-    'Put ALL thinking in "cot". "out" is clean speech only. All keys are required '
-    "and must be valid JSON (escape any quotes and newlines).\n"
+    "Both keys are required and must be valid JSON (escape any quotes and "
+    "newlines in `out`).\n"
 )
 
 # Safe, in-character fallback used ONLY when the model's JSON can't be parsed at
@@ -1033,9 +1032,22 @@ class BaseLLM(ABC):
         if cot:
             logger.info("cot: %s", cot[:300])
 
-        # Order matters: markdown first (so `*✨*` doesn't leave stray asterisks),
-        # then emoji codepoint removal.
-        text = self._strip_emoji(self._strip_markdown(out)).strip()
+        # Stripping order (each runs on the output of the previous):
+        #   1. memory patches  — <memory>...</memory> blocks live INSIDE `out`
+        #      per MEMORY_INSTRUCTION; the patches are extracted upstream from
+        #      `raw`, here we strip them from the spoken text.
+        #   2. escalate-category line  — "ESCALATE_CATEGORY: docs_bc" is also
+        #      inside `out` and gets read aloud by TTS if left in.
+        #   3. markdown  — asterisks/headers/list markers from the model.
+        #   4. emoji  — Sarvam TTS reads emojis as their Unicode names.
+        cleaned = self._strip_memory_patches(out)
+        cleaned = "\n".join(
+            line
+            for line in cleaned.splitlines()
+            if not line.strip().upper().startswith("ESCALATE_CATEGORY")
+            and not line.strip().upper().startswith("ESCALATE:")
+        )
+        text = self._strip_emoji(self._strip_markdown(cleaned)).strip()
         if not text:
             # Parsed but empty after markdown stripping — treat as a failure too.
             text = _FALLBACK_OUT
@@ -1227,9 +1239,12 @@ class BaseLLM(ABC):
                 transcript,
                 conversation_history=conversation_history,
             )
-            + EMOTION_INSTRUCTION
             + MEMORY_INSTRUCTION
         )
+        # EMOTION_INSTRUCTION intentionally NOT appended — per-segment
+        # emotions were dropped (see docstring above), and on the new
+        # `output_config.format` path the trailing "EMOTIONS_JSON: [...]"
+        # line slips into the `out` string and gets read aloud by TTS.
         if mode_instruction:
             system_prompt += "\n\n" + mode_instruction
         system_prompt += _JSON_OUTPUT_INSTRUCTION
