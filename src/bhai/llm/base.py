@@ -88,6 +88,67 @@ a supervisor named Ramesh that the prior summary doesn't capture):
 """
 
 
+THREAD_INSTRUCTION = """
+=== Open Threads (self-edited curiosities) ===
+
+In addition to `<memory>` blocks (facts/summary), you may also emit
+`<thread>` blocks. Threads are the persistent layer the PROACTIVE side
+of bhAI reads to decide what to follow up on across days — they're not
+facts, they're *curiosities you've chosen to track*. Like memory blocks,
+they are stripped before TTS and never reach the user.
+
+Use threads sparingly. Most turns don't need one. A thread is worth
+opening when the user disclosed a durable concern, plan, or interest
+that you'd want a sister to remember and gently revisit days later —
+not because it's information, but because it's something you'd care
+about.
+
+Four operations:
+
+  <thread>open: <slug> / <one-line context></thread>
+  <thread>update: <slug> / <one-line context></thread>
+  <thread>close: <slug> / <one-line reason></thread>
+  <thread>mark_sensitive: <slug></thread>
+
+Slug format: lowercase letters, digits, underscores only. Pick a name
+that describes the THREAD ("saree_business_expansion") not the FACT
+("manimalas_loan_50k"). The slug is the stable key — re-use the same
+slug across `open` → `update` → `close`.
+
+Operation semantics:
+
+- `open` — first time a durable concern surfaces. Example:
+    <thread>open: saree_business_expansion / Manimala mentioned ₹1L loan to source from a wider Surat supplier base</thread>
+- `update` — same thread, new development. The thinker sees the chain
+  of updates as the thread's evolution.
+    <thread>update: saree_business_expansion / Decided not to take loan after EMI math; exploring credit terms with current supplier instead</thread>
+- `close` — user acted on it, or visibly moved on. The thread won't be
+  surfaced again on the proactive side.
+    <thread>close: saree_business_expansion / User went ahead with the Surat trip and bought 3-month inventory; thread resolved</thread>
+- `mark_sensitive` — flag a thread `do_not_nudge`. Use this when the
+  topic is too tender for unsolicited follow-up (medical struggle, a
+  recent loss). The thread stays in the dossier so you have context,
+  but the proactive thinker won't open with it.
+    <thread>mark_sensitive: daughter_recovery</thread>
+
+Rules:
+
+- Don't open a thread for routine chitchat. *"User said good morning"*
+  is not a thread. *"User mentioned planning a Surat trip in two weeks"*
+  is.
+- Don't re-open a closed thread without a clear reason. If a topic
+  resurfaces meaningfully, `open` it under a different slug to reflect
+  the new chapter (e.g. `saree_business_diwali_push`).
+- NEVER put PII inside the context — religion, caste, disability,
+  specific loan amounts, named medical conditions. The proactive
+  thinker sends thread context to external tools; treat it the same as
+  memory facts on the privacy contract.
+- One thread block per topic per turn. Don't open and immediately
+  update the same slug in the same response — combine the two into a
+  single richer `open`.
+"""
+
+
 class BaseLLM(ABC):
     """
     Abstract base class for LLM backends.
@@ -542,10 +603,11 @@ class BaseLLM(ABC):
         rule apply होता है...") before the actual response. Even though the
         prompt forbids this, the model can still slip when rules conflict.
         """
-        # First strip memory patches (must precede reasoning-leak detection
-        # so memory contents don't trip the jargon filter), then reasoning
-        # leakage at the paragraph level, then per-line cleanup.
+        # First strip memory + thread patches (must precede reasoning-leak
+        # detection so their contents don't trip the jargon filter), then
+        # reasoning leakage at the paragraph level, then per-line cleanup.
         text = BaseLLM._strip_memory_patches(raw_text)
+        text = BaseLLM._strip_thread_patches(text)
         text = BaseLLM._strip_reasoning_leak(text)
 
         cleaned_lines = []
@@ -631,6 +693,99 @@ class BaseLLM(ABC):
         if not facts and summary is None:
             return None
         return {"summary": summary, "facts": facts}
+
+    # Matches a single <thread>...</thread> block. Mirrors _MEMORY_BLOCK_RE
+    # — case-insensitive on the tag, DOTALL so updates/closes with long
+    # multi-line context still parse.
+    _THREAD_BLOCK_RE = re.compile(
+        r"<thread>(.*?)</thread>", flags=re.DOTALL | re.IGNORECASE
+    )
+
+    @staticmethod
+    def _strip_thread_patches(raw_text: str) -> str:
+        """Remove all <thread>...</thread> blocks from text.
+
+        Idempotent. Collapses adjacent blank lines left behind so the
+        spoken reply doesn't develop awkward gaps. Mirrors
+        ``_strip_memory_patches``.
+        """
+        if not raw_text or "<thread" not in raw_text.lower():
+            return raw_text
+        stripped = BaseLLM._THREAD_BLOCK_RE.sub("", raw_text)
+        stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+        return stripped.strip()
+
+    @staticmethod
+    def _parse_thread_patches(raw_text: str) -> Optional[List[Any]]:
+        """Extract thread ops from a raw LLM response.
+
+        Returns a list of ``ThreadPatch`` objects in emission order, or
+        ``None`` if no ``<thread>`` block was present. Malformed blocks
+        (bad op, bad slug, missing context where required) are logged
+        and skipped — they're never silently coerced into something
+        else, because the persistence layer has to trust what it gets.
+
+        Like ``_parse_memory_patches``, BaseLLM stays storage-ignorant;
+        the caller (the webhook) applies the patches via the
+        forthcoming ``apply_thread_patches()`` once the storage layer
+        lands.
+        """
+        if not raw_text or "<thread" not in raw_text.lower():
+            return None
+
+        # Local import to avoid a circular dependency: ThreadPatch lives
+        # in src/bhai/proactive/threads.py which is a v2-only module and
+        # has no reason to import BaseLLM.
+        import logging
+
+        from ..proactive.threads import THREAD_OPS, ThreadPatch
+
+        log = logging.getLogger("bhai.llm")
+
+        patches: List[ThreadPatch] = []
+        for match in BaseLLM._THREAD_BLOCK_RE.finditer(raw_text):
+            body = match.group(1).strip()
+            if not body or ":" not in body:
+                log.warning("Thread block missing op prefix, ignored: %r", body[:80])
+                continue
+            op_raw, value = body.split(":", 1)
+            op = op_raw.strip().lower()
+            value = value.strip()
+
+            if op not in THREAD_OPS:
+                log.warning("Unknown thread op %r, ignored", op)
+                continue
+
+            if op == "mark_sensitive":
+                # No body required — value IS the slug.
+                topic = value
+                context = ""
+            else:
+                # `open` / `update` / `close` carry slug + context split
+                # on the first " / ". Reject if no slash separator.
+                if " / " not in value:
+                    log.warning(
+                        "Thread %s missing ' / ' separator, ignored: %r",
+                        op,
+                        value[:80],
+                    )
+                    continue
+                topic, context = value.split(" / ", 1)
+                topic = topic.strip()
+                context = context.strip()
+
+            patch = ThreadPatch(op=op, topic=topic, context=context)
+            if not patch.is_valid():
+                log.warning(
+                    "Invalid thread patch dropped: op=%r topic=%r ctx=%r",
+                    op,
+                    topic[:40],
+                    context[:60],
+                )
+                continue
+            patches.append(patch)
+
+        return patches if patches else None
 
     # Markers that indicate the model is narrating its own reasoning instead
     # of speaking to the user. These terms should NEVER appear in a
@@ -949,6 +1104,7 @@ class BaseLLM(ABC):
                 conversation_history=conversation_history,
             )
             + MEMORY_INSTRUCTION
+            + THREAD_INSTRUCTION
         )
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
@@ -970,9 +1126,11 @@ class BaseLLM(ABC):
             strip_emotions=False,
         )
 
-        # Memory patches parsed from the FINAL raw_text (after any outreach
-        # re-prompt). The webhook applies them via store.save_memory().
+        # Memory + thread patches parsed from the FINAL raw_text (after any
+        # outreach re-prompt). The webhook applies them via
+        # store.save_memory() and the (forthcoming) thread storage hook.
         memory_patches = self._parse_memory_patches(raw_text)
+        thread_patches = self._parse_thread_patches(raw_text)
 
         return {
             "text": cleaned_text or raw_text,
@@ -980,6 +1138,7 @@ class BaseLLM(ABC):
             "escalate": escalate,
             "category": self._detect_escalation_category(raw_text),
             "memory_patches": memory_patches,
+            "thread_patches": thread_patches,
         }
 
     def generate_with_emotions(
@@ -1014,6 +1173,7 @@ class BaseLLM(ABC):
             )
             + EMOTION_INSTRUCTION
             + MEMORY_INSTRUCTION
+            + THREAD_INSTRUCTION
         )
         if mode_instruction:
             system_prompt += "\n\n" + mode_instruction
@@ -1039,6 +1199,7 @@ class BaseLLM(ABC):
             segments = [{"text": cleaned_text or raw_text, "emotion": "neutral"}]
 
         memory_patches = self._parse_memory_patches(raw_text)
+        thread_patches = self._parse_thread_patches(raw_text)
 
         return {
             "text": cleaned_text or raw_text,
@@ -1047,4 +1208,5 @@ class BaseLLM(ABC):
             "segments": segments,
             "category": self._detect_escalation_category(raw_text),
             "memory_patches": memory_patches,
+            "thread_patches": thread_patches,
         }
