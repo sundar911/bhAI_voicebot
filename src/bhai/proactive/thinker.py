@@ -55,6 +55,12 @@ class BrainstormCandidate:
     trace: str
     tools_needed: List[str] = field(default_factory=list)
     why_now: str = ""
+    # Piece D: slug of the open thread this candidate targets, if any.
+    # The brainstorm prompt is told to fill this when the candidate
+    # traces back to a row in open_threads.md. The nudge-delivery hook
+    # then calls ``ConversationStore.mark_thread_nudged`` so the next
+    # thinking pass knows we just touched it.
+    thread_slug: Optional[str] = None
 
 
 @dataclass
@@ -68,6 +74,10 @@ class NudgeCandidate:
     artifact_path: Optional[Path] = None
     chosen_candidate: Optional[BrainstormCandidate] = None
     silent_day_reason: Optional[str] = None
+    # Convenience copy of chosen_candidate.thread_slug so the delivery
+    # site doesn't need to reach through chosen_candidate. Populated by
+    # ``think_substantive`` after critique resolves the chosen candidate.
+    thread_slug: Optional[str] = None
 
     # Full trace — preserved for the audit log and the portfolio review.
     brainstorm_candidates: List[BrainstormCandidate] = field(default_factory=list)
@@ -384,6 +394,7 @@ class ProactiveThinker:
             text=draft_text,
             artifact_path=artifact_path,
             chosen_candidate=chosen,
+            thread_slug=chosen.thread_slug,
             brainstorm_candidates=candidates,
             critique_verdicts=verdicts,
             judge_verdict=judge_verdict,
@@ -475,6 +486,7 @@ class ProactiveThinker:
                     trace=c.get("trace", ""),
                     tools_needed=c.get("tools_needed", []) or [],
                     why_now=c.get("why_now", ""),
+                    thread_slug=c.get("thread_slug") or None,
                 )
                 for c in parsed.get("candidates", [])
             ]
@@ -499,6 +511,7 @@ class ProactiveThinker:
                     "trace": c.trace,
                     "tools_needed": c.tools_needed,
                     "why_now": c.why_now,
+                    "thread_slug": c.thread_slug,
                 }
                 for c in candidates
             ],
@@ -548,6 +561,7 @@ class ProactiveThinker:
                 "trace": chosen.trace,
                 "tools_needed": chosen.tools_needed,
                 "why_now": chosen.why_now,
+                "thread_slug": chosen.thread_slug,
             },
             ensure_ascii=False,
             indent=2,

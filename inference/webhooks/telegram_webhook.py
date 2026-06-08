@@ -1591,5 +1591,7 @@ async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"
         "ADMIN TEST NUDGE user=%s slot=%s len=%d", phone_hash, slot, len(text)
     )
     _send_nudge(chat_id, slot, text)
-    store.record_nudge_sent(target_phone, slot)
+    # v1.5 admin path doesn't pick an open thread; record_nudge_outcome
+    # falls through to record_nudge_sent for thread_slug=None.
+    store.record_nudge_outcome(target_phone, slot)
     return {"phone_hash": phone_hash, "slot": slot, "text": text, "sent": True}

@@ -285,3 +285,159 @@ class TestLoadUserDossier:
         d3 = load_user_dossier(store, "tg_abc")
         assert d3.phone_hash != d1.phone_hash
         store.close()
+
+
+# ── Open threads in the dossier (piece C) ─────────────────────────────
+
+
+class TestDossierThreads:
+    """Piece C: ``load_user_dossier`` hydrates the dossier with the user's
+    open threads, and ``open_threads.md`` renders them in state-grouped
+    sections the brainstorm prompt can read."""
+
+    def test_load_includes_threads_from_store(self, tmp_db):
+        from src.bhai.proactive.threads import ThreadPatch
+
+        store = ConversationStore(tmp_db)
+        store.apply_thread_patches(
+            "tg_threaduser",
+            [
+                ThreadPatch(op="open", topic="saree_biz", context="₹1L Surat plan"),
+                ThreadPatch(op="open", topic="son_class", context="karate query"),
+            ],
+        )
+        dossier = load_user_dossier(store, "tg_threaduser")
+        slugs = {t.slug for t in dossier.threads}
+        assert slugs == {"saree_biz", "son_class"}
+        store.close()
+
+    def test_open_threads_md_lists_dormant_threads(self, tmp_db):
+        from src.bhai.proactive.threads import ThreadPatch
+
+        store = ConversationStore(tmp_db)
+        store.apply_thread_patches(
+            "tg_a",
+            [ThreadPatch(op="open", topic="saree_biz", context="₹1L Surat plan")],
+        )
+        dossier = load_user_dossier(store, "tg_a")
+        rendered = dossier.markdown_map()["open_threads.md"]
+        assert "Dormant" in rendered
+        assert "`saree_biz`" in rendered
+        assert "₹1L Surat plan" in rendered
+        # Placeholder string must NOT appear once threads exist
+        assert "_no curiosities tracked yet_" not in rendered
+        store.close()
+
+    def test_open_threads_md_groups_by_state(self, tmp_db):
+        """Dormant first, then active, then sensitive — the order the
+        brainstorm prompt expects when prioritising candidates."""
+        from src.bhai.proactive.threads import ThreadPatch
+
+        store = ConversationStore(tmp_db)
+        store.apply_thread_patches(
+            "tg_g",
+            [
+                ThreadPatch(op="open", topic="dorm_one", context="dormant ctx"),
+                ThreadPatch(op="open", topic="act_one", context="will be active"),
+                ThreadPatch(op="mark_sensitive", topic="sens_one"),
+            ],
+        )
+        store.mark_thread_nudged("tg_g", "act_one")
+
+        rendered = load_user_dossier(store, "tg_g").markdown_map()["open_threads.md"]
+        # Section headers in order
+        dormant_pos = rendered.index("Dormant")
+        active_pos = rendered.index("Active")
+        sensitive_pos = rendered.index("Sensitive")
+        assert dormant_pos < active_pos < sensitive_pos
+        # Each slug appears under the right header
+        assert "`dorm_one`" in rendered
+        assert "`act_one`" in rendered
+        assert "`sens_one`" in rendered
+        store.close()
+
+    def test_open_threads_md_hides_closed_threads(self, tmp_db):
+        """Closed threads live in the SQLite history (so we can audit /
+        reopen) but they don't clutter the agent's prompt — the
+        brainstorm pass would otherwise waste tokens on resolved
+        topics."""
+        from src.bhai.proactive.threads import ThreadPatch
+
+        store = ConversationStore(tmp_db)
+        store.apply_thread_patches(
+            "tg_c",
+            [
+                ThreadPatch(op="open", topic="open_one", context="ongoing"),
+                ThreadPatch(op="open", topic="done_one", context="initial"),
+            ],
+        )
+        store.apply_thread_patches(
+            "tg_c",
+            [ThreadPatch(op="close", topic="done_one", context="resolved")],
+        )
+        rendered = load_user_dossier(store, "tg_c").markdown_map()["open_threads.md"]
+        assert "`open_one`" in rendered
+        assert "`done_one`" not in rendered
+        # Closed thread still lives in the dossier object for callers that
+        # want it (history audit, simulation tooling)
+        slugs = {t.slug for t in load_user_dossier(store, "tg_c").threads}
+        assert slugs == {"open_one", "done_one"}
+        store.close()
+
+    def test_open_threads_md_includes_elapsed_days(self, tmp_db):
+        """The renderer shows "(last touched Nd ago)" so the brainstorm
+        prompt can prefer dormant threads stale ≥14d. We backdate one
+        thread by 20 days and check the suffix shows up."""
+        from src.bhai.proactive.threads import ThreadPatch
+
+        store = ConversationStore(tmp_db)
+        store.apply_thread_patches(
+            "tg_age", [ThreadPatch(op="open", topic="aged", context="from a while ago")]
+        )
+        # Backdate last_touched_at by 20 days
+        from datetime import datetime, timedelta
+
+        from src.bhai.memory.store import IST
+
+        old = (datetime.now(IST) - timedelta(days=20)).isoformat()
+        store._conn.execute(
+            "UPDATE threads SET last_touched_at = ? WHERE phone = ? AND slug = ?",
+            (old, "tg_age", "aged"),
+        )
+        store._conn.commit()
+
+        rendered = load_user_dossier(store, "tg_age").markdown_map()["open_threads.md"]
+        # Allow 19d or 20d depending on IST rollover
+        assert ("last touched 20d ago" in rendered) or (
+            "last touched 19d ago" in rendered
+        )
+        store.close()
+
+    def test_open_threads_md_placeholder_when_user_has_no_threads(self, tmp_db):
+        store = ConversationStore(tmp_db)
+        rendered = load_user_dossier(store, "tg_empty").markdown_map()[
+            "open_threads.md"
+        ]
+        assert "_no curiosities tracked yet_" in rendered
+        store.close()
+
+    def test_open_threads_md_placeholder_when_only_closed_threads(self, tmp_db):
+        """User has threads but they're all closed — the renderer treats
+        this as "nothing actionable" so the agent doesn't waste prompt
+        budget on resolved topics."""
+        from src.bhai.proactive.threads import ThreadPatch
+
+        store = ConversationStore(tmp_db)
+        store.apply_thread_patches(
+            "tg_allclosed",
+            [ThreadPatch(op="open", topic="resolved", context="will close")],
+        )
+        store.apply_thread_patches(
+            "tg_allclosed",
+            [ThreadPatch(op="close", topic="resolved", context="done")],
+        )
+        rendered = load_user_dossier(store, "tg_allclosed").markdown_map()[
+            "open_threads.md"
+        ]
+        assert "_no curiosities tracked yet_" in rendered
+        store.close()

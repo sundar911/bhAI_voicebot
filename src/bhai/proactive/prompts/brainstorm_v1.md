@@ -48,6 +48,7 @@ You will be given, in the system prompt context:
    - **Trace** — which specific dossier fact or open thread this is grounded in (quote the line)
    - **Tools needed** (if any) — `nanobanana` / `web_search` / `kb_read` / `none`
    - **Why this user, this slot** — one sentence on why this lands for her *today* and *now*
+   - **Thread slug** — if the candidate is grounded in a specific open thread, the slug of that thread (e.g. `saree_business_expansion`). `null` when the candidate is grounded in a domain-file fact rather than an open thread. This is what tells the post-delivery hook which thread to mark as freshly nudged.
 
 ## Output format
 
@@ -61,7 +62,8 @@ Output strict JSON, no markdown, no commentary outside the JSON:
       "summary": "one short line",
       "trace": "quoted dossier line or open-thread state",
       "tools_needed": ["nanobanana"] | ["web_search"] | ["kb_read"] | [],
-      "why_now": "one sentence"
+      "why_now": "one sentence",
+      "thread_slug": "saree_business_expansion" | null
     }
   ]
 }

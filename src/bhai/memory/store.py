@@ -653,6 +653,30 @@ class ConversationStore:
             ),
         )
 
+    def record_nudge_outcome(
+        self,
+        phone: str,
+        slot: str,
+        thread_slug: Optional[str] = None,
+    ) -> None:
+        """Atomic post-delivery hook the nudge schedulers call after a
+        successful send.
+
+        Wraps the two state mutations a delivered nudge produces:
+          - ``record_nudge_sent`` — bumps the per-slot last-sent
+            timestamp (existing v1.5 throttle gate).
+          - ``mark_thread_nudged`` — transitions the targeted thread
+            from ``dormant`` to ``active`` (v2 piece D).
+
+        ``thread_slug=None`` is normal — the v1.5 nudge path doesn't
+        choose a thread, and the v2 thinker leaves it ``None`` when the
+        candidate is grounded in a domain-file fact rather than an open
+        thread. In both cases we still need to record the send.
+        """
+        self.record_nudge_sent(phone, slot)
+        if thread_slug:
+            self.mark_thread_nudged(phone, thread_slug)
+
     def mark_thread_nudged(self, phone: str, slug: str) -> bool:
         """Stamp ``last_nudged_at`` and transition ``dormant → active``.
 

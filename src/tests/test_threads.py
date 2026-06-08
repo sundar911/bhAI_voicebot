@@ -760,3 +760,50 @@ def test_merge_user_overwrites_target_threads_on_conflict(store):
     slugs = {t.slug for t in store.list_threads(telegram)}
     assert slugs == {"real_thread"}
     assert "stale_thread" not in slugs
+
+
+# ── record_nudge_outcome (piece D delivery hook) ───────────────────────
+
+
+class TestRecordNudgeOutcome:
+    """The atomic post-delivery hook the schedulers call after a
+    successful send. Wraps record_nudge_sent + mark_thread_nudged so
+    callers don't have to remember to do both."""
+
+    def test_outcome_with_thread_slug_transitions_dormant_to_active(self, store):
+        phone = "tg_outcome1"
+        store.apply_thread_patches(
+            phone, [ThreadPatch(op="open", topic="biz_plan", context="ctx")]
+        )
+        store.record_nudge_outcome(phone, "morning", thread_slug="biz_plan")
+
+        # Per-slot timestamp was bumped (existing v1.5 throttle gate)
+        assert store.get_last_nudge_sent(phone, "morning") is not None
+        # Thread transitioned dormant→active
+        thread = store.get_thread(phone, "biz_plan")
+        assert thread.state == "active"
+        assert thread.last_nudged_at is not None
+
+    def test_outcome_with_no_thread_slug_only_records_send(self, store):
+        """v1.5 path doesn't pick a thread — outcome should still bump
+        the per-slot timestamp without touching any thread row."""
+        phone = "tg_outcome2"
+        store.apply_thread_patches(
+            phone, [ThreadPatch(op="open", topic="biz_plan", context="ctx")]
+        )
+
+        store.record_nudge_outcome(phone, "morning", thread_slug=None)
+        assert store.get_last_nudge_sent(phone, "morning") is not None
+        # Thread is untouched — still dormant, no nudge timestamp.
+        thread = store.get_thread(phone, "biz_plan")
+        assert thread.state == "dormant"
+        assert thread.last_nudged_at is None
+
+    def test_outcome_with_unknown_slug_still_records_send(self, store):
+        """Defensive: if the thinker emits a slug that doesn't exist in
+        the store (e.g. brand-new thread the LLM hallucinated), the
+        per-slot timestamp still bumps — we don't lose throttle gating
+        because of a bad slug."""
+        phone = "tg_outcome3"
+        store.record_nudge_outcome(phone, "morning", thread_slug="nonexistent")
+        assert store.get_last_nudge_sent(phone, "morning") is not None

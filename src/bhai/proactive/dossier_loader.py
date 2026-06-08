@@ -20,10 +20,12 @@ from __future__ import annotations
 import hashlib
 import re
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from ..memory.store import ConversationStore
+from ..memory.store import IST, ConversationStore
+from .threads import Thread
 
 # ── Bucket definitions ──────────────────────────────────────────────────
 
@@ -291,11 +293,80 @@ class UserDossier:
     financial_facts: List[str] = field(default_factory=list)
     grievance_facts: List[str] = field(default_factory=list)
     scheme_facts: List[str] = field(default_factory=list)
+    threads: List[Thread] = field(default_factory=list)
 
     def _render_bullets(self, facts: List[str], empty_placeholder: str) -> str:
         if not facts:
             return empty_placeholder
         return "\n".join(f"- {f}" for f in facts)
+
+    def _render_threads(self) -> str:
+        """Render the open-threads section: dormant first (most actionable
+        for the next nudge), then active (recently nudged — watch the
+        reaction window), then do_not_nudge (situational awareness only;
+        the brainstorm prompt is told to skip these). Closed threads are
+        hidden by default — they live in the SQLite history but don't
+        clutter the agent's prompt.
+
+        Each thread renders as one bullet with state, the latest context,
+        and the elapsed-days hints the brainstorm pass uses to decide
+        what's stale-but-revisitable. Days are computed against ``now``
+        in IST so a thread last touched yesterday reads as "1d ago"
+        rather than as the raw ISO timestamp.
+        """
+        if not self.threads:
+            return "_no curiosities tracked yet_"
+
+        order = {"dormant": 0, "active": 1, "do_not_nudge": 2, "closed": 3}
+        visible = [t for t in self.threads if t.state != "closed"]
+        visible.sort(key=lambda t: (order.get(t.state, 9), t.last_touched_at))
+
+        if not visible:
+            return "_no curiosities tracked yet_"
+
+        now = datetime.now(IST)
+        sections: Dict[str, List[str]] = {
+            "dormant": [],
+            "active": [],
+            "do_not_nudge": [],
+        }
+        for thread in visible:
+            sections.setdefault(thread.state, []).append(
+                self._render_thread_line(thread, now)
+            )
+
+        out: List[str] = []
+        if sections.get("dormant"):
+            out.append("**Dormant — eligible for the next nudge:**")
+            out.extend(sections["dormant"])
+        if sections.get("active"):
+            if out:
+                out.append("")
+            out.append("**Active — recently nudged, watch for reaction:**")
+            out.extend(sections["active"])
+        if sections.get("do_not_nudge"):
+            if out:
+                out.append("")
+            out.append("**Sensitive — do NOT nudge (await user re-raise):**")
+            out.extend(sections["do_not_nudge"])
+        return "\n".join(out)
+
+    @staticmethod
+    def _render_thread_line(thread: Thread, now: datetime) -> str:
+        """One bullet describing a thread. Includes elapsed days since
+        last touch (and since last nudge, if ever nudged) so the
+        brainstorm pass can prefer dormant threads stale ≥14d."""
+        parts = [f"`{thread.slug}`"]
+        if thread.context:
+            parts.append(f"— {thread.context}")
+        touched_days = _days_since(thread.last_touched_at, now)
+        if touched_days is not None:
+            parts.append(f"(last touched {touched_days}d ago)")
+        if thread.last_nudged_at:
+            nudged_days = _days_since(thread.last_nudged_at, now)
+            if nudged_days is not None:
+                parts.append(f"(nudged {nudged_days}d ago)")
+        return "- " + " ".join(parts)
 
     def markdown_map(self) -> Dict[str, str]:
         """Render the dossier as the {filename: markdown} dict matching the
@@ -348,7 +419,10 @@ class UserDossier:
                 f"# Nudge History — {h}\n\n_no proactive nudges delivered yet_"
             ),
             "open_threads.md": (
-                f"# Open Threads — {h}\n\n_no curiosities tracked yet_"
+                f"# Open Threads — {h}\n\n"
+                "Durable curiosities bhAI is following across days. "
+                "Dormant threads stale ≥14d are the highest-priority "
+                "candidates for the next nudge.\n\n" + self._render_threads()
             ),
         }
 
@@ -373,6 +447,19 @@ def _hash_phone(phone: str) -> str:
     `<phone_hash>` directory layout.
     """
     return hashlib.sha256(phone.encode("utf-8")).hexdigest()[:12]
+
+
+def _days_since(iso_ts: Optional[str], now: datetime) -> Optional[int]:
+    """Whole IST days between ``iso_ts`` and ``now``. Returns None if the
+    timestamp is missing or unparseable so the renderer can omit the
+    "Nd ago" suffix gracefully."""
+    if not iso_ts:
+        return None
+    try:
+        ts = datetime.fromisoformat(iso_ts)
+    except ValueError:
+        return None
+    return max(0, (now - ts).days)
 
 
 def load_user_dossier(store: ConversationStore, phone: str) -> UserDossier:
@@ -405,5 +492,10 @@ def load_user_dossier(store: ConversationStore, phone: str) -> UserDossier:
                 dossier.grievance_facts.append(fact)
             elif bucket == "scheme_status":
                 dossier.scheme_facts.append(fact)
+
+    # Open threads — durable curiosities. Closed threads are loaded into
+    # the dossier object so callers can inspect them if needed, but the
+    # markdown renderer hides them from the agent's prompt.
+    dossier.threads = store.list_threads(phone)
 
     return dossier

@@ -466,3 +466,89 @@ class TestThinkJoke:
         assert result.text is not None  # vault fallback always returns something
         assert result.judge_verdict is not None
         assert result.judge_verdict["verdict"] == "fallback"
+
+
+# ── Piece D: thread_slug round-trip ─────────────────────────────────────
+
+
+class TestThreadSlugRoundTrip:
+    """Piece D wires the chosen open-thread through the thinker so the
+    delivery hook can call ``mark_thread_nudged`` on the right slug."""
+
+    def test_brainstorm_parses_thread_slug_when_present(self):
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "category": "substantive",
+                                "summary": "Check on the loan plan",
+                                "trace": "open_threads: saree_biz dormant",
+                                "tools_needed": [],
+                                "why_now": "stale 14d",
+                                "thread_slug": "saree_biz",
+                            }
+                        ]
+                    }
+                ),
+                _critique_canned(0),
+                "namaste Manimala ji",
+                _judge_canned("pass"),
+            ]
+        )
+        t = _thinker(anth, FakeToolRunner())
+        result = t.think_substantive(_agent_input(), slot="morning")
+        assert result.brainstorm_candidates[0].thread_slug == "saree_biz"
+        # NudgeCandidate.thread_slug is populated from chosen candidate.
+        assert result.thread_slug == "saree_biz"
+
+    def test_missing_thread_slug_is_none_not_empty_string(self):
+        """When the brainstorm output omits thread_slug (candidate
+        grounded in a domain-file fact, not a thread), the parsed
+        value must be ``None`` so the delivery hook knows to skip
+        ``mark_thread_nudged``."""
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                _brainstorm_canned(1),  # no thread_slug field
+                _critique_canned(0),
+                "namaste",
+                _judge_canned("pass"),
+            ]
+        )
+        t = _thinker(anth, FakeToolRunner())
+        result = t.think_substantive(_agent_input(), slot="morning")
+        assert result.brainstorm_candidates[0].thread_slug is None
+        assert result.thread_slug is None
+
+    def test_empty_string_thread_slug_normalises_to_none(self):
+        """LLMs occasionally emit ``"thread_slug": ""`` instead of
+        ``null``. The parser must coerce to ``None`` so the delivery
+        hook's truthy check skips correctly."""
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                json.dumps(
+                    {
+                        "candidates": [
+                            {
+                                "category": "substantive",
+                                "summary": "x",
+                                "trace": "y",
+                                "tools_needed": [],
+                                "why_now": "z",
+                                "thread_slug": "",
+                            }
+                        ]
+                    }
+                ),
+                _critique_canned(0),
+                "namaste",
+                _judge_canned("pass"),
+            ]
+        )
+        t = _thinker(anth, FakeToolRunner())
+        result = t.think_substantive(_agent_input(), slot="morning")
+        assert result.thread_slug is None
