@@ -14,17 +14,24 @@ the agent has chosen to track across sessions:
   surface doesn't blunder back into it.
 
 The reactive LLM emits ``<thread>`` blocks alongside ``<memory>`` blocks.
-This module defines the patch shape — parsing lives in
-``BaseLLM._parse_thread_patches`` (piece A of the open-threads build,
-mirrored on the existing memory parser). Persistence and dossier
-rendering land in subsequent pieces.
+``BaseLLM._parse_thread_patches`` extracts them into ``ThreadPatch``
+objects (piece A). This module also owns the storage shape (``Thread``
+dataclass + state allowlist) consumed by the persistence layer in
+``ConversationStore`` (piece B).
 
 Operations:
 
-    open: <slug> / <context>          create a new active thread
+    open: <slug> / <context>          create a new dormant thread (ready to nudge)
     update: <slug> / <context>        append context to an existing thread
     close: <slug> / <reason>          mark closed — won't be nudged again
     mark_sensitive: <slug>            tag do_not_nudge until user re-raises
+
+States:
+
+    dormant         open + eligible for the next proactive nudge
+    active          just nudged; watching the user's reaction
+    closed          resolved — no further nudging
+    do_not_nudge    sensitive; surfaced for situational awareness only
 
 Slug format: lowercase letters, digits, underscores. The slug is the
 stable key the dossier and the thinker key off; it should describe the
@@ -36,18 +43,33 @@ followed across many turns.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional
 
 # Valid op prefixes the LLM may emit. Anything else is logged and ignored
 # at parse time — strict allowlisting avoids silent drift into ad-hoc
 # operations the persistence layer doesn't know how to apply.
 THREAD_OPS = ("open", "update", "close", "mark_sensitive")
 
+# Persisted thread states. `dormant` is the initial state after `open`
+# (or after auto-promotion from `update` on a missing slug). The
+# proactive thinker transitions `dormant → active` when it fires a nudge
+# referencing the thread (via ``ConversationStore.mark_thread_nudged``),
+# so the next thinking pass can tell which threads it's already poked.
+# `closed` and `do_not_nudge` are sticky — only an `open` op (which
+# reopens a closed slug) can move out of them.
+THREAD_STATES = ("dormant", "active", "closed", "do_not_nudge")
+
 # Slugs are kebab/snake-style identifiers; we accept lowercase letters,
 # digits, and underscores. Hyphens are intentionally excluded so the slug
 # survives round-tripping through any format that treats hyphens
 # specially (Markdown, URL paths). Length 1-80 chars.
 SLUG_PATTERN = re.compile(r"^[a-z0-9_]{1,80}$")
+
+# Hard cap on per-thread history rows kept inside the encrypted history
+# blob. Bounds row size so a chatty thread can't pathologically inflate
+# the SQLite database; oldest entries fall off first.
+MAX_HISTORY_ENTRIES = 20
 
 
 @dataclass
@@ -56,9 +78,9 @@ class ThreadPatch:
 
     The reactive turn emits zero or more of these inside ``<thread>...
     </thread>`` blocks. The webhook is responsible for applying them
-    via the (forthcoming) ``apply_thread_patches()`` once the storage
-    layer lands; ``BaseLLM`` stays storage-ignorant the same way it
-    stays storage-ignorant about memory patches.
+    via ``ConversationStore.apply_thread_patches()``;
+    ``BaseLLM`` stays storage-ignorant the same way it stays
+    storage-ignorant about memory patches.
     """
 
     op: str  # one of THREAD_OPS
@@ -79,3 +101,24 @@ class ThreadPatch:
         if self.op == "mark_sensitive":
             return True  # context optional
         return bool(self.context)
+
+
+@dataclass
+class Thread:
+    """One persisted open thread, as returned by
+    ``ConversationStore.list_threads`` / ``get_thread``.
+
+    ``context`` is the latest one-line summary (the most recent ``open``
+    or ``update`` body, or the ``close`` reason). ``history`` is the
+    append-only log of past ops, capped at ``MAX_HISTORY_ENTRIES``;
+    each entry is ``{"ts": iso, "op": <op>, "context": str}``.
+    """
+
+    phone: str
+    slug: str
+    state: str  # one of THREAD_STATES
+    context: str
+    history: List[Dict[str, str]] = field(default_factory=list)
+    opened_at: str = ""
+    last_touched_at: str = ""
+    last_nudged_at: Optional[str] = None

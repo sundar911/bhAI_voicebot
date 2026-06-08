@@ -215,6 +215,7 @@ def test_merge_user_same_phone_is_noop(store):
         "messages_migrated": 0,
         "memory_migrated": 0,
         "nudges_migrated": 0,
+        "threads_migrated": 0,
     }
     assert store.count_user_messages(phone) == 1
 
