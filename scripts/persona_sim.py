@@ -84,6 +84,10 @@ def cmd_react(args):
         mode_instruction="",
     )
     print(f"\nbhAI: {res['text']}")
+    if res.get("escalate"):
+        print(f"[ESCALATE: true  category={res.get('category')}]")
+    else:
+        print("[escalate: false]")
     store.save_message(args.phone, "assistant", res["text"], sid)
     _apply_memory(store, args.phone, mem, res.get("memory_patches"))
     tp = res.get("thread_patches") or []
