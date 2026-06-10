@@ -487,6 +487,54 @@ class ConversationStore:
         self._conn.commit()
         return True
 
+    def backfill_nudge_log(
+        self,
+        phone: str,
+        slot: str,
+        *,
+        category: str,
+        text: str,
+        delivered_at: str,
+        reaction: Optional[str] = None,
+        reacted_at: Optional[str] = None,
+        topic: Optional[str] = None,
+    ) -> Optional[int]:
+        """Idempotent historical insert for the nudge_log migration.
+
+        Unlike ``log_nudge_delivered`` (which stamps ``_now_iso()``), this
+        writes the ORIGINAL ``delivered_at`` and an optional already-known
+        ``reaction``/``reacted_at`` in one shot — used by the one-off
+        reconstruction that seeds nudge_log from the ``messages`` transcript
+        for pilot users who pre-date the feedback loop. Skips (returns None)
+        if a row with the same ``(phone, slot, delivered_at)`` already exists,
+        so re-runs are safe. Returns the new row id otherwise.
+        """
+        exists = self._conn.execute(
+            """SELECT 1 FROM nudge_log
+               WHERE phone = ? AND slot = ? AND delivered_at = ? LIMIT 1""",
+            (phone, slot, delivered_at),
+        ).fetchone()
+        if exists:
+            return None
+        cur = self._conn.execute(
+            """INSERT INTO nudge_log
+                   (phone, slot, category, topic, text_enc, delivered_at,
+                    reaction_enc, reacted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                phone,
+                slot,
+                category,
+                topic,
+                self._encrypt(text),
+                delivered_at,
+                self._encrypt(reaction) if reaction else None,
+                reacted_at,
+            ),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid) if cur.lastrowid is not None else -1
+
     def recent_nudges(
         self,
         phone: str,
