@@ -173,6 +173,10 @@ Rules:
 - One thread block per topic per turn. Don't open and immediately
   update the same slug in the same response — combine the two into a
   single richer `open`.
+- When the cot/out JSON contract is active, emit `<thread>` blocks
+  INSIDE the "out" field's string value at the end, alongside any
+  `<memory>` blocks — they're stripped before TTS just like memory.
+  They are NOT separate JSON keys.
 """
 
 
@@ -1212,11 +1216,15 @@ class BaseLLM(ABC):
         #   1. memory patches  — <memory>...</memory> blocks live INSIDE `out`
         #      per MEMORY_INSTRUCTION; the patches are extracted upstream from
         #      `raw`, here we strip them from the spoken text.
-        #   2. escalate-category line  — "ESCALATE_CATEGORY: docs_bc" is also
+        #   2. thread patches  — <thread>...</thread> blocks (THREAD_INSTRUCTION)
+        #      also live INSIDE `out`; extracted upstream from `raw`, stripped
+        #      here so TTS never reads "thread open ..." aloud.
+        #   3. escalate-category line  — "ESCALATE_CATEGORY: docs_bc" is also
         #      inside `out` and gets read aloud by TTS if left in.
-        #   3. markdown  — asterisks/headers/list markers from the model.
-        #   4. emoji  — Sarvam TTS reads emojis as their Unicode names.
+        #   4. markdown  — asterisks/headers/list markers from the model.
+        #   5. emoji  — Sarvam TTS reads emojis as their Unicode names.
         cleaned = self._strip_memory_patches(out)
+        cleaned = self._strip_thread_patches(cleaned)
         cleaned = "\n".join(
             line
             for line in cleaned.splitlines()

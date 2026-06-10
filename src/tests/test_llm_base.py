@@ -697,6 +697,32 @@ def test_generate_strips_emoji_from_out(tmp_knowledge_base):
     assert "🙏" in result["cot"]
 
 
+def test_generate_strips_thread_blocks_from_out(tmp_knowledge_base):
+    """Regression for the dev→v2 merge: `<thread>` blocks live INSIDE `out`
+    (like `<memory>`), so the structured path must strip them from the spoken
+    text — otherwise TTS reads "thread open ..." aloud — while still parsing
+    them into thread_patches from the raw payload."""
+    cfg = load_config()
+    payload = (
+        '{"cot": "x", "out": "अच्छा, तो saree का काम कैसा चल रहा है?\\n'
+        "<memory>fact: runs a saree business</memory>\\n"
+        '<thread>open: saree_business_expansion / ₹1L loan plan for Surat supplier</thread>"}'
+    )
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["parsed"] is True
+    # Neither block kind leaks into the spoken reply.
+    assert "<thread>" not in result["text"]
+    assert "<memory>" not in result["text"]
+    assert "saree_business_expansion" not in result["text"]
+    # The actual Hindi reply survives.
+    assert "saree का काम कैसा चल रहा है" in result["text"]
+    # Threads are still parsed from raw, so the proactive layer sees them.
+    patches = result["thread_patches"]
+    assert patches and patches[0].op == "open"
+    assert patches[0].topic == "saree_business_expansion"
+
+
 def test_generate_strips_emoji_from_markdown_emphasis(tmp_knowledge_base):
     """`*✨*` becomes empty: markdown strips the asterisks first, emoji-scrub
     removes the sparkle — no stray asterisks left orphaned."""
