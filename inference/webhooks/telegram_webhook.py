@@ -424,12 +424,21 @@ async def _webhook_watchdog_loop(config) -> None:
         await asyncio.sleep(interval)
 
 
-def _send_nudge(chat_id: int, slot: str, text: str) -> None:
+def _send_nudge(
+    chat_id: int,
+    slot: str,
+    text: str,
+    text_artifact: Optional[str] = None,
+    artifact_path: Optional[Path] = None,
+) -> None:
     """Deliver a generated nudge as a Telegram voice message and log it.
 
     Used as the `send_fn` callback for the nudge loop. Persists the nudge
     text to the conversation store as an assistant message so it shows up
-    in /conversations and the LLM sees it in subsequent context.
+    in /conversations and the LLM sees it in subsequent context. When the v2
+    thinker produced a paste-able ``text_artifact`` (a catalog / list /
+    template), it rides as a SEPARATE text message after the voice note — the
+    voice note describes it; TTS never speaks its formatting.
     """
     config = load_config()
     store = _get_store()
@@ -452,6 +461,21 @@ def _send_nudge(chat_id: int, slot: str, text: str) -> None:
         run_dir=run_dir,
         phone_id=phone_id,
     )
+
+    if artifact_path:
+        try:
+            telegram_client.send_photo(chat_id=chat_id, image_path=artifact_path)
+            logger.info("Nudge image sent to user=%s", phone_id)
+        except Exception as e:
+            logger.error("Nudge image failed for user=%s: %s", phone_id, e)
+
+    if text_artifact:
+        try:
+            telegram_client.send_text(chat_id=chat_id, body=text_artifact)
+            store.save_message(phone, "assistant", text_artifact, session_id)
+            logger.info("Nudge text artifact sent to user=%s", phone_id)
+        except Exception as e:
+            logger.error("Nudge text artifact failed for user=%s: %s", phone_id, e)
 
 
 @asynccontextmanager

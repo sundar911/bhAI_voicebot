@@ -95,6 +95,7 @@ class Config:
     nudge_enabled: bool = False  # Master kill switch — must be opted in
     nudge_phones: str = ""  # Comma-separated phone hashes allowed to receive nudges
     nudge_morning_hour_ist: int = 10  # Local IST hour for morning check-in
+    nudge_afternoon_hour_ist: int = 14  # Local IST hour for the afternoon joke
     nudge_night_hour_ist: int = 21  # Local IST hour for night check-in
     nudge_window_minutes: int = 30  # Firing window width around each slot
     nudge_check_interval_seconds: int = 300  # How often the loop wakes
@@ -219,6 +220,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         nudge_enabled=os.getenv("NUDGE_ENABLED", "false").lower() == "true",
         nudge_phones=os.getenv("NUDGE_PHONES", ""),
         nudge_morning_hour_ist=int(os.getenv("NUDGE_MORNING_HOUR_IST", "10")),
+        nudge_afternoon_hour_ist=int(os.getenv("NUDGE_AFTERNOON_HOUR_IST", "14")),
         nudge_night_hour_ist=int(os.getenv("NUDGE_NIGHT_HOUR_IST", "21")),
         nudge_window_minutes=int(os.getenv("NUDGE_WINDOW_MINUTES", "30")),
         nudge_check_interval_seconds=int(

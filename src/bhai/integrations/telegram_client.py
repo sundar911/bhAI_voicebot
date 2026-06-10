@@ -100,6 +100,33 @@ class TelegramClient:
             "message_id": data.get("result", {}).get("message_id"),
         }
 
+    def send_photo(
+        self, chat_id: int, image_path: Path, caption: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Send an image via Telegram (e.g. a generated logo / catalog image).
+
+        Returns {"message_id": int, "ok": bool}.
+        """
+        data: Dict[str, Any] = {"chat_id": chat_id}
+        if caption:
+            data["caption"] = caption
+        with open(image_path, "rb") as f:
+            resp = requests.post(
+                f"{self.api_base}/sendPhoto",
+                data=data,
+                files={"photo": (image_path.name, f, "image/png")},
+                timeout=60,
+            )
+        if resp.status_code >= 400:
+            raise RuntimeError(
+                f"Telegram sendPhoto error {resp.status_code}: {resp.text}"
+            )
+        result = resp.json()
+        return {
+            "ok": result.get("ok", False),
+            "message_id": result.get("result", {}).get("message_id"),
+        }
+
     def send_voice(self, chat_id: int, audio_path: Path) -> Dict[str, Any]:
         """
         Send a voice message via Telegram.

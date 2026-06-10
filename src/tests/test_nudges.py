@@ -143,14 +143,21 @@ def test_should_nudge_ok_if_same_slot_was_yesterday():
 
 def test_should_nudge_rejects_unknown_slot():
     now = _ist(hour=10)
+    # "afternoon" is now a real slot (the joke slot); a genuinely unknown one isn't.
     assert (
         should_nudge_user(
             now_ist=now,
-            slot="afternoon",
+            slot="midnight",
             last_user_message_at=None,
             last_nudge_at=None,
         )
         is False
+    )
+    assert should_nudge_user(
+        now_ist=now,
+        slot="afternoon",
+        last_user_message_at=None,
+        last_nudge_at=None,
     )
 
 
