@@ -1409,15 +1409,15 @@ async def admin_backfill_nudges(
     dry_run: bool = True,
     days: int = 30,
 ):
-    """One-shot: seed nudge_history from existing assistant messages.
+    """One-shot: seed nudge_log from existing assistant messages.
 
-    The v1.5 nudge backport (commit 70eb0f4) added the nudge_history
-    table, which the new NUDGE_INSTRUCTION reads from for anti-relentless
-    dedup. The table is empty on first deploy — but the actual nudges
-    are already in the messages transcript. This endpoint walks every
-    phone's history, identifies the assistant messages that were nudges
-    (slot-window timestamp + > 30 min gap from previous message), and
-    seeds nudge_history with them, preserving original timestamps.
+    Pilot users pre-date the nudge_log feedback table. The actual nudges
+    are already in the messages transcript, so this re-detects the
+    assistant messages that were nudges (slot-window timestamp + > 30 min
+    gap from previous message) and pairs each with the user's reaction
+    (first reply inside the 24h window), seeding nudge_log with original
+    timestamps. Delegates to proactive.monitor.reconstruct_nudge_log — the
+    single source of the reconstruction heuristic (also used by the CLI).
 
     Defaults to ``dry_run=true`` — pass ``dry_run=false`` to actually
     write. Idempotent: re-runs skip rows already inserted.
@@ -1432,129 +1432,45 @@ async def admin_backfill_nudges(
 
     # Import lazily so the webhook module doesn't pull config at import
     # time (matches the existing pattern in admin_memory etc.).
-    from datetime import timedelta as _td
-
-    from inference.webhooks.nudges import IST as _IST
     from src.bhai.config import load_config
+    from src.bhai.proactive.monitor import reconstruct_nudge_log
 
     cfg = load_config()
     store = _get_store()
-    cutoff_iso = (datetime.now(_IST) - _td(days=days)).isoformat()
 
-    # Slot windows + nudge-vs-reply gap mirror the standalone script
-    # (scripts/backfill_nudge_history.py). Keep the constants in sync if
-    # either side changes.
-    MIN_GAP_MINUTES = 30
+    per_phone_counts = reconstruct_nudge_log(store, cfg, days=days, dry_run=dry_run)
 
-    def _classify_slot(ts: datetime) -> Optional[str]:
-        ist_ts = ts.astimezone(_IST)
-        if (
-            ist_ts.hour == cfg.nudge_morning_hour_ist
-            and ist_ts.minute <= cfg.nudge_window_minutes
-        ):
-            return "morning"
-        if (
-            ist_ts.hour == cfg.nudge_night_hour_ist
-            and ist_ts.minute <= cfg.nudge_window_minutes
-        ):
-            return "night"
-        return None
-
-    phones = [
-        r[0]
-        for r in store._conn.execute(
-            """SELECT DISTINCT phone FROM messages
-               WHERE role = 'assistant' AND timestamp >= ?""",
-            (cutoff_iso,),
-        ).fetchall()
-    ]
-
-    totals = {"scanned": 0, "candidates": 0, "inserted": 0, "skipped_existing": 0}
+    totals = {"nudges": 0, "with_reaction": 0, "inserted": 0, "skipped_existing": 0}
     per_phone: list[dict] = []
-    dry_samples: list[dict] = []
-
-    for phone in phones:
-        rows = store._conn.execute(
-            """SELECT role, content_enc, timestamp FROM messages
-               WHERE phone = ? AND timestamp >= ?
-               ORDER BY timestamp ASC""",
-            (phone, cutoff_iso),
-        ).fetchall()
-        if not rows:
-            continue
-
-        messages = [
-            {"role": r[0], "content": store._decrypt(r[1]), "timestamp": r[2]}
-            for r in rows
-        ]
-        existing_keys = store.list_nudge_history_keys(phone)
-
-        scanned = len(messages)
-        candidates = 0
-        inserted = 0
-        skipped = 0
+    for phone, c in per_phone_counts.items():
         phone_hash = hashlib.sha256(phone.encode()).hexdigest()[:12]
-
-        for i, m in enumerate(messages):
-            if m["role"] != "assistant":
-                continue
-            ts = datetime.fromisoformat(m["timestamp"])
-            slot = _classify_slot(ts)
-            if slot is None:
-                continue
-            if i > 0:
-                prev_ts = datetime.fromisoformat(messages[i - 1]["timestamp"])
-                if (ts - prev_ts) <= _td(minutes=MIN_GAP_MINUTES):
-                    continue
-            candidates += 1
-            if (slot, m["timestamp"]) in existing_keys:
-                skipped += 1
-                continue
-            if dry_run:
-                if len(dry_samples) < 60:
-                    dry_samples.append(
-                        {
-                            "phone_hash": phone_hash,
-                            "slot": slot,
-                            "sent_at": m["timestamp"],
-                            "text_preview": m["content"][:120],
-                        }
-                    )
-            else:
-                store.record_nudge_text(phone, slot, m["content"], at=m["timestamp"])
-            inserted += 1
-
-        if candidates == 0:
-            continue
         per_phone.append(
             {
                 "phone_hash": phone_hash,
-                "scanned": scanned,
-                "candidates": candidates,
-                "inserted": inserted,
-                "skipped_existing": skipped,
+                "scanned": c.scanned,
+                "nudges": c.nudges,
+                "with_reaction": c.with_reaction,
+                "inserted": c.inserted,
+                "skipped_existing": c.skipped_existing,
             }
         )
-        totals["scanned"] += scanned
-        totals["candidates"] += candidates
-        totals["inserted"] += inserted
-        totals["skipped_existing"] += skipped
+        totals["nudges"] += c.nudges
+        totals["with_reaction"] += c.with_reaction
+        totals["inserted"] += c.inserted
+        totals["skipped_existing"] += c.skipped_existing
 
     logger.warning(
-        "ADMIN BACKFILL-NUDGES dry_run=%s days=%d → %s",
+        "ADMIN BACKFILL-NUDGE-LOG dry_run=%s days=%d → %s",
         dry_run,
         days,
         totals,
     )
-    response = {
+    return {
         "dry_run": dry_run,
         "days": days,
         "totals": totals,
         "per_phone": per_phone,
     }
-    if dry_run:
-        response["sample_candidates"] = dry_samples
-    return response
 
 
 @app.post("/admin/reset/{phone_hash}")
