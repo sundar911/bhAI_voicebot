@@ -642,19 +642,27 @@ class BaseLLM(ABC):
             return match.group(1).lower() == "true"
         return "escalate" in text.lower()
 
-    # Valid ESCALATE_CATEGORY values. Anything else → routed as "grievance"
-    # (the default impact-team list). Office-specific docs categories route
-    # to the per-office recipients (see escalations/handler.py).
-    _ESCALATION_CATEGORIES = ("docs_bc", "docs_midc", "docs_unknown", "grievance")
+    # Valid ESCALATE_CATEGORY values. Anything else → routed as "mental_health"
+    # (the default impact-team list — the safe fallback for an unclassified
+    # escalation). Office-specific docs categories and workplace (HR) route to
+    # their own recipients (see escalations/handler.py).
+    _ESCALATION_CATEGORIES = (
+        "docs_bc",
+        "docs_midc",
+        "docs_unknown",
+        "workplace",
+        "mental_health",
+    )
 
     @staticmethod
     def _detect_escalation_category(text: str) -> Optional[str]:
         """Detect the office/topic routing category from the LLM response.
 
-        Returns one of: 'docs_bc', 'docs_midc', 'docs_unknown', 'grievance', or
-        None if the model didn't emit a category (caller treats None as
-        'grievance' default). Unknown category strings also return None so
-        a bad model output can't silently misroute.
+        Returns one of: 'docs_bc', 'docs_midc', 'docs_unknown', 'workplace',
+        'mental_health', or None if the model didn't emit a category (caller
+        treats None as the 'mental_health' impact-team default). Unknown
+        category strings also return None so a bad model output can't silently
+        misroute.
         """
         match = re.search(
             r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", text, flags=re.IGNORECASE

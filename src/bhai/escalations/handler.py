@@ -45,8 +45,15 @@ _WORK_LOCATION_RE = re.compile(
 )
 
 # Valid ESCALATE_CATEGORY values the LLM may emit. Anything else (or absent)
-# → routed as "grievance" (the default impact-team list).
-_VALID_CATEGORIES = ("docs_bc", "docs_midc", "docs_unknown", "grievance")
+# → routed as "mental_health" (the default impact-team list — the safe
+# fallback, since an unclassified escalation may be a welfare/safety case).
+_VALID_CATEGORIES = (
+    "docs_bc",
+    "docs_midc",
+    "docs_unknown",
+    "workplace",
+    "mental_health",
+)
 _CATEGORY_RE = re.compile(r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", re.IGNORECASE)
 
 
@@ -132,8 +139,12 @@ def _recipients_for_category(
                 deduped.append(addr)
         if deduped:
             return deduped, "docs_unknown"
-    # Default: grievance / unknown category → impact team
-    return list(config.escalation_recipients), "grievance"
+    if category == "workplace" and config.escalation_recipients_workplace:
+        return list(config.escalation_recipients_workplace), "workplace"
+    # Default: mental_health / unknown category → impact team (Rishi + Anu).
+    # This is the safe fallback — an unclassified escalation may be a
+    # welfare/safety case, so it goes to the team with welfare oversight.
+    return list(config.escalation_recipients), "mental_health"
 
 
 async def handle_escalation(
@@ -162,7 +173,8 @@ async def handle_escalation(
 
     `category` (from BaseLLM._detect_escalation_category) routes to the right
     recipients: 'docs_bc'→Priti, 'docs_midc'→Dinesh, 'docs_unknown'→both,
-    anything else / None → default impact-team list (Rishi + Anu).
+    'workplace'→Simran (HR), 'mental_health' / None → default impact-team
+    list (Rishi + Anu). The always-on CC (Anu) applies to every category.
     """
     if not config.escalation_enabled:
         logger.warning("Escalation skipped for user=%s: escalation disabled", phone_id)

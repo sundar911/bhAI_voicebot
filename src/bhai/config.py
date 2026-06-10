@@ -159,6 +159,8 @@ class Config:
     # Per-office govt-docs routing. Empty tuple → falls back to default.
     escalation_recipients_docs_bc: tuple = ()
     escalation_recipients_docs_midc: tuple = ()
+    # Workplace grievances (supervisor/pay/harassment-at-work) → HR (Simran).
+    escalation_recipients_workplace: tuple = ()
     # Always-on CC list — every escalation email, regardless of category.
     # Default is anu@tinymiracles.com (per-org policy: Anu has oversight of
     # all escalations). Add an operator email (Sundar) here in Railway env
@@ -302,6 +304,14 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             for addr in os.getenv(
                 "ESCALATION_RECIPIENTS_DOCS_MIDC",
                 "dinesh@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_recipients_workplace=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS_WORKPLACE",
+                "simran@tinymiracles.com",
             ).split(",")
             if addr.strip()
         ),

@@ -86,6 +86,7 @@ def cfg_enabled():
         escalation_recipients=("rishi@example.com", "anu@example.com"),
         escalation_recipients_docs_bc=("priti@example.com",),
         escalation_recipients_docs_midc=("dinesh@example.com",),
+        escalation_recipients_workplace=("simran@example.com",),
         escalation_enabled=True,
     )
 
@@ -270,7 +271,7 @@ async def test_voice_sender_failure_does_not_propagate(cfg_enabled, base_kwargs)
 
 
 @pytest.mark.asyncio
-async def test_category_none_routes_to_default_grievance_recipients(
+async def test_category_none_routes_to_default_mental_health_recipients(
     cfg_enabled, base_kwargs
 ):
     email_client = StubEmailClient(results=[True])
@@ -278,21 +279,35 @@ async def test_category_none_routes_to_default_grievance_recipients(
         config=cfg_enabled, email_client=email_client, category=None, **base_kwargs
     )
     assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
-    assert "grievance" in email_client.calls[0]["subject"]
+    assert "mental_health" in email_client.calls[0]["subject"]
 
 
 @pytest.mark.asyncio
-async def test_category_grievance_routes_to_default_recipients(
+async def test_category_mental_health_routes_to_default_recipients(
     cfg_enabled, base_kwargs
 ):
     email_client = StubEmailClient(results=[True])
     await handle_escalation(
         config=cfg_enabled,
         email_client=email_client,
-        category="grievance",
+        category="mental_health",
         **base_kwargs,
     )
     assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
+    assert "mental_health" in email_client.calls[0]["subject"]
+
+
+@pytest.mark.asyncio
+async def test_category_workplace_routes_to_simran(cfg_enabled, base_kwargs):
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled,
+        email_client=email_client,
+        category="workplace",
+        **base_kwargs,
+    )
+    assert email_client.calls[0]["to"] == ["simran@example.com"]
+    assert "workplace" in email_client.calls[0]["subject"]
 
 
 @pytest.mark.asyncio
@@ -394,7 +409,7 @@ def test_parse_escalation_category_case_insensitive():
 
 def test_parse_escalation_category_unknown_returns_none():
     """A bad model output shouldn't silently misroute — fall back to None
-    (handler treats None as 'grievance' default)."""
+    (handler treats None as the 'mental_health' impact-team default)."""
     from bhai.escalations.handler import parse_escalation_category
 
     assert (
