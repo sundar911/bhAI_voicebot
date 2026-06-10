@@ -421,11 +421,11 @@ def _maybe_nudge_one(
 
     logger.info("Sending nudge to user=%s slot=%s len=%d", phone_id, slot, len(text))
     send_fn(chat_id, slot, text)
-    # v1.5 path doesn't pick an open thread (no ProactiveThinker yet);
-    # record_nudge_outcome falls through to record_nudge_sent when
-    # thread_slug is None. The v2 wiring lands when the thinker
-    # replaces build_and_generate_nudge.
-    store.record_nudge_outcome(phone, slot)
+    # v1.5 path doesn't pick an open thread (no ProactiveThinker yet), so
+    # thread_slug stays None — but we DO log the content now so
+    # nudge_history.md reflects what actually went out. In prod these v1.5
+    # check-ins are the real delivered nudges the feedback loop must see.
+    store.record_nudge_outcome(phone, slot, category="checkin", text=text)
 
 
 def build_and_generate_nudge(

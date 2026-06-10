@@ -552,3 +552,164 @@ class TestThreadSlugRoundTrip:
         t = _thinker(anth, FakeToolRunner())
         result = t.think_substantive(_agent_input(), slot="morning")
         assert result.thread_slug is None
+
+
+# ── Phase 2: relentless re-pick guard + trust-repair mode ─────────────
+
+
+def _ai_with(threads, recent_nudges=None):
+    """AgentInput carrying specific threads + nudge-log rows (Phase 2 tests)."""
+    d = UserDossier(
+        phone="tg_m",
+        phone_hash="abc123def456",
+        summary="s",
+        core_facts=["Naam: Manimala"],
+        threads=threads,
+        recent_nudges=recent_nudges or [],
+    )
+    return AgentInput(dossier=d, recent_messages=[])
+
+
+def test_dossier_flags_active_awaiting_thread():
+    """Active thread whose last nudge got no reaction → AWAITING; once she
+    reacts → not awaiting. (Powers the relentless-re-pick guard, event E.)"""
+    from src.bhai.memory.store import NudgeLogEntry
+    from src.bhai.proactive.threads import Thread
+
+    d = UserDossier(
+        phone="tg_m",
+        phone_hash="h",
+        summary="",
+        threads=[
+            Thread(
+                phone="tg_m",
+                slug="biz",
+                state="active",
+                context="saree biz",
+                last_nudged_at="2026-06-01T10:00:00+05:30",
+            )
+        ],
+        recent_nudges=[
+            NudgeLogEntry(
+                phone="tg_m",
+                slot="morning",
+                category="substantive",
+                text="pitched biz",
+                delivered_at="2026-06-01T10:00:00+05:30",
+                topic="biz",
+                reaction=None,
+            )
+        ],
+    )
+    assert d.is_active_awaiting("biz") is True
+    assert "AWAITING" in d.markdown_map()["open_threads.md"]
+
+    d.recent_nudges[0].reaction = "haan dekha, achha laga"
+    assert d.is_active_awaiting("biz") is False
+
+
+def test_thinker_drops_relentless_active_repick():
+    """If critique still picks a candidate grounded in an active AWAITING
+    thread, the thinker swaps to a non-awaiting candidate (event E)."""
+    from src.bhai.memory.store import NudgeLogEntry
+    from src.bhai.proactive.threads import Thread
+
+    brainstorm = json.dumps(
+        {
+            "candidates": [
+                {
+                    "category": "substantive",
+                    "summary": "re-pitch biz again",
+                    "trace": "t",
+                    "tools_needed": [],
+                    "why_now": "w",
+                    "thread_slug": "biz",
+                },
+                {
+                    "category": "substantive",
+                    "summary": "a fresh topic she raised",
+                    "trace": "t2",
+                    "tools_needed": [],
+                    "why_now": "w2",
+                    "thread_slug": None,
+                },
+            ]
+        }
+    )
+    anth = FakeAnthropic()
+    anth.set_responses(
+        [brainstorm, _critique_canned(0), "namaste ji", _judge_canned("pass")]
+    )
+    ai = _ai_with(
+        threads=[
+            Thread(
+                phone="tg_m",
+                slug="biz",
+                state="active",
+                context="saree biz",
+                last_nudged_at="2026-06-01T10:00:00+05:30",
+            )
+        ],
+        recent_nudges=[
+            NudgeLogEntry(
+                phone="tg_m",
+                slot="morning",
+                category="substantive",
+                text="pitched biz",
+                delivered_at="2026-06-01T10:00:00+05:30",
+                topic="biz",
+                reaction=None,
+            )
+        ],
+    )
+    result = _thinker(anth, FakeToolRunner()).think_substantive(ai, slot="morning")
+    # Critique chose the relentless re-pick (index 0); the backstop swapped it.
+    assert result.thread_slug != "biz"
+
+
+def test_trust_repair_bypasses_brainstorm_in_substantive():
+    """An open `trust_repair` thread routes the substantive slot straight to a
+    gentle repair: brainstorm/critique are skipped (only draft+judge run)."""
+    from src.bhai.proactive.threads import Thread
+
+    anth = FakeAnthropic()
+    anth.set_responses(
+        ["कल रात की बात — माफ़ कीजिए, मेरी गलती थी।", _judge_canned("pass")]
+    )
+    ai = _ai_with(
+        threads=[
+            Thread(
+                phone="tg_m",
+                slug="trust_repair",
+                state="dormant",
+                context="user felt misled about outreach",
+            )
+        ]
+    )
+    result = _thinker(anth, FakeToolRunner()).think_substantive(ai, slot="morning")
+    assert result.category == "substantive"
+    assert "माफ़" in result.text
+    # Only draft + judge were called — brainstorm and critique were bypassed.
+    assert len(anth.calls) == 2
+
+
+def test_trust_repair_suppresses_afternoon_joke():
+    """During a trust rupture the afternoon slot sends a gentle repair, not a
+    joke — think_joke routes to the repair path (event F)."""
+    from src.bhai.proactive.threads import Thread
+
+    anth = FakeAnthropic()
+    anth.set_responses(["माफ़ कीजिए — आगे से सच ही बोलूँगी।", _judge_canned("pass")])
+    ai = _ai_with(
+        threads=[
+            Thread(
+                phone="tg_m",
+                slug="trust_repair",
+                state="active",
+                context="user felt misled",
+            )
+        ]
+    )
+    result = _thinker(anth, FakeToolRunner()).think_joke(ai)
+    assert result.category == "substantive"  # NOT a joke
+    assert len(anth.calls) == 2  # repair draft+judge, no joke pass

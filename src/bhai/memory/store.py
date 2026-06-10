@@ -7,6 +7,7 @@ import json
 import logging
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -26,6 +27,30 @@ SESSION_GAP_HOURS = 4
 def _now_iso() -> str:
     """Current time in ISO 8601 (IST)."""
     return datetime.now(IST).isoformat()
+
+
+@dataclass
+class NudgeLogEntry:
+    """One delivered proactive nudge, plus the user's reaction if one came.
+
+    Written by ``ConversationStore.log_nudge_delivered`` at delivery time;
+    ``reaction`` / ``reacted_at`` are filled in later by
+    ``record_nudge_reaction`` when the user's next message arrives inside
+    the attribution window. The dossier renderer turns these rows into
+    ``nudge_history.md`` — the data the anti-relentless brainstorm/critique
+    prompts and the joke-dedup pass have always been told to read but never
+    actually had (the file was a hardcoded placeholder before this).
+    """
+
+    phone: str
+    slot: str
+    category: str
+    text: str
+    delivered_at: str
+    topic: Optional[str] = None
+    reaction: Optional[str] = None
+    reacted_at: Optional[str] = None
+    id: Optional[int] = None
 
 
 class ConversationStore:
@@ -80,6 +105,26 @@ class ConversationStore:
                 throttle_hours INTEGER NOT NULL,
                 updated_at TEXT NOT NULL
             );
+
+            -- v2 proactive feedback loop: the actual content of each
+            -- delivered nudge + the user's reaction. Distinct from the
+            -- `nudges` throttle table (which only holds per-slot
+            -- last_sent timestamps). text_enc / reaction_enc are
+            -- Fernet-encrypted like message content.
+            CREATE TABLE IF NOT EXISTS nudge_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                category TEXT NOT NULL,
+                topic TEXT,
+                text_enc TEXT NOT NULL,
+                delivered_at TEXT NOT NULL,
+                reaction_enc TEXT,
+                reacted_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_nudge_log_phone_time
+                ON nudge_log(phone, delivered_at);
 
             CREATE TABLE IF NOT EXISTS threads (
                 phone TEXT NOT NULL,
@@ -313,6 +358,110 @@ class ConversationStore:
             (cutoff,),
         ).fetchall()
         return [r[0] for r in rows]
+
+    # ── Nudge content log (v2 proactive feedback loop) ────────────────
+
+    def log_nudge_delivered(
+        self,
+        phone: str,
+        slot: str,
+        *,
+        category: str,
+        text: str,
+        topic: Optional[str] = None,
+    ) -> int:
+        """Append the content of a delivered nudge to ``nudge_log``.
+
+        The write half of the proactive feedback loop. Stores the spoken
+        text encrypted (it carries the user's name + personal context, same
+        privacy contract as ``messages``). ``topic`` is the thread slug or a
+        short label the relentlessness gate dedups on; ``None`` for jokes /
+        domain-grounded nudges. Returns the new row id.
+        """
+        cur = self._conn.execute(
+            """INSERT INTO nudge_log
+                   (phone, slot, category, topic, text_enc, delivered_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (phone, slot, category, topic, self._encrypt(text), _now_iso()),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid) if cur.lastrowid is not None else -1
+
+    def record_nudge_reaction(
+        self,
+        phone: str,
+        reaction_text: str,
+        *,
+        window_hours: int = 24,
+    ) -> bool:
+        """Attach a user message as the reaction to their most recent
+        un-reacted nudge, if one went out within ``window_hours``.
+
+        Called from the reactive ingest on every inbound user message. Only
+        the FIRST reply after a nudge attaches (the row is then non-NULL, so
+        later unrelated messages can't clobber it). Returns True if a
+        reaction was recorded. The read-back half of the feedback loop — the
+        brainstorm pass reads these reactions to learn what actually landed.
+        """
+        cutoff = (datetime.now(IST) - timedelta(hours=window_hours)).isoformat()
+        row = self._conn.execute(
+            """SELECT id FROM nudge_log
+               WHERE phone = ? AND reaction_enc IS NULL AND delivered_at >= ?
+               ORDER BY delivered_at DESC LIMIT 1""",
+            (phone, cutoff),
+        ).fetchone()
+        if not row:
+            return False
+        self._conn.execute(
+            "UPDATE nudge_log SET reaction_enc = ?, reacted_at = ? WHERE id = ?",
+            (self._encrypt(reaction_text), _now_iso(), row[0]),
+        )
+        self._conn.commit()
+        return True
+
+    def recent_nudges(
+        self,
+        phone: str,
+        *,
+        days: int = 30,
+        limit: int = 30,
+    ) -> List[NudgeLogEntry]:
+        """Most-recent-first delivered nudges (with reactions) in the last N
+        days. Feeds the dossier's ``nudge_history.md`` so the anti-relentless
+        prompts and joke dedup finally have real data to read."""
+        cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat()
+        rows = self._conn.execute(
+            """SELECT id, phone, slot, category, topic, text_enc,
+                      delivered_at, reaction_enc, reacted_at
+               FROM nudge_log
+               WHERE phone = ? AND delivered_at >= ?
+               ORDER BY delivered_at DESC LIMIT ?""",
+            (phone, cutoff, limit),
+        ).fetchall()
+        return [
+            NudgeLogEntry(
+                id=r[0],
+                phone=r[1],
+                slot=r[2],
+                category=r[3],
+                topic=r[4],
+                text=self._decrypt(r[5]),
+                delivered_at=r[6],
+                reaction=self._decrypt(r[7]) if r[7] else None,
+                reacted_at=r[8],
+            )
+            for r in rows
+        ]
+
+    def recent_joke_texts(self, phone: str, *, days: int = 30) -> List[str]:
+        """Stripped texts of jokes delivered in the last N days — the hard
+        dedup gate the joke pass seeds so the same vault joke can't fire
+        twice in a month (replay finding #4: the fan/AC joke fired 5×)."""
+        return [
+            n.text.strip()
+            for n in self.recent_nudges(phone, days=days, limit=100)
+            if n.category == "joke"
+        ]
 
     # ── Open threads (v2 proactive) ───────────────────────────────────
 
@@ -658,6 +807,9 @@ class ConversationStore:
         phone: str,
         slot: str,
         thread_slug: Optional[str] = None,
+        *,
+        category: Optional[str] = None,
+        text: Optional[str] = None,
     ) -> None:
         """Atomic post-delivery hook the nudge schedulers call after a
         successful send.
@@ -672,10 +824,19 @@ class ConversationStore:
         choose a thread, and the v2 thinker leaves it ``None`` when the
         candidate is grounded in a domain-file fact rather than an open
         thread. In both cases we still need to record the send.
+
+        When ``category`` and ``text`` are both supplied the nudge content
+        is also appended to ``nudge_log`` (the feedback loop). Callers that
+        only have a bare send (legacy admin pings) can omit them and just
+        get the throttle + thread-state bump as before.
         """
         self.record_nudge_sent(phone, slot)
         if thread_slug:
             self.mark_thread_nudged(phone, thread_slug)
+        if category is not None and text is not None:
+            self.log_nudge_delivered(
+                phone, slot, category=category, text=text, topic=thread_slug
+            )
 
     def mark_thread_nudged(self, phone: str, slug: str) -> bool:
         """Stamp ``last_nudged_at`` and transition ``dormant → active``.

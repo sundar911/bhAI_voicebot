@@ -626,6 +626,11 @@ def process_message(
         audio_path=str(run_dir) if is_audio else None,
     )
 
+    # Proactive feedback loop: if this message is the user's first reply
+    # within 24h of a delivered nudge, attach it as that nudge's reaction so
+    # the next thinking pass can learn what landed (no-op if no recent nudge).
+    store.record_nudge_reaction(phone, transcript)
+
     # ── Onboarding: detect greetings (always — /start can re-onboard returning users) ──
     _greeting_word = _detect_greeting(transcript)
     is_re_onboarding = (not is_first_ever) and _greeting_word == "/start"
@@ -1591,7 +1596,7 @@ async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"
         "ADMIN TEST NUDGE user=%s slot=%s len=%d", phone_hash, slot, len(text)
     )
     _send_nudge(chat_id, slot, text)
-    # v1.5 admin path doesn't pick an open thread; record_nudge_outcome
-    # falls through to record_nudge_sent for thread_slug=None.
-    store.record_nudge_outcome(target_phone, slot)
+    # v1.5 admin path doesn't pick an open thread (thread_slug=None) but we
+    # log the content so this test send shows up in nudge_history.md too.
+    store.record_nudge_outcome(target_phone, slot, category="checkin", text=text)
     return {"phone_hash": phone_hash, "slot": slot, "text": text, "sent": True}

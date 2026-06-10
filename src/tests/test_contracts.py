@@ -298,3 +298,103 @@ def test_app_exposes_required_routes():
         f"FastAPI app is missing required routes: {sorted(missing)}. "
         "If you deliberately removed one, update this contract."
     )
+
+
+# ──────────────────────────────────────────────────────────────────
+# 6. Proactive feedback loop — the agent must remember what it said
+# ──────────────────────────────────────────────────────────────────
+#
+# Replay 2026-06-08 findings #4 (the fan/AC joke fired 5× across afternoons)
+# and #5 (the anti-relentless gate never fired) both traced to ONE structural
+# gap: nudge_history.md was a hardcoded placeholder and the `nudges` table
+# stored only throttle timestamps, so every "don't repeat what you already
+# said" instruction in the prompts read an empty file. These contracts pin
+# the loop closed: delivered nudges + reactions are persisted and surfaced.
+
+
+def test_nudge_log_round_trips(tmp_db):
+    """A delivered nudge persists its content and reads back decrypted
+    (text/category/topic). Foundation of the proactive feedback loop."""
+    from src.bhai.memory.store import ConversationStore
+
+    store = ConversationStore(tmp_db)
+    try:
+        store.record_nudge_outcome(
+            "tg_1",
+            "morning",
+            "saree_business_expansion",
+            category="substantive",
+            text="मणीमाला जी, namaste! आज loom कैसा चला?",
+        )
+        recent = store.recent_nudges("tg_1")
+        assert len(recent) == 1
+        assert recent[0].category == "substantive"
+        assert recent[0].topic == "saree_business_expansion"
+        assert "loom" in recent[0].text  # decrypted, not ciphertext
+        assert recent[0].reaction is None
+    finally:
+        store.close()
+
+
+def test_nudge_reaction_attaches_to_recent_nudge(tmp_db):
+    """The user's next message attaches as the reaction to the most recent
+    un-reacted nudge — the read-back half of the loop. Only the first reply
+    attaches; a later message with nothing un-reacted is a no-op."""
+    from src.bhai.memory.store import ConversationStore
+
+    store = ConversationStore(tmp_db)
+    try:
+        store.record_nudge_outcome(
+            "tg_1", "morning", category="substantive", text="कैसे हैं आज?"
+        )
+        assert store.record_nudge_reaction("tg_1", "अच्छा लगा सुनकर, शुक्रिया") is True
+        assert store.record_nudge_reaction("tg_1", "और एक बात...") is False
+
+        recent = store.recent_nudges("tg_1")
+        assert len(recent) == 1
+        assert recent[0].reaction == "अच्छा लगा सुनकर, शुक्रिया"
+    finally:
+        store.close()
+
+
+def test_joke_dedup_excludes_recently_delivered(tmp_db):
+    """Replay finding #4: the same joke must not be eligible twice in 30
+    days. recent_joke_texts surfaces delivered jokes (and only jokes) so the
+    joke pass can seed them into its exclude list."""
+    from src.bhai.memory.store import ConversationStore
+
+    fan_ac = 'पंखे ने AC से क्या कहा? "तू ठंडक देता है, मैं हवा देता हूँ।"'
+    store = ConversationStore(tmp_db)
+    try:
+        store.record_nudge_outcome("tg_1", "afternoon", category="joke", text=fan_ac)
+        # a substantive nudge must NOT pollute the joke dedup list
+        store.record_nudge_outcome(
+            "tg_1", "morning", category="substantive", text="आज का दिन कैसा रहा?"
+        )
+        assert store.recent_joke_texts("tg_1") == [fan_ac.strip()]
+    finally:
+        store.close()
+
+
+def test_nudge_history_renders_real_rows_not_placeholder(tmp_db):
+    """Replay finding #5 root cause: the dossier's nudge_history.md was a
+    hardcoded placeholder, so the relentlessness gate read an empty file.
+    After a delivery it must render the real nudge content."""
+    from src.bhai.memory.store import ConversationStore
+    from src.bhai.proactive.dossier_loader import load_user_dossier
+
+    store = ConversationStore(tmp_db)
+    try:
+        store.record_nudge_outcome(
+            "tg_1",
+            "morning",
+            "saree_business_expansion",
+            category="substantive",
+            text="आज loom कैसा चला?",
+        )
+        nudge_md = load_user_dossier(store, "tg_1").markdown_map()["nudge_history.md"]
+        assert "_no proactive nudges delivered yet_" not in nudge_md
+        assert "loom" in nudge_md
+        assert "saree_business_expansion" in nudge_md
+    finally:
+        store.close()

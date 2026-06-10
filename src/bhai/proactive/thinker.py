@@ -294,6 +294,14 @@ class ProactiveThinker:
         if slot not in ("morning", "night"):
             raise ValueError(f"think_substantive expects morning|night, got {slot!r}")
 
+        # Trust-repair mode: an open `trust_repair` thread means the user felt
+        # misled / let down. Bypass brainstorm+critique entirely and lead with
+        # a gentle, honest repair — no jokes, no suggestions, no new asks. The
+        # most important relationship moment; slow down. (arc event F/#3)
+        repair_thread = self._open_trust_repair_thread(agent_input)
+        if repair_thread is not None:
+            return self._think_repair(agent_input, slot, repair_thread)
+
         # 1. Brainstorm. If empty, synthesize a fallback so we always proceed.
         candidates = self._brainstorm(agent_input, slot)
         if not candidates:
@@ -306,6 +314,47 @@ class ProactiveThinker:
         if chosen_idx < 0 or chosen_idx >= len(candidates):
             chosen_idx = 0
         chosen = candidates[chosen_idx]
+
+        # Backstop to the brainstorm/critique prompt rule (arc event E): if the
+        # chosen candidate still grounds in an active thread she hasn't answered
+        # since the last pitch, prefer a non-awaiting candidate; if none exists,
+        # drop the grounding so we don't re-pitch / re-mark an ignored thread.
+        if chosen.thread_slug and agent_input.dossier.is_active_awaiting(
+            chosen.thread_slug
+        ):
+            alt = next(
+                (
+                    c
+                    for c in candidates
+                    if not (
+                        c.thread_slug
+                        and agent_input.dossier.is_active_awaiting(c.thread_slug)
+                    )
+                ),
+                None,
+            )
+            if alt is not None:
+                logger.info(
+                    "swapping relentless re-pick of %s for a non-awaiting "
+                    "candidate (%s)",
+                    chosen.thread_slug,
+                    agent_input.phone_hash,
+                )
+                chosen = alt
+            else:
+                logger.info(
+                    "dropping grounding on awaiting thread %s for %s",
+                    chosen.thread_slug,
+                    agent_input.phone_hash,
+                )
+                chosen = BrainstormCandidate(
+                    category=chosen.category,
+                    summary=chosen.summary,
+                    trace=chosen.trace,
+                    tools_needed=chosen.tools_needed,
+                    why_now=chosen.why_now,
+                    thread_slug=None,
+                )
 
         # 3. Tools (optional, depends on candidate).
         tool_results_full: List[ToolResult] = []
@@ -338,48 +387,10 @@ class ProactiveThinker:
             )
             tool_outputs_for_draft = {}
 
-        # 4 + 5. Draft + judge with retry loop. Always lands on SOME text.
-        draft_text = ""
-        judge_verdict: Dict[str, Any] = {}
-        prior_feedback = ""
-        prior_drafts: List[str] = []
-        for attempt in range(self.max_draft_retries):
-            draft_text = self._draft(
-                agent_input,
-                chosen,
-                tool_outputs_for_draft,
-                slot,
-                prior_feedback=prior_feedback,
-                prior_drafts=prior_drafts,
-            )
-            if draft_text.strip() == "<silent-day>":
-                # The v1 prompt could return this; the v1.1 prompt forbids
-                # it but we defensively treat it as a draft failure and retry.
-                prior_feedback = (
-                    "previous attempt returned <silent-day>; you MUST produce "
-                    "actual voice-note text, no silent-day output allowed"
-                )
-                prior_drafts.append(draft_text)
-                continue
-            judge_verdict = self._judge(agent_input, draft_text, chosen, slot)
-            if judge_verdict.get("verdict") == "pass":
-                break
-            prior_feedback = judge_verdict.get("reasoning", "") or (
-                "judge rejected the draft for an unstated reason"
-            )
-            prior_drafts.append(draft_text)
-        else:
-            # Every retry failed. Fall back to a safe minimal greeting so we
-            # still send something — Sundar's "never silent-day" rule.
-            draft_text = self._safe_fallback_greeting(agent_input, slot, chosen)
-            judge_verdict = {
-                "verdict": "fallback",
-                "checks": {},
-                "reasoning": (
-                    f"used safe fallback after {self.max_draft_retries} judge "
-                    f"failures; last feedback: {prior_feedback}"
-                ),
-            }
+        # 4 + 5. Draft + judge, retrying with feedback; always lands on text.
+        draft_text, judge_verdict = self._draft_until_pass(
+            agent_input, chosen, tool_outputs_for_draft, slot
+        )
 
         # Resolve artifact path from the first artifact-producing tool result.
         artifact_path: Optional[Path] = None
@@ -411,6 +422,12 @@ class ProactiveThinker:
         text excluded; retry up to `max_joke_retries` times. If every retry
         fails, fall back to the first vault joke unconditionally.
         """
+        # Trust-repair mode: no jokes during a rupture — lead with a gentle,
+        # honest repair instead (same path as the substantive slots). (event F)
+        repair_thread = self._open_trust_repair_thread(agent_input)
+        if repair_thread is not None:
+            return self._think_repair(agent_input, "afternoon", repair_thread)
+
         stub_candidate = BrainstormCandidate(
             category="joke",
             summary="dad-joke from vault",
@@ -419,7 +436,16 @@ class ProactiveThinker:
             why_now="afternoon mood lift",
         )
 
-        prior_jokes: List[str] = []
+        # Hard dedup gate (replay finding #4: the fan/AC joke fired 5×
+        # because nudge_history was empty). Seed with jokes delivered to
+        # this user in the last 30 days — the joke pass is told to exclude
+        # them, and the exact-repeat guard below catches any it proposes
+        # anyway. Empty when there's no history (tests, first run).
+        prior_jokes: List[str] = [
+            n.text.strip()
+            for n in agent_input.dossier.recent_nudges
+            if n.category == "joke"
+        ]
         judge_verdict: Dict[str, Any] = {}
         joke_text = ""
         for attempt in range(self.max_joke_retries):
@@ -458,6 +484,97 @@ class ProactiveThinker:
                 ),
             },
         )
+
+    # ── Trust-repair + shared draft loop ──────────────────────────
+
+    def _open_trust_repair_thread(self, agent_input: AgentInput) -> Optional[Any]:
+        """Return the open `trust_repair` thread (any non-closed state) if one
+        exists — the durable trust-rupture signal the reactive LLM sets via a
+        ``<thread>open: trust_repair</thread>`` block. Outlives the recent-turn
+        window, so the repair holds even after the rupture scrolls off."""
+        for t in agent_input.dossier.threads:
+            if t.slug == "trust_repair" and t.state != "closed":
+                return t
+        return None
+
+    def _think_repair(
+        self, agent_input: AgentInput, slot: str, repair_thread: Any
+    ) -> NudgeCandidate:
+        """Gentle, honest trust-repair check-in. Bypasses brainstorm/critique
+        and the joke pass: during a rupture we do NOT pitch, suggest, or joke —
+        we acknowledge and rebuild. Used for every slot (incl. the afternoon
+        joke slot) while a `trust_repair` thread is open."""
+        chosen = BrainstormCandidate(
+            category="substantive",
+            summary=(
+                "Gentle, honest trust-repair check-in. Acknowledge the rupture "
+                "warmly and honestly; NO jokes, NO suggestions, no new asks. "
+                "Rebuild trust and leave the door open."
+            ),
+            trace=f"open_threads.md: trust_repair — {repair_thread.context}",
+            tools_needed=[],
+            why_now=(
+                "A trust rupture is the most important relationship moment — "
+                "slow down and repair before anything else."
+            ),
+        )
+        draft_slot = slot if slot in ("morning", "night") else "night"
+        draft_text, judge_verdict = self._draft_until_pass(
+            agent_input, chosen, {}, draft_slot
+        )
+        return NudgeCandidate(
+            slot=slot,
+            category="substantive",
+            text=draft_text,
+            chosen_candidate=chosen,
+            judge_verdict=judge_verdict,
+        )
+
+    def _draft_until_pass(
+        self,
+        agent_input: AgentInput,
+        chosen: BrainstormCandidate,
+        tool_outputs: Dict[str, Any],
+        slot: str,
+    ) -> tuple[str, Dict[str, Any]]:
+        """Draft → judge retry loop shared by the substantive and repair
+        paths. Always lands on SOME text (Sundar's never-silent rule): after
+        ``max_draft_retries`` judge failures it falls back to a safe greeting."""
+        prior_feedback = ""
+        prior_drafts: List[str] = []
+        for _ in range(self.max_draft_retries):
+            draft_text = self._draft(
+                agent_input,
+                chosen,
+                tool_outputs,
+                slot,
+                prior_feedback=prior_feedback,
+                prior_drafts=prior_drafts,
+            )
+            if draft_text.strip() == "<silent-day>":
+                prior_feedback = (
+                    "previous attempt returned <silent-day>; you MUST produce "
+                    "actual voice-note text, no silent-day output allowed"
+                )
+                prior_drafts.append(draft_text)
+                continue
+            judge_verdict = self._judge(agent_input, draft_text, chosen, slot)
+            if judge_verdict.get("verdict") == "pass":
+                return draft_text, judge_verdict
+            prior_feedback = judge_verdict.get("reasoning", "") or (
+                "judge rejected the draft for an unstated reason"
+            )
+            prior_drafts.append(draft_text)
+        # Every retry failed — safe minimal greeting (never silent-day).
+        draft_text = self._safe_fallback_greeting(agent_input, slot, chosen)
+        return draft_text, {
+            "verdict": "fallback",
+            "checks": {},
+            "reasoning": (
+                f"used safe fallback after {self.max_draft_retries} judge "
+                f"failures; last feedback: {prior_feedback}"
+            ),
+        }
 
     # ── Pass implementations ──────────────────────────────────────
 

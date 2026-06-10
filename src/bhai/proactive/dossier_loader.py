@@ -24,7 +24,7 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional, Set
 
-from ..memory.store import IST, ConversationStore
+from ..memory.store import IST, ConversationStore, NudgeLogEntry
 from .threads import Thread
 
 # ── Bucket definitions ──────────────────────────────────────────────────
@@ -294,6 +294,7 @@ class UserDossier:
     grievance_facts: List[str] = field(default_factory=list)
     scheme_facts: List[str] = field(default_factory=list)
     threads: List[Thread] = field(default_factory=list)
+    recent_nudges: List[NudgeLogEntry] = field(default_factory=list)
 
     def _render_bullets(self, facts: List[str], empty_placeholder: str) -> str:
         if not facts:
@@ -331,8 +332,11 @@ class UserDossier:
             "do_not_nudge": [],
         }
         for thread in visible:
+            awaiting = thread.state == "active" and self._thread_awaiting_reply(
+                thread.slug
+            )
             sections.setdefault(thread.state, []).append(
-                self._render_thread_line(thread, now)
+                self._render_thread_line(thread, now, awaiting=awaiting)
             )
 
         out: List[str] = []
@@ -342,7 +346,12 @@ class UserDossier:
         if sections.get("active"):
             if out:
                 out.append("")
-            out.append("**Active — recently nudged, watch for reaction:**")
+            out.append(
+                "**Active — already nudged, watching for her reaction. A thread "
+                "marked AWAITING means she has NOT replied since you last pitched "
+                "it — do NOT re-pitch it (that is the relentless re-pick). Only "
+                "revisit if she re-raised it herself.**"
+            )
             out.extend(sections["active"])
         if sections.get("do_not_nudge"):
             if out:
@@ -351,11 +360,32 @@ class UserDossier:
             out.extend(sections["do_not_nudge"])
         return "\n".join(out)
 
+    def _thread_awaiting_reply(self, slug: str) -> bool:
+        """True if the most recent nudge grounded in this thread got no
+        reaction — we already pitched it and she hasn't replied. The
+        brainstorm/critique passes must NOT re-pitch such a thread; that's
+        the relentless re-pick (replay finding #1 / arc event E). Uses the
+        Phase-1 reaction data on nudge_log."""
+        for n in self.recent_nudges:  # recent_nudges is newest-first
+            if n.topic == slug:
+                return n.reaction is None
+        return False
+
+    def is_active_awaiting(self, slug: str) -> bool:
+        """True if ``slug`` is an active thread the user hasn't replied to
+        since the last pitch — the relentless-re-pick guard the thinker uses
+        as a code backstop to the brainstorm/critique prompt rule (event E)."""
+        t = next((t for t in self.threads if t.slug == slug), None)
+        return bool(t and t.state == "active" and self._thread_awaiting_reply(slug))
+
     @staticmethod
-    def _render_thread_line(thread: Thread, now: datetime) -> str:
+    def _render_thread_line(
+        thread: Thread, now: datetime, *, awaiting: bool = False
+    ) -> str:
         """One bullet describing a thread. Includes elapsed days since
-        last touch (and since last nudge, if ever nudged) so the
-        brainstorm pass can prefer dormant threads stale ≥14d."""
+        last touch (and since last nudge, if ever nudged) so the brainstorm
+        pass can prefer dormant threads stale ≥14d. ``awaiting`` flags an
+        active thread she hasn't answered since the last pitch."""
         parts = [f"`{thread.slug}`"]
         if thread.context:
             parts.append(f"— {thread.context}")
@@ -366,7 +396,39 @@ class UserDossier:
             nudged_days = _days_since(thread.last_nudged_at, now)
             if nudged_days is not None:
                 parts.append(f"(nudged {nudged_days}d ago)")
+        if awaiting:
+            parts.append("⚠ AWAITING her reply — do NOT re-pitch")
         return "- " + " ".join(parts)
+
+    def _render_nudge_history(self) -> str:
+        """Render delivered nudges newest-first with their reactions.
+
+        This is the data the brainstorm/critique passes ("read
+        nudge_history.md FIRST") and the joke pass ("don't repeat a joke
+        sent in the last 30 days") have always been told to read — before
+        this it was a hardcoded ``_no proactive nudges delivered yet_``
+        placeholder, so the anti-relentless and dedup logic ran blind.
+        """
+        if not self.recent_nudges:
+            return "_no proactive nudges delivered yet_"
+        now = datetime.now(IST)
+        lines: List[str] = []
+        for n in self.recent_nudges:
+            days = _days_since(n.delivered_at, now)
+            when = f"{days}d ago" if days is not None else n.delivered_at[:10]
+            head = f"- **{when} — {n.slot} / {n.category}"
+            if n.topic:
+                head += f" / {n.topic}"
+            head += "**"
+            lines.append(head)
+            lines.append(f"  - text: {n.text}")
+            if n.reaction:
+                lines.append(f"  - reaction: {n.reaction}")
+            elif days is not None and days >= 1:
+                lines.append("  - reaction: (no reply)")
+            else:
+                lines.append("  - reaction: (awaiting reply)")
+        return "\n".join(lines)
 
     def markdown_map(self) -> Dict[str, str]:
         """Render the dossier as the {filename: markdown} dict matching the
@@ -416,7 +478,11 @@ class UserDossier:
                 f"# Outreach History — {h}\n\n_no escalations recorded yet_"
             ),
             "nudge_history.md": (
-                f"# Nudge History — {h}\n\n_no proactive nudges delivered yet_"
+                f"# Nudge History — {h}\n\n"
+                "Proactive nudges already delivered (newest first), with the "
+                "user's reaction. Do NOT repeat a topic from the last 14 days "
+                "(or a joke from the last 30 days) unless she re-raised it.\n\n"
+                + self._render_nudge_history()
             ),
             "open_threads.md": (
                 f"# Open Threads — {h}\n\n"
@@ -497,5 +563,10 @@ def load_user_dossier(store: ConversationStore, phone: str) -> UserDossier:
     # the dossier object so callers can inspect them if needed, but the
     # markdown renderer hides them from the agent's prompt.
     dossier.threads = store.list_threads(phone)
+
+    # Delivered nudges + reactions — the proactive feedback loop. Renders
+    # into nudge_history.md so the brainstorm/critique/joke passes can see
+    # what bhAI has already said and how it landed.
+    dossier.recent_nudges = store.recent_nudges(phone)
 
     return dossier
