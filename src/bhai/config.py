@@ -75,6 +75,10 @@ class Config:
     # System prompt version — loaded from src/bhai/llm/prompts/{version}.md
     prompt_version: str = "current"
 
+    # cot/out structured output: how many times to re-call the LLM when its
+    # JSON can't be parsed before giving up to the safe canned fallback.
+    llm_json_max_attempts: int = 3
+
     # Resilience
     ack_enabled: bool = True  # Send immediate ack on voice notes
     retry_max_attempts: int = 3  # Per-call retry attempts
@@ -123,6 +127,17 @@ class Config:
     # rather than failing the whole agent loop.
     google_search_api_key: str = ""
     google_search_cse_id: str = ""
+    # Reactive web_search (Claude server-side tool).
+    # When enabled, ClaudeLLM passes a web_search tool to the Anthropic Messages
+    # API so the model can ground specifics it doesn't know (local clinics,
+    # current scheme details, "box cricket venues in Bandra" etc.) instead of
+    # confabulating or punting the user to Google. Anthropic enforces the
+    # per-call cap server-side via `max_uses`. Default off; enable in dev first.
+    web_search_enabled: bool = False
+    web_search_max_uses_per_call: int = 3
+    # Tool identifier — Anthropic versions this per release. Override via
+    # WEB_SEARCH_TOOL_NAME if a newer version ships.
+    web_search_tool_name: str = "web_search_20250305"
 
     # Azure / SharePoint (for transcription pipeline)
     azure_tenant_id: str = ""
@@ -209,6 +224,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         elevenlabs_speed=float(os.getenv("ELEVENLABS_SPEED", "1.0")),
         tts_backend=os.getenv("TTS_BACKEND", "sarvam"),
         prompt_version=os.getenv("PROMPT_VERSION", "current"),
+        llm_json_max_attempts=int(os.getenv("LLM_JSON_MAX_ATTEMPTS", "3")),
         ack_enabled=os.getenv("ACK_ENABLED", "true").lower() == "true",
         retry_max_attempts=int(os.getenv("RETRY_MAX_ATTEMPTS", "3")),
         queue_max_attempts=int(os.getenv("QUEUE_MAX_ATTEMPTS", "5")),
@@ -251,6 +267,11 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             os.getenv("GOOGLE_SEARCH_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
         ),
         google_search_cse_id=os.getenv("GOOGLE_SEARCH_CSE_ID", ""),
+        web_search_enabled=os.getenv("WEB_SEARCH_ENABLED", "false").lower() == "true",
+        web_search_max_uses_per_call=int(
+            os.getenv("WEB_SEARCH_MAX_USES_PER_CALL", "3")
+        ),
+        web_search_tool_name=os.getenv("WEB_SEARCH_TOOL_NAME", "web_search_20250305"),
         azure_tenant_id=os.getenv("AZURE_TENANT_ID", ""),
         azure_app_client_id=os.getenv("AZURE_APP_CLIENT_ID", ""),
         sharepoint_hostname=os.getenv(

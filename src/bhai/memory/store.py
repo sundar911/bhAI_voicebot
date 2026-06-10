@@ -140,6 +140,21 @@ class ConversationStore:
 
             CREATE INDEX IF NOT EXISTS idx_threads_phone_state
                 ON threads(phone, state);
+            -- Append-only history of every nudge text sent, encrypted at
+            -- rest. Read by the nudge prompt builder so tomorrow's nudge
+            -- can avoid repeating today's topic (anti-relentless rule).
+            -- Kept separate from the `nudges` table so the existing per-
+            -- (phone,slot) throttle logic remains untouched.
+            CREATE TABLE IF NOT EXISTS nudge_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                sent_at TEXT NOT NULL,
+                text_enc TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_nudge_history_phone_time
+                ON nudge_history(phone, sent_at);
         """
         )
         self._conn.commit()
@@ -297,6 +312,59 @@ class ConversationStore:
             (phone, slot, _now_iso()),
         )
         self._conn.commit()
+
+    def record_nudge_text(
+        self,
+        phone: str,
+        slot: str,
+        text: str,
+        *,
+        at: Optional[str] = None,
+    ) -> None:
+        """Append a delivered nudge to `nudge_history`, encrypted at rest.
+
+        Called by `_maybe_nudge_one` right after a successful send so the
+        next firing for this user can see what's already been sent and avoid
+        repeating it (Rule 4 of NUDGE_INSTRUCTION).
+
+        `at` overrides the current-time stamp — used by the one-shot
+        backfill script (scripts/backfill_nudge_history.py) to preserve
+        original send timestamps when seeding the table from existing
+        message history. Format: ISO 8601 string matching the timestamp
+        format used elsewhere in this store.
+        """
+        sent_at = at if at is not None else _now_iso()
+        self._conn.execute(
+            """INSERT INTO nudge_history (phone, slot, sent_at, text_enc)
+               VALUES (?, ?, ?, ?)""",
+            (phone, slot, sent_at, self._encrypt(text)),
+        )
+        self._conn.commit()
+
+    def list_nudge_history_keys(self, phone: str) -> set[tuple[str, str]]:
+        """Return the (slot, sent_at) pairs already recorded for this phone.
+
+        Used by the backfill script as a cheap idempotency check — re-runs
+        skip rows already inserted on a previous pass, so the backfill is
+        safe to invoke multiple times.
+        """
+        rows = self._conn.execute(
+            "SELECT slot, sent_at FROM nudge_history WHERE phone = ?", (phone,)
+        ).fetchall()
+        return {(r[0], r[1]) for r in rows}
+
+    def list_recent_nudge_texts(self, phone: str, days: int = 14) -> List[str]:
+        """Return decrypted nudge texts delivered to this phone in the last
+        N days, chronological. Used by the nudge prompt builder to inject
+        the 'do NOT repeat these topics' list per Rule 4."""
+        cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat()
+        rows = self._conn.execute(
+            """SELECT text_enc FROM nudge_history
+               WHERE phone = ? AND sent_at >= ?
+               ORDER BY sent_at ASC""",
+            (phone, cutoff),
+        ).fetchall()
+        return [self._decrypt(r[0]) for r in rows]
 
     def get_last_nudge_sent(self, phone: str, slot: str) -> Optional[datetime]:
         """When was the last nudge of this slot sent to this phone? None if never."""
@@ -918,6 +986,16 @@ class ConversationStore:
             "UPDATE threads SET phone = ? WHERE phone = ?",
             (to_phone, from_phone),
         )
+        # nudge_history and nudge_log are append-only with surrogate ids —
+        # straight UPDATE, no pre-clear needed.
+        self._conn.execute(
+            "UPDATE nudge_history SET phone = ? WHERE phone = ?",
+            (to_phone, from_phone),
+        )
+        self._conn.execute(
+            "UPDATE nudge_log SET phone = ? WHERE phone = ?",
+            (to_phone, from_phone),
+        )
         self._conn.commit()
         return {
             "messages_migrated": msg_cur.rowcount,
@@ -936,6 +1014,10 @@ class ConversationStore:
         mem_cur = self._conn.execute("DELETE FROM memory WHERE phone = ?", (phone,))
         nudge_cur = self._conn.execute("DELETE FROM nudges WHERE phone = ?", (phone,))
         thread_cur = self._conn.execute("DELETE FROM threads WHERE phone = ?", (phone,))
+        # Also wipe the append-only nudge_history + nudge_log rows — privacy
+        # (nudge_log holds Fernet-encrypted nudge text and reactions).
+        self._conn.execute("DELETE FROM nudge_history WHERE phone = ?", (phone,))
+        self._conn.execute("DELETE FROM nudge_log WHERE phone = ?", (phone,))
         self._conn.commit()
         return {
             "messages_deleted": msg_cur.rowcount,

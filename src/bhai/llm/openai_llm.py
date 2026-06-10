@@ -4,7 +4,7 @@ Uses OpenAI's Responses API for inference.
 """
 
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 from openai import OpenAI
 
@@ -32,8 +32,42 @@ class OpenAILLM(BaseLLM):
     def model_name(self) -> str:
         return self.config.openai_model
 
+    # Native structured-output schema for the cot/out contract. ``strict`` +
+    # explicit property order (cot before out) guarantees valid JSON where the
+    # reasoning is generated before — and so conditions — the reply.
+    _JSON_SCHEMA = {
+        "type": "json_schema",
+        "name": "bhai_reply",
+        "strict": True,
+        "schema": {
+            "type": "object",
+            "properties": {
+                "cot": {"type": "string"},
+                "out": {"type": "string"},
+                "escalate": {"type": "boolean"},
+            },
+            "required": ["cot", "out", "escalate"],
+            "additionalProperties": False,
+        },
+    }
+
     def _call_api(self, system_prompt: str, user_message: str) -> str:
-        response = self.client.responses.create(
+        """Plain free-form call (summarizer, nudges build their own prompts)."""
+        return self._respond(system_prompt, user_message, json_format=None)
+
+    def _call_api_json(self, system_prompt: str, user_message: str) -> str:
+        """Structured cot/out call with native json_schema enforcement."""
+        return self._respond(
+            system_prompt, user_message, json_format={"format": self._JSON_SCHEMA}
+        )
+
+    def _respond(
+        self,
+        system_prompt: str,
+        user_message: str,
+        json_format: Optional[Dict[str, Any]],
+    ) -> str:
+        kwargs: Dict[str, Any] = dict(
             model=self.config.openai_model,
             input=[
                 {
@@ -47,6 +81,10 @@ class OpenAILLM(BaseLLM):
             ],
             temperature=0.4,
         )
+        if json_format is not None:
+            kwargs["text"] = json_format
+
+        response = self.client.responses.create(**kwargs)
         return self._extract_text(response)
 
     @staticmethod
