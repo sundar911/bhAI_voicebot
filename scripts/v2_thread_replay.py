@@ -216,6 +216,7 @@ def _nudge_to_dict(c: NudgeCandidate) -> dict:
         "slot": c.slot,
         "category": c.category,
         "text": c.text,
+        "text_artifact": c.text_artifact,
         "thread_slug": (
             getattr(c.chosen_candidate, "thread_slug", None)
             if c.chosen_candidate

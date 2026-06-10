@@ -120,6 +120,10 @@ def cmd_slot(args):
     slug = cand.chosen_candidate.thread_slug if cand.chosen_candidate else None
     print(f"\n[{args.slot} nudge — category={cand.category} thread={slug}]")
     print(f"bhAI: {cand.text}")
+    if cand.text_artifact:
+        print(f"\n[text artifact — rides as a SEPARATE message]\n{cand.text_artifact}")
+    if cand.artifact_path:
+        print(f"[image artifact: {cand.artifact_path}]")
     store.record_nudge_outcome(
         args.phone, args.slot, slug, category=cand.category, text=cand.text
     )

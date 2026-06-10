@@ -42,6 +42,11 @@ from .tools._types import ToolResult
 
 logger = logging.getLogger("bhai.proactive.thinker")
 
+# Matches a paste-able text artifact the draft emits alongside the spoken
+# voice note. Stripped from the spoken text and delivered as a separate
+# text message (catalogs/lists can carry formatting + emojis that TTS can't).
+_ARTIFACT_RE = re.compile(r"<artifact>(.*?)</artifact>", re.DOTALL | re.IGNORECASE)
+
 
 # ── Data classes ───────────────────────────────────────────────────────
 
@@ -72,6 +77,11 @@ class NudgeCandidate:
     category: str  # "substantive" | "artifact" | "lesson" | "joke" | "silent-day"
     text: Optional[str] = None  # voice-note text, None for silent-day
     artifact_path: Optional[Path] = None
+    # Paste-able text artifact (a catalog / price-list / template) the draft
+    # may emit in an <artifact> block. It rides as a SEPARATE text message,
+    # never spoken — Sarvam TTS would read its emojis/formatting literally
+    # (the catalog-in-voice-note bug the 2026-06-10 persona sim caught).
+    text_artifact: Optional[str] = None
     chosen_candidate: Optional[BrainstormCandidate] = None
     silent_day_reason: Optional[str] = None
     # Convenience copy of chosen_candidate.thread_slug so the delivery
@@ -388,7 +398,7 @@ class ProactiveThinker:
             tool_outputs_for_draft = {}
 
         # 4 + 5. Draft + judge, retrying with feedback; always lands on text.
-        draft_text, judge_verdict = self._draft_until_pass(
+        draft_text, text_artifact, judge_verdict = self._draft_until_pass(
             agent_input, chosen, tool_outputs_for_draft, slot
         )
 
@@ -404,6 +414,7 @@ class ProactiveThinker:
             category=chosen.category,
             text=draft_text,
             artifact_path=artifact_path,
+            text_artifact=text_artifact,
             chosen_candidate=chosen,
             thread_slug=chosen.thread_slug,
             brainstorm_candidates=candidates,
@@ -519,16 +530,30 @@ class ProactiveThinker:
             ),
         )
         draft_slot = slot if slot in ("morning", "night") else "night"
-        draft_text, judge_verdict = self._draft_until_pass(
+        draft_text, text_artifact, judge_verdict = self._draft_until_pass(
             agent_input, chosen, {}, draft_slot
         )
         return NudgeCandidate(
             slot=slot,
             category="substantive",
             text=draft_text,
+            text_artifact=text_artifact,
             chosen_candidate=chosen,
             judge_verdict=judge_verdict,
         )
+
+    @staticmethod
+    def _split_artifact(raw: str) -> tuple[str, Optional[str]]:
+        """Split a draft into the spoken voice-note text and an optional
+        paste-able text artifact (a catalog/list/template). The artifact is
+        stripped from the spoken text so TTS never reads its formatting; it
+        rides as a separate text message. Returns (spoken, artifact_or_None)."""
+        m = _ARTIFACT_RE.search(raw)
+        if not m:
+            return raw.strip(), None
+        artifact = m.group(1).strip()
+        spoken = _ARTIFACT_RE.sub("", raw).strip()
+        return spoken, (artifact or None)
 
     def _draft_until_pass(
         self,
@@ -536,14 +561,16 @@ class ProactiveThinker:
         chosen: BrainstormCandidate,
         tool_outputs: Dict[str, Any],
         slot: str,
-    ) -> tuple[str, Dict[str, Any]]:
+    ) -> tuple[str, Optional[str], Dict[str, Any]]:
         """Draft → judge retry loop shared by the substantive and repair
-        paths. Always lands on SOME text (Sundar's never-silent rule): after
-        ``max_draft_retries`` judge failures it falls back to a safe greeting."""
+        paths. Splits off any paste-able <artifact> block (the judge sees the
+        SPOKEN text only). Always lands on SOME text (never-silent rule):
+        after ``max_draft_retries`` judge failures it falls back to a safe
+        greeting. Returns (spoken_text, text_artifact, judge_verdict)."""
         prior_feedback = ""
         prior_drafts: List[str] = []
         for _ in range(self.max_draft_retries):
-            draft_text = self._draft(
+            raw = self._draft(
                 agent_input,
                 chosen,
                 tool_outputs,
@@ -551,30 +578,35 @@ class ProactiveThinker:
                 prior_feedback=prior_feedback,
                 prior_drafts=prior_drafts,
             )
-            if draft_text.strip() == "<silent-day>":
+            spoken, text_artifact = self._split_artifact(raw)
+            if spoken == "<silent-day>":
                 prior_feedback = (
                     "previous attempt returned <silent-day>; you MUST produce "
                     "actual voice-note text, no silent-day output allowed"
                 )
-                prior_drafts.append(draft_text)
+                prior_drafts.append(raw)
                 continue
-            judge_verdict = self._judge(agent_input, draft_text, chosen, slot)
+            judge_verdict = self._judge(agent_input, spoken, chosen, slot)
             if judge_verdict.get("verdict") == "pass":
-                return draft_text, judge_verdict
+                return spoken, text_artifact, judge_verdict
             prior_feedback = judge_verdict.get("reasoning", "") or (
                 "judge rejected the draft for an unstated reason"
             )
-            prior_drafts.append(draft_text)
+            prior_drafts.append(raw)
         # Every retry failed — safe minimal greeting (never silent-day).
-        draft_text = self._safe_fallback_greeting(agent_input, slot, chosen)
-        return draft_text, {
-            "verdict": "fallback",
-            "checks": {},
-            "reasoning": (
-                f"used safe fallback after {self.max_draft_retries} judge "
-                f"failures; last feedback: {prior_feedback}"
-            ),
-        }
+        spoken = self._safe_fallback_greeting(agent_input, slot, chosen)
+        return (
+            spoken,
+            None,
+            {
+                "verdict": "fallback",
+                "checks": {},
+                "reasoning": (
+                    f"used safe fallback after {self.max_draft_retries} judge "
+                    f"failures; last feedback: {prior_feedback}"
+                ),
+            },
+        )
 
     # ── Pass implementations ──────────────────────────────────────
 
@@ -813,25 +845,49 @@ class ProactiveThinker:
         chosen: BrainstormCandidate,
         agent_input: AgentInput,
     ) -> str:
-        """Construct the brief sent to the tool wrapper.
+        """Compose the brief sent to the tool wrapper.
 
-        For v1 we use a deterministic template per tool. The agent prompt
-        could in principle compose the brief itself — that's a v1.5 knob
-        we'll add when we see the dry-run portfolio and judge whether the
-        template approach is too restrictive.
+        kb_read wants a file slug (deterministic). For nanobanana / web_search
+        the candidate summary is the wrong SHAPE — an image needs a visual
+        prompt, a search needs a query — so we LLM-compose a tool-appropriate,
+        PII-free brief. The tool wrapper still scrubs it before egress
+        (defense in depth); steering the prompt clear of PII keeps the scrub
+        from rejecting it. Falls back to the summary on an empty response.
         """
-        if tool_name == "nanobanana":
-            # The candidate's summary already describes the artifact intent —
-            # treat it as the seed brief. The scrub layer will reject it if
-            # it leaked PII; the draft pass handles the retry.
-            return chosen.summary
-        if tool_name == "web_search":
-            return chosen.summary
         if tool_name == "kb_read":
-            # KB read expects a file slug — try to extract one from the
-            # candidate's summary or trace, fall back to the trace text.
             return chosen.trace
-        return chosen.summary
+        specs = {
+            "nanobanana": (
+                "an image-generation prompt — describe the visual only "
+                "(style, colours, layout, and TEXT PLACEHOLDERS like "
+                "[design name] / [price], never real values)"
+            ),
+            "web_search": (
+                "a short web-search query, 3-8 words, that surfaces what she " "needs"
+            ),
+        }
+        spec = specs.get(tool_name)
+        if spec is None:
+            return chosen.summary
+        system = (
+            "Compose ONE tool brief for bhAI's proactive agent. Output ONLY "
+            "the brief, no preamble. It MUST contain no personally identifying "
+            "info: no user name, no location/community (BC/MIDC/Aarey/Pardhi), "
+            f"no religion/caste/disability/medical/loan detail. The brief is {spec}."
+        )
+        user = (
+            f"Candidate: {chosen.summary}\n"
+            f"Grounded in: {chosen.trace}\n"
+            f"Why now: {chosen.why_now}\n\nCompose the brief:"
+        )
+        raw = self.anthropic.messages_create(
+            model=self.model,
+            max_tokens=256,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            temperature=0.4,
+        )
+        return raw.strip() or chosen.summary
 
     def _summarize_tool_result(self, result: ToolResult) -> Dict[str, Any]:
         """Compact tool-result shape for the draft prompt's user message."""

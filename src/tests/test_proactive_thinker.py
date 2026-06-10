@@ -228,10 +228,12 @@ class TestThinkSubstantiveHappyPath:
             }
         )
         anth = FakeAnthropic()
+        # Call order: brainstorm, critique, tool-brief compose, draft, judge.
         anth.set_responses(
             [
                 bs,
                 _critique_canned(0),
+                "warm earthy saree logo card, [business name] placeholder",
                 "अरे, ek logo design karke dekha — bhej rahi hoon, kaisa laga?",
                 _judge_canned("pass"),
             ]
@@ -248,15 +250,15 @@ class TestThinkSubstantiveHappyPath:
 
         assert result.category == "artifact"
         assert result.artifact_path == artifact
-        # Tool was called with the candidate summary as the brief.
+        # Tool was called with the LLM-COMPOSED brief, not the raw summary.
         assert tools.calls == [
             {
                 "tool": "nanobanana",
-                "brief": "Logo for saree wholesale, warm earthy palette",
+                "brief": "warm earthy saree logo card, [business name] placeholder",
             }
         ]
-        # Draft prompt user message included the tool output.
-        draft_user_msg = anth.calls[2]["messages"][0]["content"]
+        # Draft prompt (4th call) user message included the tool output.
+        draft_user_msg = anth.calls[3]["messages"][0]["content"]
         assert "Tool Outputs" in draft_user_msg
         assert "nanobanana" in draft_user_msg
 
@@ -713,3 +715,46 @@ def test_trust_repair_suppresses_afternoon_joke():
     result = _thinker(anth, FakeToolRunner()).think_joke(ai)
     assert result.category == "substantive"  # NOT a joke
     assert len(anth.calls) == 2  # repair draft+judge, no joke pass
+
+
+# ── Step 0: paste-able text-artifact channel ─────────────────────────
+
+
+def test_split_artifact_extracts_pasteable_block():
+    """A paste-able <artifact> block is stripped from the SPOKEN text (so TTS
+    never reads its emojis/formatting) and returned separately. Guards the
+    2026-06-10 catalog-in-voice-note bug."""
+    spoken, art = ProactiveThinker._split_artifact(
+        "namaste! ek price-list bhej rahi hoon, copy kar lena.\n"
+        "<artifact>\n✨ नई साड़ी — ₹350\n</artifact>"
+    )
+    assert "✨" not in spoken  # emoji NOT in the spoken voice note
+    assert spoken == "namaste! ek price-list bhej rahi hoon, copy kar lena."
+    assert art == "✨ नई साड़ी — ₹350"
+
+
+def test_split_artifact_none_when_absent():
+    spoken, art = ProactiveThinker._split_artifact("just a normal nudge, no artifact")
+    assert spoken == "just a normal nudge, no artifact"
+    assert art is None
+
+
+def test_think_substantive_routes_artifact_to_separate_channel():
+    """A draft that emits an <artifact> block -> text_artifact on the candidate;
+    the spoken text is emoji-free (Step 0 catalog channel, end-to-end)."""
+    anth = FakeAnthropic()
+    anth.set_responses(
+        [
+            _brainstorm_canned(1),
+            _critique_canned(0),
+            "namaste ji! ek price-list bhej rahi hoon, copy kar lena.\n"
+            "<artifact>\n✨ saree ₹350\n</artifact>",
+            _judge_canned("pass"),
+        ]
+    )
+    result = _thinker(anth, FakeToolRunner()).think_substantive(
+        _agent_input(), slot="morning"
+    )
+    assert result.text_artifact == "✨ saree ₹350"
+    assert "✨" not in (result.text or "")
+    assert result.text == "namaste ji! ek price-list bhej rahi hoon, copy kar lena."
