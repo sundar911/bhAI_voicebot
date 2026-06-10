@@ -83,10 +83,12 @@ def cfg_enabled():
         gmail_client_secret="GOCSPX-test-secret",
         gmail_refresh_token="1//test-refresh-token",
         gmail_sender_email="bhai@example.com",
-        escalation_recipients=("rishi@example.com", "anu@example.com"),
+        escalation_recipients=("rishi@example.com",),
         escalation_recipients_docs_bc=("priti@example.com",),
         escalation_recipients_docs_midc=("dinesh@example.com",),
         escalation_recipients_workplace=("simran@example.com",),
+        escalation_cc=("sundar@example.com",),
+        escalation_impact_head=("anu@example.com",),
         escalation_enabled=True,
     )
 
@@ -170,7 +172,7 @@ async def test_send_includes_recipients_and_subject(cfg_enabled, base_kwargs):
     )
     assert len(email_client.calls) == 1
     call = email_client.calls[0]
-    assert call["to"] == ["rishi@example.com", "anu@example.com"]
+    assert call["to"] == ["rishi@example.com"]
     assert "bhAI escalation" in call["subject"]
     assert "user #" in call["subject"]
 
@@ -278,7 +280,9 @@ async def test_category_none_routes_to_default_mental_health_recipients(
     await handle_escalation(
         config=cfg_enabled, email_client=email_client, category=None, **base_kwargs
     )
-    assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
+    assert email_client.calls[0]["to"] == ["rishi@example.com"]
+    # mental_health: Anu (impact head) + Sundar (operator) on CC.
+    assert email_client.calls[0]["cc"] == ["anu@example.com", "sundar@example.com"]
     assert "mental_health" in email_client.calls[0]["subject"]
 
 
@@ -293,12 +297,15 @@ async def test_category_mental_health_routes_to_default_recipients(
         category="mental_health",
         **base_kwargs,
     )
-    assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
+    assert email_client.calls[0]["to"] == ["rishi@example.com"]
+    assert email_client.calls[0]["cc"] == ["anu@example.com", "sundar@example.com"]
     assert "mental_health" in email_client.calls[0]["subject"]
 
 
 @pytest.mark.asyncio
-async def test_category_workplace_routes_to_simran(cfg_enabled, base_kwargs):
+async def test_category_workplace_routes_to_simran_no_impact_head(
+    cfg_enabled, base_kwargs
+):
     email_client = StubEmailClient(results=[True])
     await handle_escalation(
         config=cfg_enabled,
@@ -307,6 +314,8 @@ async def test_category_workplace_routes_to_simran(cfg_enabled, base_kwargs):
         **base_kwargs,
     )
     assert email_client.calls[0]["to"] == ["simran@example.com"]
+    # HR is outside the impact team — operator (Sundar) only, NO Anu.
+    assert email_client.calls[0]["cc"] == ["sundar@example.com"]
     assert "workplace" in email_client.calls[0]["subject"]
 
 
@@ -320,6 +329,8 @@ async def test_category_docs_bc_routes_to_priti(cfg_enabled, base_kwargs):
         **base_kwargs,
     )
     assert email_client.calls[0]["to"] == ["priti@example.com"]
+    # docs is impact-team domain — Anu + Sundar on CC.
+    assert email_client.calls[0]["cc"] == ["anu@example.com", "sundar@example.com"]
     assert "docs_bc" in email_client.calls[0]["subject"]
 
 
@@ -333,13 +344,14 @@ async def test_category_docs_midc_routes_to_dinesh(cfg_enabled, base_kwargs):
         **base_kwargs,
     )
     assert email_client.calls[0]["to"] == ["dinesh@example.com"]
+    assert email_client.calls[0]["cc"] == ["anu@example.com", "sundar@example.com"]
     assert "docs_midc" in email_client.calls[0]["subject"]
 
 
 @pytest.mark.asyncio
-async def test_category_docs_unknown_routes_to_both_office_recipients(
-    cfg_enabled, base_kwargs
-):
+async def test_category_docs_unknown_routes_to_impact_head(cfg_enabled, base_kwargs):
+    """Office still ambiguous → route to Anu (impact head) to triage. We do
+    NOT email both offices."""
     email_client = StubEmailClient(results=[True])
     await handle_escalation(
         config=cfg_enabled,
@@ -347,7 +359,9 @@ async def test_category_docs_unknown_routes_to_both_office_recipients(
         category="docs_unknown",
         **base_kwargs,
     )
-    assert email_client.calls[0]["to"] == ["priti@example.com", "dinesh@example.com"]
+    assert email_client.calls[0]["to"] == ["anu@example.com"]
+    # Anu is TO here, so she's not also CC'd — just the operator.
+    assert email_client.calls[0]["cc"] == ["sundar@example.com"]
     assert "docs_unknown" in email_client.calls[0]["subject"]
 
 
@@ -361,7 +375,8 @@ async def test_unknown_category_falls_back_to_default(cfg_enabled, base_kwargs):
         category="totally_made_up",
         **base_kwargs,
     )
-    assert email_client.calls[0]["to"] == ["rishi@example.com", "anu@example.com"]
+    assert email_client.calls[0]["to"] == ["rishi@example.com"]
+    assert email_client.calls[0]["cc"] == ["anu@example.com", "sundar@example.com"]
 
 
 @pytest.mark.asyncio

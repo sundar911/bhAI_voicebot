@@ -154,18 +154,23 @@ class Config:
     gmail_client_secret: str = ""
     gmail_refresh_token: str = ""
     gmail_sender_email: str = ""  # the Workspace account that owns the refresh token
-    # Default escalation recipients (grievance / unknown category) — impact team
+    # Default escalation recipients — the mental_health / unknown-category TO.
+    # Just Rishi (rishikesh@); Anu is CC via escalation_impact_head, not TO.
     escalation_recipients: tuple = ()
     # Per-office govt-docs routing. Empty tuple → falls back to default.
     escalation_recipients_docs_bc: tuple = ()
     escalation_recipients_docs_midc: tuple = ()
     # Workplace grievances (supervisor/pay/harassment-at-work) → HR (Simran).
     escalation_recipients_workplace: tuple = ()
-    # Always-on CC list — every escalation email, regardless of category.
-    # Default is anu@tinymiracles.com (per-org policy: Anu has oversight of
-    # all escalations). Add an operator email (Sundar) here in Railway env
-    # to also receive deliverability confirmation. Comma-separated.
+    # Always-on CC — every escalation email, regardless of category. This is
+    # the OPERATOR address (Sundar): he CCs all escalations to confirm the
+    # email pipeline is working. Comma-separated.
     escalation_cc: tuple = ()
+    # Impact-team head (Anu). CC'd on every category WITHIN the impact team's
+    # domain — docs (Priti/Dinesh) and mental_health (Rishi) — but NOT on
+    # workplace (HR/Simran is outside the impact team). Anu heads the team
+    # that Rishi, Priti, and Dinesh are part of.
+    escalation_impact_head: tuple = ()
     escalation_enabled: bool = False
 
 
@@ -287,7 +292,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             addr.strip()
             for addr in os.getenv(
                 "ESCALATION_RECIPIENTS",
-                "rishikesh@tinymiracles.com,anu@tinymiracles.com",
+                "rishikesh@tinymiracles.com",
             ).split(",")
             if addr.strip()
         ),
@@ -319,6 +324,14 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             addr.strip()
             for addr in os.getenv(
                 "ESCALATION_CC",
+                "sundar@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_impact_head=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_IMPACT_HEAD",
                 "anu@tinymiracles.com",
             ).split(",")
             if addr.strip()
