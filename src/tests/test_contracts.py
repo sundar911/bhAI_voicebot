@@ -255,14 +255,16 @@ def test_prompt_template_contains_outreach_honesty_rule():
 
 def test_prompt_template_lists_named_contacts_scope():
     """
-    Vijay/Priti scope rule: they handle document help + KB-listed schemes
-    only. For other questions, bhAI uses general knowledge. Regression
-    for the May 9 fabrication where bhAI invented karate-class details
-    and attributed them to Vijay.
+    Named-contact scope: the document/scheme PoCs — Priti (BC) and Dinesh
+    (MIDC) — handle document help + KB-listed schemes; for other questions
+    bhAI uses general knowledge and NEVER fabricates an attribution.
+    Regression for the May 9 fabrication where bhAI invented karate-class
+    details and attributed them to Vijay (who now appears only as the
+    canonical fake-attribution example in the no-confabulation rules).
     """
     prompt = PROMPT_PATH.read_text(encoding="utf-8")
-    assert "Vijay" in prompt and "Priti" in prompt
-    assert "document work" in prompt or "document help" in prompt.lower()
+    assert "Priti" in prompt and "Dinesh" in prompt
+    assert "document" in prompt.lower()
 
 
 # ──────────────────────────────────────────────────────────────────
