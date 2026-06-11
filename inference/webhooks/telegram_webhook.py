@@ -201,6 +201,40 @@ def _extract_phone_numbers(text: str):
     return voice_text, text_msg
 
 
+_MAP_RE = re.compile(r"<map>(.*?)</map>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_map_links(text: str):
+    """Extract ``<map>place</map>`` blocks → (voice_text with the blocks
+    removed, a follow-up text message with tappable Google Maps links or None).
+
+    The bot says the place name naturally in the voice AND wraps it in a
+    ``<map>…</map>`` block; we strip the block from the spoken copy and send a
+    one-tap Maps link as a separate text, so she can open the location instead
+    of typing it into Maps. Mirrors the phone-number pipeline.
+    """
+    import urllib.parse
+
+    places = [m.strip() for m in _MAP_RE.findall(text) if m.strip()]
+    if not places:
+        return text, None
+
+    voice_text = _MAP_RE.sub("", text)
+    voice_text = re.sub(r"\s{2,}", " ", voice_text).strip()
+
+    parts, seen = [], set()
+    for place in places:
+        if place in seen:
+            continue
+        seen.add(place)
+        url = (
+            "https://www.google.com/maps/search/?api=1&query="
+            + urllib.parse.quote_plus(place)
+        )
+        parts.append(f"📍 {place}\n{url}")
+    return voice_text, "\n\n".join(parts) if parts else None
+
+
 # ── Singletons (lazy-initialized) ─────────────────────────────────────
 
 _store: ConversationStore | None = None
@@ -876,6 +910,7 @@ def _synthesize_and_send_voice(
     Returns True on success, False on failure (failure is logged, not raised).
     """
     voice_text, contact_text_msg = _extract_phone_numbers(text)
+    voice_text, map_text_msg = _extract_map_links(voice_text)
 
     ensure_dir(AUDIO_RESPONSE_DIR)
     ensure_dir(run_dir)
@@ -941,6 +976,13 @@ def _synthesize_and_send_voice(
                 logger.info("Contact text sent to user=%s", phone_id)
             except Exception as text_err:
                 logger.error("Contact text failed for user=%s: %s", phone_id, text_err)
+
+        if map_text_msg:
+            try:
+                telegram_client.send_text(chat_id=chat_id, body=map_text_msg)
+                logger.info("Map link text sent to user=%s", phone_id)
+            except Exception as map_err:
+                logger.error("Map link text failed for user=%s: %s", phone_id, map_err)
         return True
 
     except Exception as e:
