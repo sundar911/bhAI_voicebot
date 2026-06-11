@@ -27,7 +27,7 @@ Use **Claude Code** (connected to this GitHub repo). Just tell it what to change
 - *"Update the leave policy in knowledge_base/hr_admin/policies.md to include 10 days maternity leave"*
 - *"Add a new section about PF withdrawal to knowledge_base/hr_admin/benefits.md"*
 
-Claude Code will edit the file, create a branch, and push the changes. Sundar reviews and approves.
+Claude Code will edit the file, create a branch, and open a pull request into `main` for Sundar to review and merge — see [Submitting your changes](#submitting-your-changes) below for the exact steps.
 
 ### Editing bhAI's Personality (System Prompt)
 
@@ -55,7 +55,7 @@ Tell Claude Code what you want to change:
 - *"bhAI should not answer medical questions — always defer to the impact team"*
 - *"Change the intro message to mention helpdesk services"*
 
-Claude Code will edit the prompt, create a branch, and push it. Sundar reviews and approves.
+Claude Code will edit the prompt, create a branch, and open a pull request into `main` for Sundar to review and merge — see [Submitting your changes](#submitting-your-changes) below.
 
 **Important**: `main` branch is protected — all changes require a pull request with at least 1 approval. This prevents accidental prompt changes from going live without review.
 
@@ -77,6 +77,37 @@ Example:
 ### "Kal nahi aa paungi"
 → Jaldi WhatsApp karo. Reason batao. Calendar me mark hoga.
 ```
+
+### Submitting your changes
+
+You never edit `main` directly. You make your change on a **branch** and open a **pull request (PR)** — a request for Sundar to pull your change into the live bot. He reviews it, may try it on the test (dev) bot first, then merges. Merging to `main` deploys to the live bot automatically, so you don't deploy anything yourself.
+
+If you're using **Claude Code**, you don't need to memorise any of this — just say *"commit this and open a pull request into main"* and it runs the steps below. They're written out so your Claude (or you) can follow them exactly:
+
+1. Start from the latest `main` and make a new branch:
+   ```bash
+   git checkout main && git pull
+   git checkout -b kb/short-description       # e.g. kb/esic-dispensary-update
+   ```
+2. Make your edits, then commit them:
+   ```bash
+   git add <files you changed>
+   git commit -m "Update: what you changed"
+   ```
+3. Push your branch to GitHub:
+   ```bash
+   git push -u origin kb/short-description
+   ```
+4. Open a pull request **into `main`**:
+   ```bash
+   gh pr create --base main --title "Update: what you changed" --body "One or two lines: what and why."
+   ```
+   No `gh` installed? The `git push` above prints a GitHub link — open it, click **Compare & pull request**, and make sure the base branch is `main`.
+5. Send Sundar the PR link. He reviews, tests, and merges.
+
+You **can't** push straight to `main` — it's protected, so every change needs a PR plus one approval. That's the safety net, not a bug.
+
+> Don't have permission to push a branch to this repo? **Fork** it first (GitHub's "Fork" button), push your branch to your fork, and open the PR from your fork into `sundar911/bhAI_voicebot` `main`. Claude Code can do all of this for you.
 
 
 ## For Developers
