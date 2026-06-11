@@ -235,6 +235,27 @@ def _extract_map_links(text: str):
     return voice_text, "\n\n".join(parts) if parts else None
 
 
+_IMAGE_RE = re.compile(r"<image>(.*?)</image>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_image_brief(text: str):
+    """Extract a single ``<image>brief</image>`` block → (voice_text with the
+    block removed, the image brief, or None).
+
+    The reactive bot emits this block when the user asks it to MAKE an image
+    (a poster, a card, a logo). The webhook generates it via nanobanana and
+    sends it as a photo after the voice note. The brief is the model's
+    PII-free visual description; the block is silent (stripped before TTS).
+    """
+    m = _IMAGE_RE.search(text)
+    if not m:
+        return text, None
+    brief = m.group(1).strip()
+    voice_text = _IMAGE_RE.sub("", text)
+    voice_text = re.sub(r"\s{2,}", " ", voice_text).strip()
+    return voice_text, (brief or None)
+
+
 # ── Singletons (lazy-initialized) ─────────────────────────────────────
 
 _store: ConversationStore | None = None
@@ -911,6 +932,7 @@ def _synthesize_and_send_voice(
     """
     voice_text, contact_text_msg = _extract_phone_numbers(text)
     voice_text, map_text_msg = _extract_map_links(voice_text)
+    voice_text, image_brief = _extract_image_brief(voice_text)
 
     ensure_dir(AUDIO_RESPONSE_DIR)
     ensure_dir(run_dir)
@@ -983,6 +1005,43 @@ def _synthesize_and_send_voice(
                 logger.info("Map link text sent to user=%s", phone_id)
             except Exception as map_err:
                 logger.error("Map link text failed for user=%s: %s", phone_id, map_err)
+
+        # The bot asked to MAKE an image (poster/card/logo) — generate it via
+        # nanobanana (scrub-gated inside generate_image) and send as a photo
+        # after the voice. Failure is logged, never raised — the voice already
+        # went out.
+        if image_brief:
+            try:
+                from src.bhai.proactive.dossier_loader import load_user_dossier
+                from src.bhai.proactive.tools.nanobanana import generate_image
+
+                phone = f"tg_{chat_id}"
+                dossier = load_user_dossier(_get_store(), phone)
+                img_dir = DATA_DIR / "reactive_images"
+                img = generate_image(
+                    image_brief,
+                    dossier,
+                    api_key=config.nanobanana_api_key,
+                    model=config.nanobanana_model,
+                    endpoint=config.nanobanana_endpoint,
+                    artifacts_dir=img_dir,
+                    audit_base_dir=img_dir,
+                )
+                if img.ok and img.artifact_path:
+                    telegram_client.send_photo(
+                        chat_id=chat_id, image_path=img.artifact_path
+                    )
+                    logger.info("Reactive image sent to user=%s", phone_id)
+                else:
+                    logger.warning(
+                        "Reactive image not sent user=%s: %s",
+                        phone_id,
+                        getattr(img, "error", None),
+                    )
+            except Exception as img_err:
+                logger.error(
+                    "Reactive image gen failed for user=%s: %s", phone_id, img_err
+                )
         return True
 
     except Exception as e:

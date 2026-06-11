@@ -21,6 +21,7 @@ from inference.webhooks.telegram_webhook import (
     _check_rate_limit,
     _detect_greeting,
     _ensure_webhook_registered,
+    _extract_image_brief,
     _extract_map_links,
     _extract_phone_numbers,
     _phone_hash,
@@ -166,6 +167,27 @@ def test_extract_map_links_dedupes_repeats():
     text = "<map>X Centre, Mumbai</map> aur <map>X Centre, Mumbai</map>"
     _, map_msg = _extract_map_links(text)
     assert map_msg.count("https://www.google.com/maps") == 1
+
+
+def test_extract_image_brief_returns_none_when_no_block():
+    text = "मैं poster नहीं बना सकती।"
+    voice_text, brief = _extract_image_brief(text)
+    assert voice_text == text
+    assert brief is None
+
+
+def test_extract_image_brief_strips_block_and_returns_brief():
+    text = (
+        "हाँ, बना देती हूँ — नीचे भेज रही हूँ! "
+        "<image>a festive cricket-themed birthday poster, 'Happy Birthday' in "
+        "bold, balloons and a bat, bright colours</image>"
+    )
+    voice_text, brief = _extract_image_brief(text)
+    assert "<image>" not in voice_text and "</image>" not in voice_text
+    assert "बना देती हूँ" in voice_text
+    assert brief is not None
+    assert "birthday poster" in brief
+    assert "Happy Birthday" in brief
 
 
 # ── Dashboard auth ───────────────────────────────────────────────────
