@@ -77,15 +77,26 @@ DASHBOARD_SECRET=...
 
 # Escalation emails to impact team (Gmail API — Railway blocks SMTP)
 # When ESCALATE: true fires in an LLM response, an email goes out.
-# See ARCHITECTURE.md §8 for the per-office routing logic.
+# See ARCHITECTURE.md §8 for the per-category routing logic.
 GMAIL_CLIENT_ID=...
 GMAIL_CLIENT_SECRET=...
 GMAIL_REFRESH_TOKEN=...
 GMAIL_SENDER_EMAIL=...
-ESCALATION_RECIPIENTS=rishi@..., anu@...
-ESCALATION_RECIPIENTS_DOCS_BC=priti@...
-ESCALATION_RECIPIENTS_DOCS_MIDC=dinesh@...
+ESCALATION_RECIPIENTS=rishikesh@...           # mental_health / unknown-category TO
+ESCALATION_RECIPIENTS_DOCS_BC=priti@...        # BC docs (also loan-hardship TO)
+ESCALATION_RECIPIENTS_DOCS_MIDC=dinesh@...     # MIDC docs
+ESCALATION_RECIPIENTS_WORKPLACE=simran@...     # workplace grievance (HR)
+ESCALATION_IMPACT_HEAD=anu@...                 # CC'd on impact-team categories
+ESCALATION_CC=sundar@...                       # operator — CC'd on every escalation
 ESCALATION_ENABLED=true
+
+# Proactive nudges (off by default — master kill switch)
+NUDGE_ENABLED=true
+NUDGE_PHONES=*                                 # * = all active users, or comma-separated hashes
+
+# Multimodal & web (reactive bot). Any of NANOBANANA/GEMINI/GOOGLE_GENAI/GOOGLE_API key works for image gen.
+WEB_SEARCH_ENABLED=true
+GOOGLE_API_KEY=...                             # image generation (Gemini) + web search
 ```
 
 See `.env.example` for all available options.
@@ -119,7 +130,7 @@ bhAI_voice_bot/
 │   ├── security/          # Encryption (Fernet), webhook auth, rate limiting
 │   └── integrations/      # Telegram, Twilio (legacy), SharePoint, email_client
 │
-├── src/tests/             # Test suite (435 tests, incl. test_contracts.py + test_proactive_*)
+├── src/tests/             # Test suite (567 tests, incl. test_contracts.py + test_proactive_*)
 │
 ├── knowledge_base/        # Domain knowledge (editable by TM team)
 │   ├── shared/            # Cross-domain (escalation, style)
@@ -141,7 +152,7 @@ bhAI_voice_bot/
 │   ├── web/               # Dev web chat UI (localhost:8002)
 │   └── webhooks/          # Telegram bot entry + nudges loop
 │       ├── telegram_webhook.py  # Active entry point
-│       ├── nudges.py            # Twice-daily proactive messages
+│       ├── nudges.py            # 3 daily proactive nudges (morning/night check-ins + afternoon utility)
 │       └── twilio_webhook.py    # Legacy (Twilio era; not used)
 │
 ├── scripts/               # Utility scripts (SharePoint sync, cleanup, profiles)
@@ -181,7 +192,7 @@ uv run pytest --cov=src/bhai
 
 ### CI/CD
 
-GitHub Actions runs on every push/PR to `main` and `develop`:
+GitHub Actions runs on every push/PR to `main` and `dev`:
 - **test**: pytest + black + isort
 - **lint**: mypy type checking
 
@@ -228,9 +239,11 @@ uv run python inference/web/chat_server.py
 - **Messaging**: Telegram bot (replaces Twilio/WhatsApp)
 - **Security**: Fernet encryption for PII at rest, Telegram secret-token webhook auth
 - **Framework**: Python, FastAPI, pydub
-- **KB retrieval**: Claude Sonnet 4.6 routes each query to 1-3 helpdesk files + emits a use-case tag (`grievance` / `finance` / `finance_advice` / `scheme_kb` / `general`) for prompt scoping (see [ARCHITECTURE.md §5-6](ARCHITECTURE.md))
-- **Escalation**: `ESCALATE: true` from the LLM triggers a Gmail-API email to the impact team, routed per-office (Priti for BC docs, Dinesh for MIDC docs, Rishi+Anu for grievance)
-- **Memory**: per-user encrypted SQLite. Background summarizer + Letta-style self-edited memory (LLM emits `<memory>` blocks)
+- **KB retrieval**: Claude Sonnet 4.6 routes each query to 1-3 helpdesk files + emits a use-case tag (`grievance` / `finance_advice` / `scheme_kb` / `general`) for prompt scoping; helpdesk KB is injected only on `scheme_kb` turns (see [ARCHITECTURE.md §5-6](ARCHITECTURE.md))
+- **Escalation**: `ESCALATE: true` from the LLM triggers a Gmail-API email to the impact team, routed per category (docs → Priti for BC / Dinesh for MIDC / Anu when unknown; workplace grievance → Simran in HR; serious mental-health → Rishi+Anu; loan hardship → Priti+Anu). Sundar is CC'd on all; Anu (impact head) is CC'd on impact-team categories.
+- **Multimodal & web**: the reactive bot can run Anthropic `web_search` for current facts and generate images on request (Gemini `gemini-2.5-flash-image`), and emits Google-Maps link blocks for locations — all stripped from the TTS voice and delivered as separate Telegram messages
+- **Proactive agent**: a brainstorm→critique→tools→draft→judge loop (`src/bhai/proactive/`) generates the 3 daily nudges; morning/night are light check-ins, afternoon is the substantive utility output
+- **Memory**: per-user encrypted SQLite. Background summarizer + Letta-style self-edited memory (LLM emits `<memory>` / `<thread>` blocks)
 - **Anti-confabulation**: regex backstop on every LLM response detects past-tense / unconsented future-tense outreach claims and re-prompts the model
 - **Deployment**: Railway (auto-deploys from `main`, `uv` pinned via `railpack.json`). Data persists on a volume mounted at `/app/data` — see [ARCHITECTURE.md §13](ARCHITECTURE.md#13-deployment--data-persistence).
 

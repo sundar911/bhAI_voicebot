@@ -95,12 +95,12 @@ bhAI's personality and conversation rules live in `src/bhai/llm/prompts/` (not i
 
 bhAI doesn't load every file every turn — that would blow the context window. Instead:
 
-- **shared/** files are always loaded at startup (company overview, escalation policy, style guide)
+- **shared/** files (company overview, escalation policy, style guide) are reference docs — bhAI's live persona, voice, and escalation rules now live directly in the system prompt (`src/bhai/llm/prompts/prompt_v1_pilot.md`), so editing shared/ alone won't change behavior
 - **helpdesk/_index.md** is always loaded (topic list, so bhAI knows what it *can* answer)
-- **helpdesk/{topic}.md** files are loaded only when a user asks something matching that topic. Claude Haiku reads each user query and picks 1-3 relevant files. See [ARCHITECTURE.md §5](../ARCHITECTURE.md#5-kb-retrieval-haiku-routed).
+- **helpdesk/{topic}.md** files are loaded only when a user asks something matching that topic. Claude Sonnet 4.6 reads each user query and picks 1-3 relevant files. See [ARCHITECTURE.md §5](../ARCHITECTURE.md#5-kb-retrieval-llm-routed).
 - **hr_admin/** files are loaded as part of the HR pipeline when applicable
 
-This means **adding a new helpdesk file requires updating `_index.md`** so the Haiku router can discover it. The file body itself isn't seen by the router — only by the main LLM when that topic is matched.
+This means **adding a new helpdesk file requires updating `_index.md`** so the router can discover it. The file body itself isn't seen by the router — only by the main LLM when that topic is matched.
 
 ### Updating the helpdesk source-of-truth
 

@@ -35,8 +35,8 @@ bhAI's personality, conversation rules, and tone live in **prompt files** under 
 
 | File | What it controls |
 |------|-----------------|
-| `prompt_v1_pilot.md` | The active pilot prompt — personality, rules, tone, what to answer, what to defer |
-| `current.md` | An older iterative prompt (not used in pilot) |
+| `prompt_v1_pilot.md` | The active prompt (the only persona prompt) — personality, rules, tone, what to answer, what to defer |
+| `use_cases/*.md` | Per-turn blocks injected when a turn is classified as `grievance` / `finance_advice` / `scheme_kb` / `general` |
 
 #### What you can change in the prompt
 
@@ -146,11 +146,10 @@ src/bhai/
 │   ├── kb_router.py             # Keyword-based KB + use-case router (fallback)
 │   ├── llm_router.py            # Claude Sonnet 4.6 KB + use-case router (primary, cached)
 │   └── prompts/                 # Prompt templates
-│       ├── prompt_v1_pilot.md   # Active pilot persona prompt
-│       ├── current.md           # Older iterative prompt
-│       └── use_cases/           # Per-turn injected blocks: grievance, finance, finance_advice, scheme_kb, general
+│       ├── prompt_v1_pilot.md   # Active persona prompt (the only one — code default)
+│       └── use_cases/           # Per-turn injected blocks: grievance, finance_advice, scheme_kb, general
 ├── escalations/                 # ESCALATE: true → impact-team email
-│   └── handler.py               # Routing + email dispatch (Priti BC, Dinesh MIDC, Rishi+Anu, always-on CC)
+│   └── handler.py               # Per-category routing + Gmail dispatch (docs→Priti/Dinesh/Anu, workplace→Simran, mental_health→Rishi, loan→Priti; Sundar always CC, Anu CC on impact categories)
 ├── proactive/                   # Brainstorm→critique→tools→draft→judge agent for nudges (v2)
 │   ├── thinker.py               # ProactiveThinker — orchestrates the agent loop
 │   ├── dossier_loader.py        # Per-user context bundle for the brainstorm pass
@@ -204,7 +203,7 @@ class YourSTT(BaseSTT):
 #### Branches
 
 - `main` - Production-ready code
-- `develop` - Integration branch
+- `dev` - Integration branch
 - `stt/batch-XXX` - STT first-pass branches
 - `review/domain-batch-XXX` - Human review branches
 - `feature/XXX` - New features
@@ -233,7 +232,7 @@ uv run pytest --cov=src/bhai
 uv run pytest -v
 ```
 
-Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 435 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, LLM router (Sonnet), escalation handler, Sarvam TTS normalization + language detection, behavioral contracts (`test_contracts.py`), and the proactive agent loop (`test_proactive_*` modules — agent_input, dossier, scrubbers, thinker, tools).
+Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 567 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, LLM router (Sonnet), escalation handler, Sarvam TTS normalization + language detection, behavioral contracts (`test_contracts.py`), and the proactive agent loop (`test_proactive_*` modules — agent_input, dossier, scrubbers, thinker, tools).
 
 ### Code Style
 
