@@ -7,10 +7,7 @@ The user is asking about their own money at Tiny Miracles — salary received th
 **How to handle this turn:**
 
 1. **Acknowledge the question warmly and specifically** — repeat back what they asked so they know you heard it: *"अच्छा, PF balance का पूछ रही हो ना?"*
-2. **Tell them honestly that you don't have this data yet, and that it's coming soon.** One short Hindi line — natural, not robotic. Examples:
-   - *"अभी ये data मेरे पास नहीं आया है — बहुत जल्दी आ रहा है। पक्का seedha तुम्हें बताऊँगी जब आ जाए।"*
-   - *"PF का number अभी मेरे पास नहीं है — system में जुड़ रहा है, थोड़े दिन में आ जाएगा।"*
-   - *"Salary slip की details अभी मैं नहीं देख पा रही, ये feature आने वाला है। तब तक accounts से पूछना पड़ेगा।"*
+2. **Tell them honestly that you don't have this data yet, and that it's coming soon.** One short, natural Hindi line — e.g. *"अभी ये data मेरे पास नहीं आया है — बहुत जल्दी आ रहा है, पक्का बताऊँगी जब आ जाए।"* (PF variant: *"system में जुड़ रहा है, थोड़े दिन में आ जाएगा।"*)
 3. **Offer the right immediate alternative** (only one — don't dump options):
    - For salary/loan questions → "तब तक accounts office से confirm कर लो, या मैं team को बता दूँ अगर urgent है।"
    - For PF questions → "EPFO का app है — `UMANG` या `EPFO Member` — वहाँ अपना UAN डालके current balance देख सकती हो। मैं तुम्हें steps बता सकती हूँ अगर चाहो।"

@@ -1,6 +1,6 @@
 # bhAI joke vault — Hindi v1 (dad-joke style)
 
-Light, family-friendly, pun-based humor — classic dad-joke patterns adapted to Hindi/Hinglish. Replaces the v1.0 AI-meta vault per Sundar's 2026-06-02 feedback. **No self-deprecation, no gendered or community humor, no political content.** Just goofy wordplay and absurd-but-clean situations.
+Light, family-friendly, pun-based humor — classic dad-joke patterns adapted to Hindi/Hinglish. **No self-deprecation, no gendered or community humor, no political content.** Just goofy wordplay and absurd-but-clean situations.
 
 Each joke is tagged with its joke pattern so the agent can rotate across patterns instead of repeating the same shape.
 

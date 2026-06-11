@@ -233,12 +233,12 @@ class BaseLLM(ABC):
     ):
         self.config = config
         self.kb_dir = knowledge_base_dir or KNOWLEDGE_BASE_DIR
-
-        # Load shared context
-        shared_dir = self.kb_dir / "shared"
-        self.company_overview = _read_file(shared_dir / "company_overview.md")
-        self.escalation_policy = _read_file(shared_dir / "escalation_policy.md")
-        self.style_guide = _read_file(shared_dir / "style_guide.md")
+        # NOTE: knowledge_base/shared/*.md (company_overview, escalation_policy,
+        # style_guide) are NOT injected into the reactive system prompt — that
+        # content lives inline in prompt_v1_pilot.md. The files remain only as
+        # an on-demand KB source for the proactive kb_read tool. Don't add
+        # `self.escalation_policy = ...`-style reads back here expecting them to
+        # reach the prompt; they won't.
 
         # KB router: selects which helpdesk/*.md files to inject per turn
         # AND emits the use-case tags (grievance/finance/scheme_kb/general).

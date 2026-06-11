@@ -73,7 +73,7 @@ class Config:
     tts_backend: str = "sarvam"  # "sarvam" or "elevenlabs"
 
     # System prompt version — loaded from src/bhai/llm/prompts/{version}.md
-    prompt_version: str = "current"
+    prompt_version: str = "prompt_v1_pilot"
 
     # cot/out structured output: how many times to re-call the LLM when its
     # JSON can't be parsed before giving up to the safe canned fallback.
@@ -230,7 +230,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         elevenlabs_style=float(os.getenv("ELEVENLABS_STYLE", "0.4")),
         elevenlabs_speed=float(os.getenv("ELEVENLABS_SPEED", "1.0")),
         tts_backend=os.getenv("TTS_BACKEND", "sarvam"),
-        prompt_version=os.getenv("PROMPT_VERSION", "current"),
+        prompt_version=os.getenv("PROMPT_VERSION", "prompt_v1_pilot"),
         llm_json_max_attempts=int(os.getenv("LLM_JSON_MAX_ATTEMPTS", "3")),
         ack_enabled=os.getenv("ACK_ENABLED", "true").lower() == "true",
         retry_max_attempts=int(os.getenv("RETRY_MAX_ATTEMPTS", "3")),
