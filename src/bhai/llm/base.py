@@ -959,9 +959,12 @@ class BaseLLM(ABC):
     # `_detect_outreach_claim` to flag confabulated outreach. "impact team"
     # is included as a phrase; "team" alone is too noisy.
     _OUTREACH_CONTACTS = (
-        "Vijay",
+        "Vijay",  # legacy PoC; kept as the canonical fake-attribution example
         "Priti",
+        "Dinesh",
+        "Simran",
         "Rishi",
+        "Anu",
         "Sarfaraz",
         "Vidhi",
         "impact team",
