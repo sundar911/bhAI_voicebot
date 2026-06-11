@@ -1683,19 +1683,21 @@ async def admin_throttle_nudge(phone_hash: str, key: str = "", hours: int = 0):
 
 @app.post("/admin/test-nudge/{phone_hash}")
 async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"):
-    """Fire one nudge to one user immediately, ignoring schedule + rate-limit.
+    """Fire one v2 nudge to one user immediately, ignoring schedule + rate-limit.
 
-    For testing the nudge content and delivery before flipping the loop on.
-    `slot` must be 'morning' or 'night'. Bypasses NUDGE_ENABLED and
-    NUDGE_PHONES gates so you can dry-run any user.
+    Runs the full v2 ProactiveThinker (brainstorm → critique → tools → draft →
+    judge) against the user's REAL dossier (threads + memory), so this shows
+    exactly what proactive mode would say for them. `slot`: 'morning'/'night'
+    (substantive) or 'afternoon' (joke). Bypasses NUDGE_ENABLED + rate-limit.
     """
     auth = _check_dashboard_key(key)
     if auth:
         return auth
 
-    if slot not in ("morning", "night"):
+    if slot not in ("morning", "afternoon", "night"):
         return JSONResponse(
-            {"error": "slot must be 'morning' or 'night'"}, status_code=400
+            {"error": "slot must be 'morning', 'afternoon', or 'night'"},
+            status_code=400,
         )
 
     target_phone = _phone_from_hash(phone_hash)
@@ -1715,24 +1717,37 @@ async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"
     config = load_config()
     store = _get_store()
 
-    from inference.webhooks.nudges import build_and_generate_nudge
+    from inference.webhooks.nudges import _generate_nudge_v2
 
     try:
-        text = build_and_generate_nudge(
+        cand = _generate_nudge_v2(
             phone=target_phone, slot=slot, store=store, config=config
         )
     except Exception as e:
-        logger.exception("Test nudge generation failed: %s", e)
+        logger.exception("Test nudge (v2) generation failed: %s", e)
         return JSONResponse({"error": f"generation failed: {e}"}, status_code=500)
 
-    if not text:
+    if not cand or not cand.text:
         return JSONResponse({"error": "empty nudge text"}, status_code=500)
 
     logger.warning(
-        "ADMIN TEST NUDGE user=%s slot=%s len=%d", phone_hash, slot, len(text)
+        "ADMIN TEST NUDGE v2 user=%s slot=%s cat=%s len=%d",
+        phone_hash,
+        slot,
+        cand.category,
+        len(cand.text),
     )
-    _send_nudge(chat_id, slot, text)
-    # v1.5 admin path doesn't pick an open thread (thread_slug=None) but we
-    # log the content so this test send shows up in nudge_history.md too.
-    store.record_nudge_outcome(target_phone, slot, category="checkin", text=text)
-    return {"phone_hash": phone_hash, "slot": slot, "text": text, "sent": True}
+    _send_nudge(chat_id, slot, cand.text, cand.text_artifact, cand.artifact_path)
+    store.record_nudge_outcome(
+        target_phone, slot, cand.thread_slug, category=cand.category, text=cand.text
+    )
+    return {
+        "phone_hash": phone_hash,
+        "slot": slot,
+        "category": cand.category,
+        "thread": cand.thread_slug,
+        "text": cand.text,
+        "text_artifact": cand.text_artifact,
+        "image": str(cand.artifact_path) if cand.artifact_path else None,
+        "sent": True,
+    }
