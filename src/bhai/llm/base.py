@@ -417,7 +417,15 @@ class BaseLLM(ABC):
             )
             helpdesk_paths = result.paths
             use_case_tags = result.use_cases
-        helpdesk_kb = self._load_domain_context("helpdesk", paths=helpdesk_paths)
+        # Only inject the helpdesk KB when the turn is actually a docs/scheme
+        # turn (the `scheme_kb` tag). Most conversations are open-ended
+        # companionship and should NOT carry KB context — it bloats the prompt
+        # and skews the bot toward scheme-shaped answers. The router still
+        # classifies use-cases every turn; the helpdesk files it picks are used
+        # only here, gated on scheme_kb.
+        helpdesk_kb = ""
+        if "scheme_kb" in use_case_tags:
+            helpdesk_kb = self._load_domain_context("helpdesk", paths=helpdesk_paths)
         if helpdesk_kb:
             prompt += f"\n\n=== Helpdesk Knowledge Base (documents, schemes) ===\n{helpdesk_kb}"
 

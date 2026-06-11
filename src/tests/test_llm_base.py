@@ -549,25 +549,23 @@ class _StubRouterWithUseCases:
 
 def test_system_prompt_includes_use_case_block(stub_llm):
     """Active use-case tags inject their instruction block into the prompt."""
-    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["finance"])
-    prompt = stub_llm._build_system_prompt("hr_admin", transcript="PF balance?")
-    assert "=== Active Use Cases" in prompt
-    # The finance block must be present (key phrase from the file)
-    assert (
-        "data is not yet wired in" in prompt
-        or "data is coming soon" in prompt
-        or "अभी ये data मेरे पास नहीं" in prompt
+    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["grievance"])
+    prompt = stub_llm._build_system_prompt(
+        "hr_admin", transcript="supervisor pareshan kar raha hai"
     )
+    assert "=== Active Use Cases" in prompt
+    # The grievance block must be present (key phrase from the file)
+    assert "Listen first" in prompt
 
 
 def test_system_prompt_multi_use_cases_concatenated(stub_llm):
     """Multiple tags inject multiple blocks under one heading."""
-    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["grievance", "finance"])
+    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["grievance", "general"])
     prompt = stub_llm._build_system_prompt(
-        "hr_admin", transcript="Salary aayi nahi, supervisor kuch bata nahi raha"
+        "hr_admin", transcript="supervisor se jhagda, aur ek jagah bata"
     )
     assert "Grievance" in prompt
-    assert "Finance" in prompt
+    assert "General" in prompt
 
 
 def test_system_prompt_no_use_cases_means_no_block(stub_llm):
