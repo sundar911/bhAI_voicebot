@@ -320,6 +320,21 @@ async def test_category_workplace_routes_to_simran_no_impact_head(
 
 
 @pytest.mark.asyncio
+async def test_category_loan_hardship_routes_to_priti_cc_anu(cfg_enabled, base_kwargs):
+    """TM-loan missed-EMI flag → Priti (TO) + Anu (impact head) + operator."""
+    email_client = StubEmailClient(results=[True])
+    await handle_escalation(
+        config=cfg_enabled,
+        email_client=email_client,
+        category="loan_hardship",
+        **base_kwargs,
+    )
+    assert email_client.calls[0]["to"] == ["priti@example.com"]
+    assert email_client.calls[0]["cc"] == ["anu@example.com", "sundar@example.com"]
+    assert "loan_hardship" in email_client.calls[0]["subject"]
+
+
+@pytest.mark.asyncio
 async def test_category_docs_bc_routes_to_priti(cfg_enabled, base_kwargs):
     email_client = StubEmailClient(results=[True])
     await handle_escalation(

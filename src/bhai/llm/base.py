@@ -660,6 +660,7 @@ class BaseLLM(ABC):
         "docs_unknown",
         "workplace",
         "mental_health",
+        "loan_hardship",
     )
 
     @staticmethod

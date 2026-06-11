@@ -53,6 +53,7 @@ _VALID_CATEGORIES = (
     "docs_unknown",
     "workplace",
     "mental_health",
+    "loan_hardship",
 )
 _CATEGORY_RE = re.compile(r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", re.IGNORECASE)
 
@@ -160,6 +161,11 @@ def _recipients_for_category(
         to = list(config.escalation_recipients_workplace)
         # HR is outside the impact team — operator CC only, no impact head.
         return to, _cc(include_impact_head=False, to=to), "workplace"
+    if category == "loan_hardship" and config.escalation_recipients_docs_bc:
+        # TM-loan missed-EMI flag → Priti (member services), CC Anu (she
+        # approves hardship defaults) + operator. Impact-team category.
+        to = list(config.escalation_recipients_docs_bc)
+        return to, _cc(include_impact_head=True, to=to), "loan_hardship"
     # Default: mental_health / unknown category → Rishi (TO), Anu + operator
     # (CC). The safe fallback — an unclassified escalation may be a welfare or
     # safety case, so it goes to the team with welfare oversight.
