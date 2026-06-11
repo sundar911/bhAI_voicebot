@@ -32,6 +32,7 @@ from ..config import Config
 from .agent_input import AgentInput
 from .prompts import (
     load_brainstorm_prompt,
+    load_checkin_prompt,
     load_critique_prompt,
     load_draft_prompt,
     load_joke_prompt,
@@ -293,7 +294,11 @@ class ProactiveThinker:
     # ── Substantive slot loop ──────────────────────────────────────
 
     def think_substantive(self, agent_input: AgentInput, slot: str) -> NudgeCandidate:
-        """Run the full agent loop for a morning or night substantive slot.
+        """Run the full agent loop for the substantive utility slot (afternoon).
+
+        This is bhAI hard at work being useful to her while she's at work — the
+        brainstorm → critique → tools → draft → judge pipeline. (Morning/night
+        are lighter relational check-ins; see ``think_checkin``.)
 
         Per Sundar's 2026-06-02 directive: never silent-day. On judge failure,
         retry the draft (with feedback) up to `max_draft_retries` times. If
@@ -301,8 +306,8 @@ class ProactiveThinker:
         greeting tied to the chosen candidate's trace — better to send a
         plain check-in than nothing.
         """
-        if slot not in ("morning", "night"):
-            raise ValueError(f"think_substantive expects morning|night, got {slot!r}")
+        if slot not in ("morning", "afternoon", "night"):
+            raise ValueError(f"think_substantive: unexpected slot {slot!r}")
 
         # Trust-repair mode: an open `trust_repair` thread means the user felt
         # misled / let down. Bypass brainstorm+critique entirely and lead with
@@ -495,6 +500,72 @@ class ProactiveThinker:
                 ),
             },
         )
+
+    def think_checkin(self, agent_input: AgentInput, slot: str) -> NudgeCandidate:
+        """Compose a light, grounded check-in for the morning or night slot.
+
+        The relational bookends of her day — a warm opener / closing, NO tools
+        or artifacts (the afternoon slot carries the substantive utility work).
+        A night check-in may fold in an organic joke if the day's vibe supports
+        it. Trust-repair takes precedence. Never silent — falls back to a plain
+        warm greeting.
+        """
+        if slot not in ("morning", "night"):
+            raise ValueError(f"think_checkin expects morning|night, got {slot!r}")
+
+        repair_thread = self._open_trust_repair_thread(agent_input)
+        if repair_thread is not None:
+            return self._think_repair(agent_input, slot, repair_thread)
+
+        stub_candidate = BrainstormCandidate(
+            category="checkin",
+            summary="warm check-in",
+            trace="check-in slot",
+            tools_needed=[],
+            why_now=f"{slot} relational check-in",
+        )
+        text = ""
+        for _ in range(self.max_draft_retries):
+            text = self._checkin(agent_input, slot).strip()
+            if not text:
+                continue
+            verdict = self._judge(agent_input, text, stub_candidate, slot)
+            if verdict.get("verdict") == "pass":
+                return NudgeCandidate(
+                    slot=slot, category="checkin", text=text, judge_verdict=verdict
+                )
+        # Never silent — a plain, safe warm greeting.
+        return NudgeCandidate(
+            slot=slot,
+            category="checkin",
+            text=self._fallback_checkin(slot),
+            judge_verdict={
+                "verdict": "fallback",
+                "checks": {},
+                "reasoning": "checkin retries failed; used safe greeting",
+            },
+        )
+
+    def _checkin(self, agent_input: AgentInput, slot: str) -> str:
+        system = load_checkin_prompt()
+        user = self._build_user_message(
+            agent_input=agent_input, slot=slot, extra_sections={}
+        )
+        raw = self.anthropic.messages_create(
+            model=self.model,
+            max_tokens=400,
+            system=system,
+            messages=[{"role": "user", "content": user}],
+            temperature=0.6,
+        )
+        return raw.strip()
+
+    @staticmethod
+    def _fallback_checkin(slot: str) -> str:
+        """Safe, gender-neutral aap-form check-in when every retry fails."""
+        if slot == "night":
+            return "दिन कैसा रहा आज? थोड़ा आराम कर लीजिए अब। कल बात करते हैं।"
+        return "सुप्रभात! आज का दिन कैसा शुरू हो रहा है? बताइएगा जब time मिले।"
 
     # ── Trust-repair + shared draft loop ──────────────────────────
 

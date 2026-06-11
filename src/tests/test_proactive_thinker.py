@@ -185,6 +185,35 @@ def _judge_canned(verdict: str = "pass") -> str:
     )
 
 
+class TestThinkCheckin:
+    def test_checkin_is_light_two_calls(self):
+        """Morning/night check-in = one warm message + judge. No brainstorm,
+        no critique, no tools."""
+        anth = FakeAnthropic()
+        anth.set_responses(
+            [
+                "सुप्रभात! कल बेटी के exam की बात हुई थी — आज कैसा रहा उसका?",
+                _judge_canned("pass"),
+            ]
+        )
+        tools = FakeToolRunner()
+        t = _thinker(anth, tools)
+        result = t.think_checkin(_agent_input(), slot="morning")
+
+        assert result.slot == "morning"
+        assert result.category == "checkin"
+        assert result.text is not None and "बेटी" in result.text
+        assert result.judge_verdict["verdict"] == "pass"
+        assert tools.calls == []  # no tools on a check-in
+        assert len(anth.calls) == 2  # checkin + judge only
+
+    def test_checkin_rejects_afternoon(self):
+        """Afternoon is the substantive slot, not a check-in slot."""
+        t = _thinker(FakeAnthropic(), FakeToolRunner())
+        with pytest.raises(ValueError):
+            t.think_checkin(_agent_input(), slot="afternoon")
+
+
 class TestThinkSubstantiveHappyPath:
     def test_no_tools_full_loop(self):
         anth = FakeAnthropic()
@@ -394,9 +423,10 @@ class TestThinkSubstantiveRetryAndFallback:
         assert result.text is not None
 
     def test_invalid_slot_raises(self):
+        # afternoon is now a valid substantive slot; only truly-unknown slots raise.
         t = _thinker(FakeAnthropic(), FakeToolRunner())
         with pytest.raises(ValueError):
-            t.think_substantive(_agent_input(), slot="afternoon")
+            t.think_substantive(_agent_input(), slot="midnight")
 
 
 # ── Joke loop — retry + fallback ────────────────────────────────

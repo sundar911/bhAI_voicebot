@@ -98,9 +98,11 @@ class Config:
     # Proactive nudges (option B follow-ups)
     nudge_enabled: bool = False  # Master kill switch — must be opted in
     nudge_phones: str = ""  # Comma-separated phone hashes allowed to receive nudges
-    nudge_morning_hour_ist: int = 10  # Local IST hour for morning check-in
-    nudge_afternoon_hour_ist: int = 14  # Local IST hour for the afternoon joke
-    nudge_night_hour_ist: int = 21  # Local IST hour for night check-in
+    nudge_morning_hour_ist: int = 10  # Morning warm check-in (relational)
+    nudge_afternoon_hour_ist: int = (
+        14  # Afternoon substantive utility (the thinking work)
+    )
+    nudge_night_hour_ist: int = 21  # Night closing check-in (+ organic joke if it fits)
     nudge_window_minutes: int = 30  # Firing window width around each slot
     nudge_check_interval_seconds: int = 300  # How often the loop wakes
     nudge_active_user_days: int = 7  # Only nudge users active in last N days

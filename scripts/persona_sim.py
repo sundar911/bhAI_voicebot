@@ -117,9 +117,9 @@ def cmd_slot(args):
         model="claude-sonnet-4-6",
     )
     cand = (
-        thinker.think_joke(ai)
+        thinker.think_substantive(ai, args.slot)
         if args.slot == "afternoon"
-        else thinker.think_substantive(ai, args.slot)
+        else thinker.think_checkin(ai, args.slot)
     )
     slug = cand.chosen_candidate.thread_slug if cand.chosen_candidate else None
     print(f"\n[{args.slot} nudge — category={cand.category} thread={slug}]")

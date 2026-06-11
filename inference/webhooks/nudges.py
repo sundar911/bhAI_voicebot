@@ -530,9 +530,12 @@ def _generate_nudge_v2(
             ),
             model=getattr(config, "anthropic_model", None) or "claude-sonnet-4-6",
         )
+        # Afternoon = the substantive utility work (bhAI hard at work for her
+        # while she's at work). Morning/night = light, grounded check-ins (the
+        # relational bookends; a night check-in may fold in an organic joke).
         if slot == SLOT_AFTERNOON:
-            return thinker.think_joke(agent_input)
-        return thinker.think_substantive(agent_input, slot)
+            return thinker.think_substantive(agent_input, slot)
+        return thinker.think_checkin(agent_input, slot)
     except Exception as e:
         logger.exception("v2 nudge generation failed for %s: %s", phone, e)
         return None

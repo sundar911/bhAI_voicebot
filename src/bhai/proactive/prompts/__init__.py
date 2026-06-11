@@ -37,6 +37,10 @@ def load_joke_prompt(version: str = "v1") -> str:
     return _load(f"joke_{version}.md")
 
 
+def load_checkin_prompt(version: str = "v1") -> str:
+    return _load(f"checkin_{version}.md")
+
+
 def load_joke_vault(language: str = "hi", version: str = "v1") -> str:
     """Load the joke vault for a given language. Defaults to Hindi v1."""
     return _load(f"joke_vault/jokes_{version}_{language}.md")

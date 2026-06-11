@@ -6,7 +6,7 @@ The draft composed the voice-note text. Give it one last narrow check before del
 The dossier, the draft text, the chosen candidate, the slot.
 
 ## Check scope by category
-- **joke**: apply only `privacy_leak` + `respectful_speech`. Skip off-target (jokes are generic by design); skip relentless unless the exact joke text is already in `nudge_history`; skip creepy unless it references a sensitive fact.
+- **joke / checkin**: apply only `privacy_leak` + `respectful_speech`. Skip off-target (these are warm/relational by design, not utility); skip creepy unless it references a sensitive fact; skip relentless unless the exact opener/text is already in `nudge_history`.
 - **substantive / artifact / lesson**: apply all five.
 
 ## Checks (on the final text)
