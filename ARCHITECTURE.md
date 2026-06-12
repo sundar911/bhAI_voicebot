@@ -15,7 +15,7 @@ bhAI is an agent with **two layers** — a **reactive** path that answers each i
 flowchart TD
     subgraph REACTIVE["Reactive layer — answers a voice note (§1–§10)"]
         direction TB
-        V["Voice note in → POST /telegram/webhook<br/>secret-token verify · rate limit · ack {ok:true}"] --> STT["STT · Sarvam saaras:v3"]
+        V["Voice note in → POST /telegram/webhook<br/>secret-token verify · rate limit · immediate ack"] --> STT["STT · Sarvam saaras:v3"]
         STT --> RT{{"LLMKBRouter · one cached Sonnet call<br/>picks 1–3 helpdesk files + a use-case tag"}}
         RT --> SP["System prompt assembled fresh<br/>persona + routed KB (scheme_kb turns only) + use-case block"]
         SP --> LLM{{"Main LLM · Sonnet 4.6<br/>cot/out JSON + adaptive thinking + web_search"}}
