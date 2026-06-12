@@ -772,6 +772,11 @@ def process_message(
                 llm_result["escalate"],
             )
 
+            # Persist the model's full output (raw pre-strip + cleaned post-strip)
+            # every turn, so a reply that collapses after stripping can be
+            # debugged from the raw instead of lost. Best-effort, never fatal.
+            store.save_llm_io(phone, llm_result.get("raw", ""), response_text)
+
             if is_first_ever:
                 intro = _build_intro(config)
                 response_text = llm_result["text"] + " " + intro
@@ -1343,6 +1348,30 @@ async def debug_user(phone_hash: str, key: str = ""):
         timeline.append(entry)
 
     return {"phone_hash": phone_hash, "total_messages": len(rows), "timeline": timeline}
+
+
+@app.get("/llm-io/{phone_hash}")
+async def llm_io(phone_hash: str, key: str = ""):
+    """Full model output per recent turn: raw (pre-strip) + cleaned (post-strip).
+
+    For debugging replies that collapse after stripping (a <thread>/<memory>
+    block eating the substance, leaving a bare interjection). Access is logged.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    logger.warning("LLM-IO ACCESS for user=%s by key holder", phone_hash)
+
+    target_phone = _phone_from_hash(phone_hash)
+    if not target_phone:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    store = _get_store()
+    return {
+        "phone_hash": phone_hash,
+        "turns": store.get_recent_llm_io(target_phone, limit=30),
+    }
 
 
 @app.get("/conversations/{phone_hash}")

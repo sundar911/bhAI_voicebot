@@ -154,6 +154,23 @@ class ConversationStore:
 
             CREATE INDEX IF NOT EXISTS idx_nudge_history_phone_time
                 ON nudge_history(phone, sent_at);
+
+            -- Full model I/O per reactive turn, encrypted. raw_enc is the
+            -- model's COMPLETE output before any stripping; cleaned_enc is the
+            -- final spoken text after all <memory>/<thread>/markdown/block
+            -- stripping. Stored every turn so a reply that collapses after
+            -- stripping (e.g. "अरे," once a block ate the substance) is
+            -- debuggable from the raw instead of lost. View: /llm-io/{hash}.
+            CREATE TABLE IF NOT EXISTS llm_io (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                raw_enc TEXT NOT NULL,
+                cleaned_enc TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_llm_io_phone_time
+                ON llm_io(phone, created_at);
         """)
         self._conn.commit()
 
@@ -176,6 +193,48 @@ class ConversationStore:
                 "Skipping undecryptable stored value (key mismatch or corrupt data)"
             )
             return None
+
+    # ── LLM I/O capture (debugging: full model output, pre + post strip) ──
+
+    def save_llm_io(self, phone: str, raw: str, cleaned: str) -> None:
+        """Persist the model's full output for a reactive turn, encrypted.
+
+        ``raw`` is the complete model output BEFORE any stripping; ``cleaned``
+        is the final spoken text AFTER it. Stored every turn so a reply that
+        collapses after stripping (a block eating the substance) can be
+        debugged from the raw rather than silently lost. Best-effort — never
+        raises into the reply path.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO llm_io (phone, raw_enc, cleaned_enc, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (
+                    phone,
+                    self._encrypt(raw or ""),
+                    self._encrypt(cleaned or ""),
+                    _now_iso(),
+                ),
+            )
+            self._conn.commit()
+        except Exception:
+            logger.exception("save_llm_io failed for phone=%s (non-fatal)", phone)
+
+    def get_recent_llm_io(self, phone: str, limit: int = 20) -> List[Dict[str, str]]:
+        """Recent (raw, cleaned) model-output pairs for a user, decrypted."""
+        rows = self._conn.execute(
+            "SELECT raw_enc, cleaned_enc, created_at FROM llm_io"
+            " WHERE phone = ? ORDER BY created_at DESC LIMIT ?",
+            (phone, limit),
+        ).fetchall()
+        return [
+            {
+                "raw": self._try_decrypt(raw_enc) or "",
+                "cleaned": self._try_decrypt(cleaned_enc) or "",
+                "created_at": ts,
+            }
+            for raw_enc, cleaned_enc, ts in rows
+        ]
 
     # ── Session management ────────────────────────────────────────────
 

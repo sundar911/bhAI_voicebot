@@ -453,3 +453,27 @@ def test_get_memory_returns_none_on_undecryptable_summary(tmp_db):
 
     assert store.get_memory(phone) is None  # must not raise
     store.close()
+
+
+# ──────────────────────────────────────────────────────────────────
+# 8. LLM I/O capture — the model's full output (pre + post strip) is stored
+#    → 2026-06-12: a reply collapsed to a bare "अरे," after a block was
+#      stripped, and the raw output was gone (only logged on parse-failure).
+#      Every turn must persist raw + cleaned so collapses are debuggable.
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_llm_io_round_trips_raw_and_cleaned(tmp_db):
+    from src.bhai.memory.store import ConversationStore
+
+    store = ConversationStore(tmp_db)
+    phone = "deadbeef"
+    raw = "अरे, <thread>slug: anand_movie; state: open</thread>"
+    cleaned = "अरे,"  # what's left after the <thread> block is stripped
+    store.save_llm_io(phone, raw, cleaned)
+
+    turns = store.get_recent_llm_io(phone)
+    assert len(turns) == 1
+    assert turns[0]["raw"] == raw  # full pre-strip output preserved
+    assert turns[0]["cleaned"] == cleaned
+    store.close()
