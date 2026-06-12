@@ -25,18 +25,25 @@ repos:
       - id: debug-statements
 
   # ── Formatting ───────────────────────────────────────────────────
-  - repo: https://github.com/psf/black
-    rev: 24.10.0
+  # Local hooks (not pinned-rev remote repos) so pre-commit runs the SAME
+  # black/isort as CI — the ones resolved in uv.lock via `uv run`. A pinned
+  # remote rev here would drift from CI's `uv run black` and the two would
+  # fight forever (one reformats, the other --check fails). Single source of
+  # truth = uv.lock; a `uv lock` bump moves pre-commit AND CI together.
+  - repo: local
     hooks:
       - id: black
-        language_version: python3.11
+        name: black
+        entry: uv run black
+        language: system
+        types: [python]
         args: ["--line-length=88"]
         files: ^(src/|inference/|scripts/|benchmarking/scripts/).*\.py$
-
-  - repo: https://github.com/pycqa/isort
-    rev: 5.13.2
-    hooks:
       - id: isort
+        name: isort
+        entry: uv run isort
+        language: system
+        types: [python]
         args: ["--profile", "black", "--line-length=88"]
         files: ^(src/|inference/|scripts/|benchmarking/scripts/).*\.py$
 

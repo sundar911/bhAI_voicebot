@@ -395,7 +395,9 @@ def test_strip_memory_patches_removes_multiple_blocks():
 
 def test_strip_memory_patches_handles_multiline_summary():
     """summary: patches can span multiple lines (DOTALL)."""
-    raw = "हाँ। <memory>summary: line one\nline two\nline three</memory>\n" "और कुछ बात?"
+    raw = (
+        "हाँ। <memory>summary: line one\nline two\nline three</memory>\n" "और कुछ बात?"
+    )
     cleaned = BaseLLM._strip_memory_patches(raw)
     assert "<memory>" not in cleaned
     assert "line one" not in cleaned

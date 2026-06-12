@@ -4,6 +4,7 @@ Stores messages and rolling memory summaries per user.
 """
 
 import json
+import logging
 import sqlite3
 import uuid
 from datetime import datetime, timedelta, timezone
@@ -11,6 +12,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 from ..security.crypto import decrypt_text, encrypt_text
+
+logger = logging.getLogger(__name__)
 
 # IST offset for session management
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -42,8 +45,7 @@ class ConversationStore:
 
     def _init_tables(self):
         """Create tables if they don't exist."""
-        self._conn.executescript(
-            """
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -92,8 +94,7 @@ class ConversationStore:
 
             CREATE INDEX IF NOT EXISTS idx_nudge_history_phone_time
                 ON nudge_history(phone, sent_at);
-        """
-        )
+        """)
         self._conn.commit()
 
     def _encrypt(self, plaintext: str) -> str:
@@ -101,6 +102,20 @@ class ConversationStore:
 
     def _decrypt(self, ciphertext: str) -> str:
         return decrypt_text(ciphertext)
+
+    def _try_decrypt(self, ciphertext: str) -> Optional[str]:
+        """Decrypt a stored value, returning None (and logging) instead of
+        raising when it can't be decrypted — e.g. a row written under a
+        different ``BHAI_ENCRYPTION_KEY``. Read paths use this so one poisoned
+        row degrades to "skip it" rather than crashing the whole request.
+        """
+        try:
+            return decrypt_text(ciphertext)
+        except ValueError:
+            logger.warning(
+                "Skipping undecryptable stored value (key mismatch or corrupt data)"
+            )
+            return None
 
     # ── Session management ────────────────────────────────────────────
 
@@ -170,10 +185,13 @@ class ConversationStore:
 
         messages = []
         for role, content_enc, ts in reversed(rows):  # chronological order
+            content = self._try_decrypt(content_enc)
+            if content is None:  # poisoned row (wrong key) — skip, don't crash
+                continue
             messages.append(
                 {
                     "role": role,
-                    "content": self._decrypt(content_enc),
+                    "content": content,
                     "timestamp": ts,
                 }
             )
@@ -188,10 +206,13 @@ class ConversationStore:
             (phone, session_id),
         ).fetchall()
 
-        return [
-            {"role": role, "content": self._decrypt(enc), "timestamp": ts}
-            for role, enc, ts in rows
-        ]
+        out = []
+        for role, enc, ts in rows:
+            content = self._try_decrypt(enc)
+            if content is None:  # poisoned row (wrong key) — skip, don't crash
+                continue
+            out.append({"role": role, "content": content, "timestamp": ts})
+        return out
 
     def count_user_messages(self, phone: str) -> int:
         """Count total user (not assistant) messages for summarization trigger."""
@@ -218,9 +239,15 @@ class ConversationStore:
             return None
 
         summary_enc, facts_enc, last_updated = row
+        summary = self._try_decrypt(summary_enc)
+        if summary is None:
+            # Memory written under a different key — act as if there is no
+            # memory rather than crashing the request.
+            return None
+        facts_raw = self._try_decrypt(facts_enc)
         return {
-            "summary": self._decrypt(summary_enc),
-            "facts": json.loads(self._decrypt(facts_enc)),
+            "summary": summary,
+            "facts": json.loads(facts_raw) if facts_raw else [],
             "last_updated": last_updated,
         }
 

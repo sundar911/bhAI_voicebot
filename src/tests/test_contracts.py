@@ -298,3 +298,55 @@ def test_app_exposes_required_routes():
         f"FastAPI app is missing required routes: {sorted(missing)}. "
         "If you deliberately removed one, update this contract."
     )
+
+
+# ──────────────────────────────────────────────────────────────────
+# Decryption resilience — a wrong-key / poisoned row must not crash
+#   → 2026-06-12: prod ran briefly under the dev BHAI_ENCRYPTION_KEY and
+#     wrote message/memory rows the restored prod key couldn't decrypt.
+#     A single Fernet InvalidToken in get_recent_messages / get_memory
+#     crashed process_message and took the whole reply down. Read paths
+#     must skip undecryptable rows, never raise.
+# ──────────────────────────────────────────────────────────────────
+
+
+def test_get_recent_messages_skips_undecryptable_rows(tmp_db):
+    from cryptography.fernet import Fernet
+
+    from src.bhai.memory.store import ConversationStore
+
+    store = ConversationStore(tmp_db)
+    phone, sid = "deadbeef", "sess1"
+    store.save_message(phone, "user", "good message", sid)
+
+    # A row written under a DIFFERENT key — the wrong-key poison.
+    poison = Fernet(Fernet.generate_key()).encrypt(b"wrong key").decode()
+    store._conn.execute(
+        "INSERT INTO messages (phone, role, content_enc, audio_path, timestamp, session_id)"
+        " VALUES (?, ?, ?, ?, ?, ?)",
+        (phone, "user", poison, None, "2099-01-01T00:00:00+05:30", sid),
+    )
+    store._conn.commit()
+
+    msgs = store.get_recent_messages(phone)  # must not raise
+    assert [m["content"] for m in msgs] == ["good message"]  # poison skipped
+    store.close()
+
+
+def test_get_memory_returns_none_on_undecryptable_summary(tmp_db):
+    from cryptography.fernet import Fernet
+
+    from src.bhai.memory.store import ConversationStore
+
+    store = ConversationStore(tmp_db)
+    phone = "deadbeef"
+    poison = Fernet(Fernet.generate_key()).encrypt(b"wrong key").decode()
+    store._conn.execute(
+        "INSERT INTO memory (phone, summary_enc, facts_enc, last_updated)"
+        " VALUES (?, ?, ?, ?)",
+        (phone, poison, poison, "2099-01-01T00:00:00+05:30"),
+    )
+    store._conn.commit()
+
+    assert store.get_memory(phone) is None  # must not raise
+    store.close()
