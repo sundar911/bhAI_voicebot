@@ -9,33 +9,37 @@ For setup and project structure, see [README.md](README.md).
 
 ## Pipeline Overview
 
-```
-Telegram Voice Message
-       │
-  ┌────▼─────────────────────────────────────┐
-  │  POST /telegram/webhook                  │
-  │  Secret-token header verify → Rate limit │
-  │  Return {"ok": true} immediately         │
-  └────┬─────────────────────────────────────┘
-       │ BackgroundTask
-  ┌────▼─────────────────────────────────────┐
-  │  process_message()                       │
-  │                                          │
-  │  1. Session management                   │
-  │  2. STT (Sarvam saaras:v3)               │
-  │  3. Onboarding / re-onboarding detect    │
-  │  4. FAQ cache check                      │
-  │  5. LLM generation (if no cache hit)     │
-  │  6. Save messages + summarize            │
-  │  7. Strip markdown → TTS                 │
-  │  8. sendVoice multipart upload           │
-  └──────────────────────────────────────────┘
+bhAI is an agent with **two layers** — a **reactive** path that answers each incoming voice note (detailed in §1–§10), and a **proactive** path that generates nudges on a schedule (the `ProactiveThinker` loop in `src/bhai/proactive/`). Both share one encrypted store, the Sonnet LLM, Sarvam TTS, the block-stripping/delivery code, and the escalation-email path.
 
-  On failure at STT or LLM:
-  ┌──────────────────────────────────────────┐
-  │  RequestQueue (SQLite, legacy worker)    │
-  │  Not exercised under Telegram entry point│
-  └──────────────────────────────────────────┘
+```mermaid
+flowchart TD
+    subgraph REACTIVE["Reactive layer — answers a voice note (§1–§10)"]
+        direction TB
+        V["Voice note in → POST /telegram/webhook<br/>secret-token verify · rate limit · ack {ok:true}"] --> STT["STT · Sarvam saaras:v3"]
+        STT --> RT{{"LLMKBRouter · one cached Sonnet call<br/>picks 1–3 helpdesk files + a use-case tag"}}
+        RT --> SP["System prompt assembled fresh<br/>persona + routed KB (scheme_kb turns only) + use-case block"]
+        SP --> LLM{{"Main LLM · Sonnet 4.6<br/>cot/out JSON + adaptive thinking + web_search"}}
+        LLM --> POST["Parse out · strip memory/thread/markdown · persist patches<br/>extract image (Gemini) / map / phone → separate messages<br/>escalate flag → Gmail email"]
+        POST --> TTS["TTS · Sarvam bulbul:v3 (per-language)"] --> VO["sendVoice → Voice note out"]
+    end
+
+    subgraph PROACTIVE["Proactive layer — sends a nudge · 3 slots/day"]
+        direction TB
+        SLOT["Slot fires (~6am / 1pm / 10pm)<br/>active-user + throttle + same-slot gating"] --> DOS["Build dossier<br/>memory + open threads + nudge_log (past nudges & reactions)"]
+        DOS --> THINK{{"ProactiveThinker"}}
+        THINK -->|"morning / night"| CHK["think_checkin · light, no tools/artifacts"]
+        THINK -->|"afternoon"| SUB["think_substantive:<br/>brainstorm → critique → tools → draft → judge"]
+        CHK --> NUD["Nudge (voice + optional artifact)"]
+        SUB --> NUD
+    end
+
+    NUD --> POST
+    CORE[("Shared core · encrypted SQLite store · Sonnet · Sarvam TTS · Gmail escalation")]
+    LLM -.uses.-> CORE
+    THINK -.uses.-> CORE
+
+    STT -. on failure .-> QUEUE["RequestQueue (legacy, not exercised under Telegram)"]
+    LLM -. on failure .-> QUEUE
 ```
 
 All code paths live in `inference/webhooks/telegram_webhook.py`. The legacy `twilio_webhook.py`, `twilio_client.py`, and `security/webhook_auth.py` are dead code retained only because `resilience/worker.py` still imports `TwilioWhatsAppClient` — candidate for cleanup.

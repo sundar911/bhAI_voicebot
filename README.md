@@ -12,11 +12,33 @@ bhAI is a voice-first assistant that:
 
 ## Architecture
 
-```
-Telegram Voice → STT → LLM (with knowledge base) → TTS → Telegram Voice
-                              ↓
-                    [HR-Admin | Helpdesk | Production]
-                         knowledge domains
+bhAI is an agent with **two layers**: a **reactive** one that answers each incoming voice note, and a **proactive** one that reaches out on its own a few times a day. Both share one encrypted store, one LLM (Sonnet 4.6), and one voice (Sarvam TTS).
+
+```mermaid
+flowchart TD
+    subgraph REACTIVE["Reactive layer — answers a voice note"]
+        direction TB
+        V["Voice note in"] --> STT["STT · Sarvam saaras"]
+        STT --> RT{{"Router · one Sonnet call<br/>picks 1–3 KB files + a use-case tag"}}
+        RT --> LLM{{"Main LLM · Sonnet 4.6<br/>adaptive thinking + web_search"}}
+        LLM --> POST["Parse out · strip blocks · persist memory/threads<br/>send image / map / number as separate messages<br/>escalate → Gmail email"]
+        POST --> TTS["TTS · Sarvam bulbul"] --> VO["Voice note out"]
+    end
+
+    subgraph PROACTIVE["Proactive layer — sends a nudge · 3 slots/day"]
+        direction TB
+        SLOT["Slot fires (~6am / 1pm / 10pm)<br/>active-user + throttle gating"] --> DOS["Build dossier<br/>memory + open threads + past nudges & reactions"]
+        DOS --> THINK{{"ProactiveThinker"}}
+        THINK -->|"morning / night"| CHK["Light check-in (no tools)"]
+        THINK -->|"afternoon"| SUB["brainstorm → critique → tools → draft → judge"]
+        CHK --> NUD["Nudge (voice + optional artifact)"]
+        SUB --> NUD
+    end
+
+    NUD --> POST
+    CORE[("Shared core: encrypted SQLite · Sonnet · Sarvam TTS · Gmail escalation")]
+    LLM -.uses.-> CORE
+    THINK -.uses.-> CORE
 ```
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the full end-to-end pipeline documentation.
