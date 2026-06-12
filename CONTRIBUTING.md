@@ -18,7 +18,7 @@ You can directly edit files in `knowledge_base/` without needing to understand t
 | `knowledge_base/shared/` | Company overview, escalation rules | All teams (carefully) |
 | `src/bhai/llm/prompts/` | bhAI's personality and conversation rules | Sid / All teams |
 
-Just a loose structure, feel free to change it up completely as you see fit. It just needs to work for further LLM processing.
+**Keep this structure.** bhAI's code finds answers by reading specific folders, file names, and the topic list in `helpdesk/_index.md` — so edit the *content* of these files freely, but **don't rename or reorganise the folders.** When **adding** anything new, follow [knowledge_base/README.md → Adding to the Knowledge Base](knowledge_base/README.md#adding-to-the-knowledge-base) so the bot can actually find it.
 
 #### How to Edit
 
