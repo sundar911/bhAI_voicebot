@@ -44,10 +44,16 @@ def _seed_scenario(store: ConversationStore):
         "2026-06-01T10:05:00+05:30",
     )
     # 12:00 — user reaction to the morning nudge (within 24h)
-    _insert(store, PHONE, "user", "अब ठीक है, बुखार उतर गया", "2026-06-01T12:00:00+05:30")
+    _insert(
+        store, PHONE, "user", "अब ठीक है, बुखार उतर गया", "2026-06-01T12:00:00+05:30"
+    )
     # 21:10 — night nudge (9h gap → nudge), NO reaction after it
     _insert(
-        store, PHONE, "assistant", "सो जाओ अब, कल मिलते हैं", "2026-06-01T21:10:00+05:30"
+        store,
+        PHONE,
+        "assistant",
+        "सो जाओ अब, कल मिलते हैं",
+        "2026-06-01T21:10:00+05:30",
     )
 
 

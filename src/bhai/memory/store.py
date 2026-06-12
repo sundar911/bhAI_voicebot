@@ -71,8 +71,7 @@ class ConversationStore:
 
     def _init_tables(self):
         """Create tables if they don't exist."""
-        self._conn.executescript(
-            """
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -155,8 +154,7 @@ class ConversationStore:
 
             CREATE INDEX IF NOT EXISTS idx_nudge_history_phone_time
                 ON nudge_history(phone, sent_at);
-        """
-        )
+        """)
         self._conn.commit()
 
     def _encrypt(self, plaintext: str) -> str:
