@@ -18,7 +18,7 @@ You can directly edit files in `knowledge_base/` without needing to understand t
 | `knowledge_base/shared/` | Company overview, escalation rules | All teams (carefully) |
 | `src/bhai/llm/prompts/` | bhAI's personality and conversation rules | Sid / All teams |
 
-Just a loose structure, feel free to change it up completely as you see fit. It just needs to work for further LLM processing.
+**Keep this structure.** bhAI's code finds answers by reading specific folders, file names, and the topic list in `helpdesk/_index.md` — so edit the *content* of these files freely, but **don't rename or reorganise the folders.** When **adding** anything new, follow [knowledge_base/README.md → Adding to the Knowledge Base](knowledge_base/README.md#adding-to-the-knowledge-base) so the bot can actually find it.
 
 #### How to Edit
 
@@ -27,7 +27,7 @@ Use **Claude Code** (connected to this GitHub repo). Just tell it what to change
 - *"Update the leave policy in knowledge_base/hr_admin/policies.md to include 10 days maternity leave"*
 - *"Add a new section about PF withdrawal to knowledge_base/hr_admin/benefits.md"*
 
-Claude Code will edit the file, create a branch, and push the changes. Sundar reviews and approves.
+Claude Code will edit the file, create a branch, and open a pull request into `main` for Sundar to review and merge — see [Submitting your changes](#submitting-your-changes) below for the exact steps.
 
 ### Editing bhAI's Personality (System Prompt)
 
@@ -35,8 +35,8 @@ bhAI's personality, conversation rules, and tone live in **prompt files** under 
 
 | File | What it controls |
 |------|-----------------|
-| `prompt_v1_pilot.md` | The active pilot prompt — personality, rules, tone, what to answer, what to defer |
-| `current.md` | An older iterative prompt (not used in pilot) |
+| `prompt_v1_pilot.md` | The active prompt (the only persona prompt) — personality, rules, tone, what to answer, what to defer |
+| `use_cases/*.md` | Per-turn blocks injected when a turn is classified as `grievance` / `finance_advice` / `scheme_kb` / `general` |
 
 #### What you can change in the prompt
 
@@ -55,7 +55,7 @@ Tell Claude Code what you want to change:
 - *"bhAI should not answer medical questions — always defer to the impact team"*
 - *"Change the intro message to mention helpdesk services"*
 
-Claude Code will edit the prompt, create a branch, and push it. Sundar reviews and approves.
+Claude Code will edit the prompt, create a branch, and open a pull request into `main` for Sundar to review and merge — see [Submitting your changes](#submitting-your-changes) below.
 
 **Important**: `main` branch is protected — all changes require a pull request with at least 1 approval. This prevents accidental prompt changes from going live without review.
 
@@ -77,6 +77,37 @@ Example:
 ### "Kal nahi aa paungi"
 → Jaldi WhatsApp karo. Reason batao. Calendar me mark hoga.
 ```
+
+### Submitting your changes
+
+You never edit `main` directly. You make your change on a **branch** and open a **pull request (PR)** — a request for Sundar to pull your change into the live bot. He reviews it, may try it on the test (dev) bot first, then merges. Merging to `main` deploys to the live bot automatically, so you don't deploy anything yourself.
+
+If you're using **Claude Code**, you don't need to memorise any of this — just say *"commit this and open a pull request into main"* and it runs the steps below. They're written out so your Claude (or you) can follow them exactly:
+
+1. Start from the latest `main` and make a new branch:
+   ```bash
+   git checkout main && git pull
+   git checkout -b kb/short-description       # e.g. kb/esic-dispensary-update
+   ```
+2. Make your edits, then commit them:
+   ```bash
+   git add <files you changed>
+   git commit -m "Update: what you changed"
+   ```
+3. Push your branch to GitHub:
+   ```bash
+   git push -u origin kb/short-description
+   ```
+4. Open a pull request **into `main`**:
+   ```bash
+   gh pr create --base main --title "Update: what you changed" --body "One or two lines: what and why."
+   ```
+   No `gh` installed? The `git push` above prints a GitHub link — open it, click **Compare & pull request**, and make sure the base branch is `main`.
+5. Send Sundar the PR link. He reviews, tests, and merges.
+
+You **can't** push straight to `main` — it's protected, so every change needs a PR plus one approval. That's the safety net, not a bug.
+
+> Don't have permission to push a branch to this repo? **Fork** it first (GitHub's "Fork" button), push your branch to your fork, and open the PR from your fork into `sundar911/bhAI_voicebot` `main`. Claude Code can do all of this for you.
 
 
 ## For Developers
@@ -146,11 +177,10 @@ src/bhai/
 │   ├── kb_router.py             # Keyword-based KB + use-case router (fallback)
 │   ├── llm_router.py            # Claude Sonnet 4.6 KB + use-case router (primary, cached)
 │   └── prompts/                 # Prompt templates
-│       ├── prompt_v1_pilot.md   # Active pilot persona prompt
-│       ├── current.md           # Older iterative prompt
-│       └── use_cases/           # Per-turn injected blocks: grievance, finance, finance_advice, scheme_kb, general
+│       ├── prompt_v1_pilot.md   # Active persona prompt (the only one — code default)
+│       └── use_cases/           # Per-turn injected blocks: grievance, finance_advice, scheme_kb, general
 ├── escalations/                 # ESCALATE: true → impact-team email
-│   └── handler.py               # Routing + email dispatch (Priti BC, Dinesh MIDC, Rishi+Anu, always-on CC)
+│   └── handler.py               # Per-category routing + Gmail dispatch (docs→Priti/Dinesh/Anu, workplace→Simran, mental_health→Rishi, loan→Priti; Sundar always CC, Anu CC on impact categories)
 ├── proactive/                   # Brainstorm→critique→tools→draft→judge agent for nudges (v2)
 │   ├── thinker.py               # ProactiveThinker — orchestrates the agent loop
 │   ├── dossier_loader.py        # Per-user context bundle for the brainstorm pass
@@ -204,7 +234,7 @@ class YourSTT(BaseSTT):
 #### Branches
 
 - `main` - Production-ready code
-- `develop` - Integration branch
+- `dev` - Integration branch
 - `stt/batch-XXX` - STT first-pass branches
 - `review/domain-batch-XXX` - Human review branches
 - `feature/XXX` - New features
@@ -233,7 +263,7 @@ uv run pytest --cov=src/bhai
 uv run pytest -v
 ```
 
-Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 435 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, LLM router (Sonnet), escalation handler, Sarvam TTS normalization + language detection, behavioral contracts (`test_contracts.py`), and the proactive agent loop (`test_proactive_*` modules — agent_input, dossier, scrubbers, thinker, tools).
+Tests live in `src/tests/` (legacy root `tests/` directory was deleted in commit `bb776bd`). 567 tests covering: config, crypto, retry, FAQ cache, memory, LLM base, webhook auth, nudges, Telegram webhook, KB router, LLM router (Sonnet), escalation handler, Sarvam TTS normalization + language detection, behavioral contracts (`test_contracts.py`), and the proactive agent loop (`test_proactive_*` modules — agent_input, dossier, scrubbers, thinker, tools).
 
 ### Code Style
 

@@ -201,6 +201,61 @@ def _extract_phone_numbers(text: str):
     return voice_text, text_msg
 
 
+_MAP_RE = re.compile(r"<map>(.*?)</map>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_map_links(text: str):
+    """Extract ``<map>place</map>`` blocks → (voice_text with the blocks
+    removed, a follow-up text message with tappable Google Maps links or None).
+
+    The bot says the place name naturally in the voice AND wraps it in a
+    ``<map>…</map>`` block; we strip the block from the spoken copy and send a
+    one-tap Maps link as a separate text, so she can open the location instead
+    of typing it into Maps. Mirrors the phone-number pipeline.
+    """
+    import urllib.parse
+
+    places = [m.strip() for m in _MAP_RE.findall(text) if m.strip()]
+    if not places:
+        return text, None
+
+    voice_text = _MAP_RE.sub("", text)
+    voice_text = re.sub(r"\s{2,}", " ", voice_text).strip()
+
+    parts, seen = [], set()
+    for place in places:
+        if place in seen:
+            continue
+        seen.add(place)
+        url = (
+            "https://www.google.com/maps/search/?api=1&query="
+            + urllib.parse.quote_plus(place)
+        )
+        parts.append(f"📍 {place}\n{url}")
+    return voice_text, "\n\n".join(parts) if parts else None
+
+
+_IMAGE_RE = re.compile(r"<image>(.*?)</image>", re.DOTALL | re.IGNORECASE)
+
+
+def _extract_image_brief(text: str):
+    """Extract a single ``<image>brief</image>`` block → (voice_text with the
+    block removed, the image brief, or None).
+
+    The reactive bot emits this block when the user asks it to MAKE an image
+    (a poster, a card, a logo). The webhook generates it via nanobanana and
+    sends it as a photo after the voice note. The brief is the model's
+    PII-free visual description; the block is silent (stripped before TTS).
+    """
+    m = _IMAGE_RE.search(text)
+    if not m:
+        return text, None
+    brief = m.group(1).strip()
+    voice_text = _IMAGE_RE.sub("", text)
+    voice_text = re.sub(r"\s{2,}", " ", voice_text).strip()
+    return voice_text, (brief or None)
+
+
 # ── Singletons (lazy-initialized) ─────────────────────────────────────
 
 _store: ConversationStore | None = None
@@ -424,12 +479,21 @@ async def _webhook_watchdog_loop(config) -> None:
         await asyncio.sleep(interval)
 
 
-def _send_nudge(chat_id: int, slot: str, text: str) -> None:
+def _send_nudge(
+    chat_id: int,
+    slot: str,
+    text: str,
+    text_artifact: Optional[str] = None,
+    artifact_path: Optional[Path] = None,
+) -> None:
     """Deliver a generated nudge as a Telegram voice message and log it.
 
     Used as the `send_fn` callback for the nudge loop. Persists the nudge
     text to the conversation store as an assistant message so it shows up
-    in /conversations and the LLM sees it in subsequent context.
+    in /conversations and the LLM sees it in subsequent context. When the v2
+    thinker produced a paste-able ``text_artifact`` (a catalog / list /
+    template), it rides as a SEPARATE text message after the voice note — the
+    voice note describes it; TTS never speaks its formatting.
     """
     config = load_config()
     store = _get_store()
@@ -452,6 +516,21 @@ def _send_nudge(chat_id: int, slot: str, text: str) -> None:
         run_dir=run_dir,
         phone_id=phone_id,
     )
+
+    if artifact_path:
+        try:
+            telegram_client.send_photo(chat_id=chat_id, image_path=artifact_path)
+            logger.info("Nudge image sent to user=%s", phone_id)
+        except Exception as e:
+            logger.error("Nudge image failed for user=%s: %s", phone_id, e)
+
+    if text_artifact:
+        try:
+            telegram_client.send_text(chat_id=chat_id, body=text_artifact)
+            store.save_message(phone, "assistant", text_artifact, session_id)
+            logger.info("Nudge text artifact sent to user=%s", phone_id)
+        except Exception as e:
+            logger.error("Nudge text artifact failed for user=%s: %s", phone_id, e)
 
 
 @asynccontextmanager
@@ -626,6 +705,11 @@ def process_message(
         audio_path=str(run_dir) if is_audio else None,
     )
 
+    # Proactive feedback loop: if this message is the user's first reply
+    # within 24h of a delivered nudge, attach it as that nudge's reaction so
+    # the next thinking pass can learn what landed (no-op if no recent nudge).
+    store.record_nudge_reaction(phone, transcript)
+
     # ── Onboarding: detect greetings (always — /start can re-onboard returning users) ──
     _greeting_word = _detect_greeting(transcript)
     is_re_onboarding = (not is_first_ever) and _greeting_word == "/start"
@@ -687,6 +771,11 @@ def process_message(
                 len(response_text),
                 llm_result["escalate"],
             )
+
+            # Persist the model's full output (raw pre-strip + cleaned post-strip)
+            # every turn, so a reply that collapses after stripping can be
+            # debugged from the raw instead of lost. Best-effort, never fatal.
+            store.save_llm_io(phone, llm_result.get("raw", ""), response_text)
 
             if is_first_ever:
                 intro = _build_intro(config)
@@ -847,6 +936,8 @@ def _synthesize_and_send_voice(
     Returns True on success, False on failure (failure is logged, not raised).
     """
     voice_text, contact_text_msg = _extract_phone_numbers(text)
+    voice_text, map_text_msg = _extract_map_links(voice_text)
+    voice_text, image_brief = _extract_image_brief(voice_text)
 
     ensure_dir(AUDIO_RESPONSE_DIR)
     ensure_dir(run_dir)
@@ -912,6 +1003,50 @@ def _synthesize_and_send_voice(
                 logger.info("Contact text sent to user=%s", phone_id)
             except Exception as text_err:
                 logger.error("Contact text failed for user=%s: %s", phone_id, text_err)
+
+        if map_text_msg:
+            try:
+                telegram_client.send_text(chat_id=chat_id, body=map_text_msg)
+                logger.info("Map link text sent to user=%s", phone_id)
+            except Exception as map_err:
+                logger.error("Map link text failed for user=%s: %s", phone_id, map_err)
+
+        # The bot asked to MAKE an image (poster/card/logo) — generate it via
+        # nanobanana (scrub-gated inside generate_image) and send as a photo
+        # after the voice. Failure is logged, never raised — the voice already
+        # went out.
+        if image_brief:
+            try:
+                from src.bhai.proactive.dossier_loader import load_user_dossier
+                from src.bhai.proactive.tools.nanobanana import generate_image
+
+                phone = f"tg_{chat_id}"
+                dossier = load_user_dossier(_get_store(), phone)
+                img_dir = DATA_DIR / "reactive_images"
+                img = generate_image(
+                    image_brief,
+                    dossier,
+                    api_key=config.nanobanana_api_key,
+                    model=config.nanobanana_model,
+                    endpoint=config.nanobanana_endpoint,
+                    artifacts_dir=img_dir,
+                    audit_base_dir=img_dir,
+                )
+                if img.ok and img.artifact_path:
+                    telegram_client.send_photo(
+                        chat_id=chat_id, image_path=img.artifact_path
+                    )
+                    logger.info("Reactive image sent to user=%s", phone_id)
+                else:
+                    logger.warning(
+                        "Reactive image not sent user=%s: %s",
+                        phone_id,
+                        getattr(img, "error", None),
+                    )
+            except Exception as img_err:
+                logger.error(
+                    "Reactive image gen failed for user=%s: %s", phone_id, img_err
+                )
         return True
 
     except Exception as e:
@@ -1215,6 +1350,30 @@ async def debug_user(phone_hash: str, key: str = ""):
     return {"phone_hash": phone_hash, "total_messages": len(rows), "timeline": timeline}
 
 
+@app.get("/llm-io/{phone_hash}")
+async def llm_io(phone_hash: str, key: str = ""):
+    """Full model output per recent turn: raw (pre-strip) + cleaned (post-strip).
+
+    For debugging replies that collapse after stripping (a <thread>/<memory>
+    block eating the substance, leaving a bare interjection). Access is logged.
+    """
+    auth = _check_dashboard_key(key)
+    if auth:
+        return auth
+
+    logger.warning("LLM-IO ACCESS for user=%s by key holder", phone_hash)
+
+    target_phone = _phone_from_hash(phone_hash)
+    if not target_phone:
+        return JSONResponse({"error": "user not found"}, status_code=404)
+
+    store = _get_store()
+    return {
+        "phone_hash": phone_hash,
+        "turns": store.get_recent_llm_io(target_phone, limit=30),
+    }
+
+
 @app.get("/conversations/{phone_hash}")
 async def conversations(phone_hash: str, key: str = "", format: str = "json"):
     """Full decrypted transcripts. Access is logged. Use format=html for readable view."""
@@ -1380,15 +1539,15 @@ async def admin_backfill_nudges(
     dry_run: bool = True,
     days: int = 30,
 ):
-    """One-shot: seed nudge_history from existing assistant messages.
+    """One-shot: seed nudge_log from existing assistant messages.
 
-    The v1.5 nudge backport (commit 70eb0f4) added the nudge_history
-    table, which the new NUDGE_INSTRUCTION reads from for anti-relentless
-    dedup. The table is empty on first deploy — but the actual nudges
-    are already in the messages transcript. This endpoint walks every
-    phone's history, identifies the assistant messages that were nudges
-    (slot-window timestamp + > 30 min gap from previous message), and
-    seeds nudge_history with them, preserving original timestamps.
+    Pilot users pre-date the nudge_log feedback table. The actual nudges
+    are already in the messages transcript, so this re-detects the
+    assistant messages that were nudges (slot-window timestamp + > 30 min
+    gap from previous message) and pairs each with the user's reaction
+    (first reply inside the 24h window), seeding nudge_log with original
+    timestamps. Delegates to proactive.monitor.reconstruct_nudge_log — the
+    single source of the reconstruction heuristic (also used by the CLI).
 
     Defaults to ``dry_run=true`` — pass ``dry_run=false`` to actually
     write. Idempotent: re-runs skip rows already inserted.
@@ -1403,129 +1562,45 @@ async def admin_backfill_nudges(
 
     # Import lazily so the webhook module doesn't pull config at import
     # time (matches the existing pattern in admin_memory etc.).
-    from datetime import timedelta as _td
-
-    from inference.webhooks.nudges import IST as _IST
     from src.bhai.config import load_config
+    from src.bhai.proactive.monitor import reconstruct_nudge_log
 
     cfg = load_config()
     store = _get_store()
-    cutoff_iso = (datetime.now(_IST) - _td(days=days)).isoformat()
 
-    # Slot windows + nudge-vs-reply gap mirror the standalone script
-    # (scripts/backfill_nudge_history.py). Keep the constants in sync if
-    # either side changes.
-    MIN_GAP_MINUTES = 30
+    per_phone_counts = reconstruct_nudge_log(store, cfg, days=days, dry_run=dry_run)
 
-    def _classify_slot(ts: datetime) -> Optional[str]:
-        ist_ts = ts.astimezone(_IST)
-        if (
-            ist_ts.hour == cfg.nudge_morning_hour_ist
-            and ist_ts.minute <= cfg.nudge_window_minutes
-        ):
-            return "morning"
-        if (
-            ist_ts.hour == cfg.nudge_night_hour_ist
-            and ist_ts.minute <= cfg.nudge_window_minutes
-        ):
-            return "night"
-        return None
-
-    phones = [
-        r[0]
-        for r in store._conn.execute(
-            """SELECT DISTINCT phone FROM messages
-               WHERE role = 'assistant' AND timestamp >= ?""",
-            (cutoff_iso,),
-        ).fetchall()
-    ]
-
-    totals = {"scanned": 0, "candidates": 0, "inserted": 0, "skipped_existing": 0}
+    totals = {"nudges": 0, "with_reaction": 0, "inserted": 0, "skipped_existing": 0}
     per_phone: list[dict] = []
-    dry_samples: list[dict] = []
-
-    for phone in phones:
-        rows = store._conn.execute(
-            """SELECT role, content_enc, timestamp FROM messages
-               WHERE phone = ? AND timestamp >= ?
-               ORDER BY timestamp ASC""",
-            (phone, cutoff_iso),
-        ).fetchall()
-        if not rows:
-            continue
-
-        messages = [
-            {"role": r[0], "content": store._decrypt(r[1]), "timestamp": r[2]}
-            for r in rows
-        ]
-        existing_keys = store.list_nudge_history_keys(phone)
-
-        scanned = len(messages)
-        candidates = 0
-        inserted = 0
-        skipped = 0
+    for phone, c in per_phone_counts.items():
         phone_hash = hashlib.sha256(phone.encode()).hexdigest()[:12]
-
-        for i, m in enumerate(messages):
-            if m["role"] != "assistant":
-                continue
-            ts = datetime.fromisoformat(m["timestamp"])
-            slot = _classify_slot(ts)
-            if slot is None:
-                continue
-            if i > 0:
-                prev_ts = datetime.fromisoformat(messages[i - 1]["timestamp"])
-                if (ts - prev_ts) <= _td(minutes=MIN_GAP_MINUTES):
-                    continue
-            candidates += 1
-            if (slot, m["timestamp"]) in existing_keys:
-                skipped += 1
-                continue
-            if dry_run:
-                if len(dry_samples) < 60:
-                    dry_samples.append(
-                        {
-                            "phone_hash": phone_hash,
-                            "slot": slot,
-                            "sent_at": m["timestamp"],
-                            "text_preview": m["content"][:120],
-                        }
-                    )
-            else:
-                store.record_nudge_text(phone, slot, m["content"], at=m["timestamp"])
-            inserted += 1
-
-        if candidates == 0:
-            continue
         per_phone.append(
             {
                 "phone_hash": phone_hash,
-                "scanned": scanned,
-                "candidates": candidates,
-                "inserted": inserted,
-                "skipped_existing": skipped,
+                "scanned": c.scanned,
+                "nudges": c.nudges,
+                "with_reaction": c.with_reaction,
+                "inserted": c.inserted,
+                "skipped_existing": c.skipped_existing,
             }
         )
-        totals["scanned"] += scanned
-        totals["candidates"] += candidates
-        totals["inserted"] += inserted
-        totals["skipped_existing"] += skipped
+        totals["nudges"] += c.nudges
+        totals["with_reaction"] += c.with_reaction
+        totals["inserted"] += c.inserted
+        totals["skipped_existing"] += c.skipped_existing
 
     logger.warning(
-        "ADMIN BACKFILL-NUDGES dry_run=%s days=%d → %s",
+        "ADMIN BACKFILL-NUDGE-LOG dry_run=%s days=%d → %s",
         dry_run,
         days,
         totals,
     )
-    response = {
+    return {
         "dry_run": dry_run,
         "days": days,
         "totals": totals,
         "per_phone": per_phone,
     }
-    if dry_run:
-        response["sample_candidates"] = dry_samples
-    return response
 
 
 @app.post("/admin/reset/{phone_hash}")
@@ -1696,19 +1771,21 @@ async def admin_throttle_nudge(phone_hash: str, key: str = "", hours: int = 0):
 
 @app.post("/admin/test-nudge/{phone_hash}")
 async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"):
-    """Fire one nudge to one user immediately, ignoring schedule + rate-limit.
+    """Fire one v2 nudge to one user immediately, ignoring schedule + rate-limit.
 
-    For testing the nudge content and delivery before flipping the loop on.
-    `slot` must be 'morning' or 'night'. Bypasses NUDGE_ENABLED and
-    NUDGE_PHONES gates so you can dry-run any user.
+    Runs the full v2 ProactiveThinker (brainstorm → critique → tools → draft →
+    judge) against the user's REAL dossier (threads + memory), so this shows
+    exactly what proactive mode would say for them. `slot`: 'morning'/'night'
+    (substantive) or 'afternoon' (joke). Bypasses NUDGE_ENABLED + rate-limit.
     """
     auth = _check_dashboard_key(key)
     if auth:
         return auth
 
-    if slot not in ("morning", "night"):
+    if slot not in ("morning", "afternoon", "night"):
         return JSONResponse(
-            {"error": "slot must be 'morning' or 'night'"}, status_code=400
+            {"error": "slot must be 'morning', 'afternoon', or 'night'"},
+            status_code=400,
         )
 
     target_phone = _phone_from_hash(phone_hash)
@@ -1728,22 +1805,37 @@ async def admin_test_nudge(phone_hash: str, key: str = "", slot: str = "morning"
     config = load_config()
     store = _get_store()
 
-    from inference.webhooks.nudges import build_and_generate_nudge
+    from inference.webhooks.nudges import _generate_nudge_v2
 
     try:
-        text = build_and_generate_nudge(
+        cand = _generate_nudge_v2(
             phone=target_phone, slot=slot, store=store, config=config
         )
     except Exception as e:
-        logger.exception("Test nudge generation failed: %s", e)
+        logger.exception("Test nudge (v2) generation failed: %s", e)
         return JSONResponse({"error": f"generation failed: {e}"}, status_code=500)
 
-    if not text:
+    if not cand or not cand.text:
         return JSONResponse({"error": "empty nudge text"}, status_code=500)
 
     logger.warning(
-        "ADMIN TEST NUDGE user=%s slot=%s len=%d", phone_hash, slot, len(text)
+        "ADMIN TEST NUDGE v2 user=%s slot=%s cat=%s len=%d",
+        phone_hash,
+        slot,
+        cand.category,
+        len(cand.text),
     )
-    _send_nudge(chat_id, slot, text)
-    store.record_nudge_sent(target_phone, slot)
-    return {"phone_hash": phone_hash, "slot": slot, "text": text, "sent": True}
+    _send_nudge(chat_id, slot, cand.text, cand.text_artifact, cand.artifact_path)
+    store.record_nudge_outcome(
+        target_phone, slot, cand.thread_slug, category=cand.category, text=cand.text
+    )
+    return {
+        "phone_hash": phone_hash,
+        "slot": slot,
+        "category": cand.category,
+        "thread": cand.thread_slug,
+        "text": cand.text,
+        "text_artifact": cand.text_artifact,
+        "image": str(cand.artifact_path) if cand.artifact_path else None,
+        "sent": True,
+    }

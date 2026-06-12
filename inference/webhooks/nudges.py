@@ -23,11 +23,12 @@ import logging
 from datetime import datetime
 from datetime import time as dtime
 from datetime import timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
 
-from src.bhai.config import Config
+from src.bhai.config import DATA_DIR, KNOWLEDGE_BASE_DIR, Config
 from src.bhai.llm import create_llm
-from src.bhai.llm.base import BaseLLM
+from src.bhai.llm.base import _JSON_OUTPUT_INSTRUCTION, BaseLLM
 from src.bhai.memory.store import ConversationStore
 
 logger = logging.getLogger("bhai.nudges")
@@ -36,6 +37,7 @@ IST = timezone(timedelta(hours=5, minutes=30))
 
 # Slots — extend here if we add more nudge times later
 SLOT_MORNING = "morning"
+SLOT_AFTERNOON = "afternoon"
 SLOT_NIGHT = "night"
 
 # Quiet hours: never nudge before this hour or after this hour, IST.
@@ -60,12 +62,14 @@ def current_slot(
     morning_hour: int,
     night_hour: int,
     window_minutes: int,
+    afternoon_hour: Optional[int] = None,
 ) -> Optional[str]:
     """If `now_ist` falls inside a slot's firing window, return the slot name.
 
     Each slot has a window of `window_minutes` starting at the configured hour
     (e.g. morning_hour=10, window=30 → fires between 10:00 and 10:30 IST).
-    Outside any window, returns None.
+    The afternoon joke slot is opt-in (pass `afternoon_hour`). Outside any
+    window, returns None.
     """
     if not (QUIET_BEFORE_HOUR <= now_ist.hour < QUIET_AFTER_HOUR):
         return None
@@ -74,6 +78,8 @@ def current_slot(
         SLOT_MORNING: dtime(hour=morning_hour),
         SLOT_NIGHT: dtime(hour=night_hour),
     }
+    if afternoon_hour is not None:
+        slot_starts[SLOT_AFTERNOON] = dtime(hour=afternoon_hour)
     now_t = now_ist.time()
     for slot, start in slot_starts.items():
         end_dt = (
@@ -120,7 +126,7 @@ def should_nudge_user(
                 return False
 
     # Slot name must be one we know about.
-    return slot in (SLOT_MORNING, SLOT_NIGHT)
+    return slot in (SLOT_MORNING, SLOT_AFTERNOON, SLOT_NIGHT)
 
 
 WILDCARD_ALL = "*"
@@ -306,9 +312,10 @@ HARD CONSTRAINTS (both cases)
 - Ask AT MOST one short question.
 - Match the user's number language (Hindi word if they use Hindi, English
   digits if English).
-- No "ESCALATE:" line, no "EMOTIONS_JSON:" line — just the plain text.
 
-Output ONLY the nudge text. Nothing else.
+The nudge message is the "out" field of your JSON response (see the output
+format below). Do any planning silently in "cot"; "out" is just the check-in
+the user hears — nothing else.
 """
 
 
@@ -336,6 +343,7 @@ def build_nudge_prompts(
         llm._build_system_prompt(domain, user_profile, memory_summary, extracted_facts)
         + "\n\n"
         + NUDGE_INSTRUCTION
+        + _JSON_OUTPUT_INSTRUCTION
     )
 
     parts = []
@@ -368,8 +376,15 @@ def generate_nudge_text(
     recent_messages: List[Dict[str, str]],
     recent_nudge_texts: Optional[List[str]] = None,
     domain: str = "hr_admin",
-) -> str:
-    """Generate the nudge text via the LLM. Returns cleaned plain text."""
+) -> Optional[str]:
+    """Generate the nudge text via the LLM.
+
+    Runs through the same cot/out JSON contract as normal replies, so reasoning
+    can never leak into the spoken nudge. Returns the parsed "out" (cot is
+    logged server-side, never delivered), or ``None`` if the JSON could not be
+    parsed even after retries — the caller should then SKIP this nudge rather
+    than speak the canned fallback as an unprompted "say it again?" message.
+    """
     system_prompt, user_message = build_nudge_prompts(
         llm,
         domain=domain,
@@ -380,8 +395,11 @@ def generate_nudge_text(
         recent_messages=recent_messages,
         recent_nudge_texts=recent_nudge_texts,
     )
-    raw = llm._call_api_with_retry(system_prompt, user_message)
-    return BaseLLM._clean_response(raw)
+    result = llm._generate_structured(system_prompt, user_message)
+    if not result.get("parsed", True):
+        logger.warning("Nudge cot/out parse failed; skipping nudge (no fallback send).")
+        return None
+    return result["text"]
 
 
 # ── Scheduler loop ────────────────────────────────────────────────────
@@ -390,7 +408,7 @@ def generate_nudge_text(
 async def nudge_loop(
     config: Config,
     store: ConversationStore,
-    send_fn: Callable[[int, str, str], None],
+    send_fn: Callable[[int, str, str, Optional[str], Optional[Path]], None],
     phone_hash_fn: Callable[[str], str],
 ) -> None:
     """Forever-loop that fires nudges for opted-in users at the configured slots.
@@ -438,7 +456,7 @@ async def nudge_loop(
 def _run_one_nudge_pass(
     config: Config,
     store: ConversationStore,
-    send_fn: Callable[[int, str, str], None],
+    send_fn: Callable[[int, str, str, Optional[str], Optional[Path]], None],
     phone_hash_fn: Callable[[str], str],
 ) -> None:
     """One scan of all opted-in users — sends nudges to whoever is due."""
@@ -448,6 +466,7 @@ def _run_one_nudge_pass(
         morning_hour=config.nudge_morning_hour_ist,
         night_hour=config.nudge_night_hour_ist,
         window_minutes=config.nudge_window_minutes,
+        afternoon_hour=config.nudge_afternoon_hour_ist,
     )
     if slot is None:
         return  # not in a firing window
@@ -483,6 +502,45 @@ def _run_one_nudge_pass(
             )
 
 
+def _generate_nudge_v2(
+    *, phone: str, slot: str, store: ConversationStore, config: Config
+) -> Optional[Any]:
+    """Generate a nudge via the v2 ProactiveThinker (brainstorm → critique →
+    draft → judge, with tools + the text-artifact channel). Morning/night use
+    the substantive loop. Returns the NudgeCandidate, or None on error so the
+    caller skips the slot rather than sending garbage."""
+    from src.bhai.proactive.agent_input import build_agent_input
+    from src.bhai.proactive.thinker import (
+        ProactiveThinker,
+        ToolRunner,
+        _make_anthropic_caller,
+    )
+
+    try:
+        agent_input = build_agent_input(store, phone, recent_turns=20)
+        thinker = ProactiveThinker(
+            config,
+            anthropic_caller=_make_anthropic_caller(config.anthropic_api_key),
+            tool_runner=ToolRunner(
+                config=config,
+                artifacts_base_dir=DATA_DIR / "proactive",
+                audit_base_dir=DATA_DIR / "proactive",
+                kb_dir=KNOWLEDGE_BASE_DIR,
+                tts=None,
+            ),
+            model=getattr(config, "anthropic_model", None) or "claude-sonnet-4-6",
+        )
+        # Afternoon = the substantive utility work (bhAI hard at work for her
+        # while she's at work). Morning/night = light, grounded check-ins (the
+        # relational bookends; a night check-in may fold in an organic joke).
+        if slot == SLOT_AFTERNOON:
+            return thinker.think_substantive(agent_input, slot)
+        return thinker.think_checkin(agent_input, slot)
+    except Exception as e:
+        logger.exception("v2 nudge generation failed for %s: %s", phone, e)
+        return None
+
+
 def _maybe_nudge_one(
     *,
     phone: str,
@@ -490,7 +548,7 @@ def _maybe_nudge_one(
     now_ist: datetime,
     config: Config,
     store: ConversationStore,
-    send_fn: Callable[[int, str, str], None],
+    send_fn: Callable[[int, str, str, Optional[str], Optional[Path]], None],
     phone_hash_fn: Callable[[str], str],
 ) -> None:
     """Decide and (if eligible) send a nudge to one user."""
@@ -522,17 +580,25 @@ def _maybe_nudge_one(
         logger.warning("Bad chat_id for nudge: user=%s", phone_id)
         return
 
-    text = build_and_generate_nudge(phone=phone, slot=slot, store=store, config=config)
-    if not text:
+    cand = _generate_nudge_v2(phone=phone, slot=slot, store=store, config=config)
+    if not cand or not cand.text:
         logger.warning("Empty nudge generated for user=%s — skipping", phone_id)
         return
 
-    logger.info("Sending nudge to user=%s slot=%s len=%d", phone_id, slot, len(text))
-    send_fn(chat_id, slot, text)
-    store.record_nudge_sent(phone, slot)
-    # Persist the text too so tomorrow's nudge can avoid repeating this one
-    # (Rule 4 of NUDGE_INSTRUCTION — anti-relentless dedup).
-    store.record_nudge_text(phone, slot, text)
+    logger.info(
+        "Sending nudge to user=%s slot=%s cat=%s len=%d",
+        phone_id,
+        slot,
+        cand.category,
+        len(cand.text),
+    )
+    # Voice note + (if the draft produced one) a paste-able text artifact as a
+    # separate message. record_nudge_outcome logs the content to nudge_log +
+    # flips the grounded thread dormant→active so the feedback loop sees it.
+    send_fn(chat_id, slot, cand.text, cand.text_artifact, cand.artifact_path)
+    store.record_nudge_outcome(
+        phone, slot, cand.thread_slug, category=cand.category, text=cand.text
+    )
 
 
 def build_and_generate_nudge(
@@ -541,8 +607,12 @@ def build_and_generate_nudge(
     slot: str,
     store: ConversationStore,
     config: Config,
-) -> str:
-    """Pull the user's context from the store and run the LLM. Returns cleaned text."""
+) -> Optional[str]:
+    """Pull the user's context from the store and run the LLM.
+
+    Returns the nudge text, or ``None`` when generation failed to produce a
+    valid cot/out reply — the caller skips sending in that case.
+    """
     llm = create_llm(config)
     user_profile = llm.load_user_profile(phone)
 

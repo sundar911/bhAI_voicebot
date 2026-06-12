@@ -73,7 +73,11 @@ class Config:
     tts_backend: str = "sarvam"  # "sarvam" or "elevenlabs"
 
     # System prompt version — loaded from src/bhai/llm/prompts/{version}.md
-    prompt_version: str = "current"
+    prompt_version: str = "prompt_v1_pilot"
+
+    # cot/out structured output: how many times to re-call the LLM when its
+    # JSON can't be parsed before giving up to the safe canned fallback.
+    llm_json_max_attempts: int = 3
 
     # Resilience
     ack_enabled: bool = True  # Send immediate ack on voice notes
@@ -94,12 +98,37 @@ class Config:
     # Proactive nudges (option B follow-ups)
     nudge_enabled: bool = False  # Master kill switch — must be opted in
     nudge_phones: str = ""  # Comma-separated phone hashes allowed to receive nudges
-    nudge_morning_hour_ist: int = 10  # Local IST hour for morning check-in
-    nudge_night_hour_ist: int = 21  # Local IST hour for night check-in
+    nudge_morning_hour_ist: int = 10  # Morning warm check-in (relational)
+    nudge_afternoon_hour_ist: int = (
+        14  # Afternoon substantive utility (the thinking work)
+    )
+    nudge_night_hour_ist: int = 21  # Night closing check-in (+ organic joke if it fits)
     nudge_window_minutes: int = 30  # Firing window width around each slot
     nudge_check_interval_seconds: int = 300  # How often the loop wakes
     nudge_active_user_days: int = 7  # Only nudge users active in last N days
 
+    # v2 proactive thinking agent — tool API keys.
+    # nanobanana = Google Gemini image generation (kickoff naming). We accept
+    # any of NANOBANANA_API_KEY / GEMINI_API_KEY / GOOGLE_GENAI_API_KEY in env
+    # so whichever name the operator chose in .env just works. The model name
+    # is configurable too — defaults to the current "nano-banana" Flash image
+    # model but can be overridden as the API evolves.
+    nanobanana_api_key: str = ""
+    # Default to the stable Flash image model. Available alternatives at the
+    # time of writing (confirmed via ListModels against a real key):
+    #   - gemini-2.5-flash-image (stable Flash, our default — cheapest)
+    #   - gemini-3.1-flash-image (newer Flash, similar cost)
+    #   - gemini-3-pro-image / nano-banana-pro-preview (Pro tier, higher
+    #     quality, higher cost — worth A/B-testing for production once the
+    #     pipeline is validated)
+    nanobanana_model: str = "gemini-2.5-flash-image"
+    nanobanana_endpoint: str = "https://generativelanguage.googleapis.com/v1beta/models"
+    # Google Programmable Search — separate API key + Custom Search Engine ID.
+    # The CSE must be created in the Google Cloud Console (one-time setup).
+    # If either is missing, web_search returns a clear "not configured" error
+    # rather than failing the whole agent loop.
+    google_search_api_key: str = ""
+    google_search_cse_id: str = ""
     # Reactive web_search (Claude server-side tool).
     # When enabled, ClaudeLLM passes a web_search tool to the Anthropic Messages
     # API so the model can ground specifics it doesn't know (local clinics,
@@ -127,16 +156,23 @@ class Config:
     gmail_client_secret: str = ""
     gmail_refresh_token: str = ""
     gmail_sender_email: str = ""  # the Workspace account that owns the refresh token
-    # Default escalation recipients (grievance / unknown category) — impact team
+    # Default escalation recipients — the mental_health / unknown-category TO.
+    # Just Rishi (rishikesh@); Anu is CC via escalation_impact_head, not TO.
     escalation_recipients: tuple = ()
     # Per-office govt-docs routing. Empty tuple → falls back to default.
     escalation_recipients_docs_bc: tuple = ()
     escalation_recipients_docs_midc: tuple = ()
-    # Always-on CC list — every escalation email, regardless of category.
-    # Default is anu@tinymiracles.com (per-org policy: Anu has oversight of
-    # all escalations). Add an operator email (Sundar) here in Railway env
-    # to also receive deliverability confirmation. Comma-separated.
+    # Workplace grievances (supervisor/pay/harassment-at-work) → HR (Simran).
+    escalation_recipients_workplace: tuple = ()
+    # Always-on CC — every escalation email, regardless of category. This is
+    # the OPERATOR address (Sundar): he CCs all escalations to confirm the
+    # email pipeline is working. Comma-separated.
     escalation_cc: tuple = ()
+    # Impact-team head (Anu). CC'd on every category WITHIN the impact team's
+    # domain — docs (Priti/Dinesh) and mental_health (Rishi) — but NOT on
+    # workplace (HR/Simran is outside the impact team). Anu heads the team
+    # that Rishi, Priti, and Dinesh are part of.
+    escalation_impact_head: tuple = ()
     escalation_enabled: bool = False
 
 
@@ -196,7 +232,8 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         elevenlabs_style=float(os.getenv("ELEVENLABS_STYLE", "0.4")),
         elevenlabs_speed=float(os.getenv("ELEVENLABS_SPEED", "1.0")),
         tts_backend=os.getenv("TTS_BACKEND", "sarvam"),
-        prompt_version=os.getenv("PROMPT_VERSION", "current"),
+        prompt_version=os.getenv("PROMPT_VERSION", "prompt_v1_pilot"),
+        llm_json_max_attempts=int(os.getenv("LLM_JSON_MAX_ATTEMPTS", "3")),
         ack_enabled=os.getenv("ACK_ENABLED", "true").lower() == "true",
         retry_max_attempts=int(os.getenv("RETRY_MAX_ATTEMPTS", "3")),
         queue_max_attempts=int(os.getenv("QUEUE_MAX_ATTEMPTS", "5")),
@@ -208,12 +245,37 @@ def load_config(env_path: Optional[Path] = None) -> Config:
         nudge_enabled=os.getenv("NUDGE_ENABLED", "false").lower() == "true",
         nudge_phones=os.getenv("NUDGE_PHONES", ""),
         nudge_morning_hour_ist=int(os.getenv("NUDGE_MORNING_HOUR_IST", "10")),
+        nudge_afternoon_hour_ist=int(os.getenv("NUDGE_AFTERNOON_HOUR_IST", "14")),
         nudge_night_hour_ist=int(os.getenv("NUDGE_NIGHT_HOUR_IST", "21")),
         nudge_window_minutes=int(os.getenv("NUDGE_WINDOW_MINUTES", "30")),
         nudge_check_interval_seconds=int(
             os.getenv("NUDGE_CHECK_INTERVAL_SECONDS", "300")
         ),
         nudge_active_user_days=int(os.getenv("NUDGE_ACTIVE_USER_DAYS", "7")),
+        # nanobanana / Gemini image gen — accept any of four env-var names.
+        # GOOGLE_API_KEY is the generic Google name; we check it last so a
+        # service-specific name (NANOBANANA / GEMINI / GOOGLE_GENAI) wins
+        # if both happen to be set.
+        nanobanana_api_key=(
+            os.getenv("NANOBANANA_API_KEY")
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_GENAI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+            or ""
+        ),
+        nanobanana_model=os.getenv("NANOBANANA_MODEL", "gemini-2.5-flash-image"),
+        nanobanana_endpoint=os.getenv(
+            "NANOBANANA_ENDPOINT",
+            "https://generativelanguage.googleapis.com/v1beta/models",
+        ),
+        # Google Search shares Google's project API key by default — same
+        # GOOGLE_API_KEY works for both Custom Search and Gemini once Custom
+        # Search API is enabled in the project. Operator can override with
+        # a dedicated GOOGLE_SEARCH_API_KEY if they want separate quotas.
+        google_search_api_key=(
+            os.getenv("GOOGLE_SEARCH_API_KEY") or os.getenv("GOOGLE_API_KEY") or ""
+        ),
+        google_search_cse_id=os.getenv("GOOGLE_SEARCH_CSE_ID", ""),
         web_search_enabled=os.getenv("WEB_SEARCH_ENABLED", "false").lower() == "true",
         web_search_max_uses_per_call=int(
             os.getenv("WEB_SEARCH_MAX_USES_PER_CALL", "3")
@@ -232,7 +294,7 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             addr.strip()
             for addr in os.getenv(
                 "ESCALATION_RECIPIENTS",
-                "rishikesh@tinymiracles.com,anu@tinymiracles.com",
+                "rishikesh@tinymiracles.com",
             ).split(",")
             if addr.strip()
         ),
@@ -252,10 +314,26 @@ def load_config(env_path: Optional[Path] = None) -> Config:
             ).split(",")
             if addr.strip()
         ),
+        escalation_recipients_workplace=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_RECIPIENTS_WORKPLACE",
+                "simran@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
         escalation_cc=tuple(
             addr.strip()
             for addr in os.getenv(
                 "ESCALATION_CC",
+                "sundar@tinymiracles.com",
+            ).split(",")
+            if addr.strip()
+        ),
+        escalation_impact_head=tuple(
+            addr.strip()
+            for addr in os.getenv(
+                "ESCALATION_IMPACT_HEAD",
                 "anu@tinymiracles.com",
             ).split(",")
             if addr.strip()

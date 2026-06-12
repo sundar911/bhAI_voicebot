@@ -8,14 +8,17 @@ Subclasses only implement _call_api() and model_name.
 """
 
 import json
+import logging
 import re
 from abc import ABC, abstractmethod
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Union
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Union
 
 from ..config import KNOWLEDGE_BASE_DIR, Config
 from ..resilience.retry import retry_with_backoff
 from .kb_router import KBRouter
+
+logger = logging.getLogger("bhai.llm")
 
 
 def _read_file(path: Path) -> str:
@@ -74,6 +77,9 @@ Rules:
 - The `<memory>` tags themselves and everything inside them are stripped
   before the response reaches the user. Do not refer to them in your
   spoken reply.
+- When the cot/out JSON contract is active, emit `<memory>` blocks INSIDE
+  the "out" field's string value at the end — they'll be stripped before
+  TTS just like in free-text mode. They are NOT separate JSON keys.
 
 Example (after a turn where the user mentioned she's at MIDC and her
 daughter Priya is starting Class 3):
@@ -86,6 +92,129 @@ a supervisor named Ramesh that the prior summary doesn't capture):
 
   <memory>summary: पिछले 2-3 दिन से supervisor Ramesh के साथ बहस हो रही है — salary को लेकर। User परेशान है पर escalate नहीं करना चाहती अभी। MIDC office में काम करती है, 2 बच्चे हैं।</memory>
 """
+
+
+THREAD_INSTRUCTION = """
+=== Open Threads (self-edited curiosities) ===
+
+In addition to `<memory>` blocks (facts/summary), you may also emit
+`<thread>` blocks. Threads are the persistent layer the PROACTIVE side
+of bhAI reads to decide what to follow up on across days — they're not
+facts, they're *curiosities you've chosen to track*. Like memory blocks,
+they are stripped before TTS and never reach the user.
+
+Use threads sparingly. Most turns don't need one. A thread is worth
+opening when the user disclosed a durable concern, plan, or interest
+that a caring sister would remember and gently revisit days later —
+not because it's information, but because it's something you'd care
+about. This is NOT finance-only. Open a thread just as readily for:
+  - a plan for her kids — classes, school, an exam, a milestone
+    (e.g. "बेटे को karate और painting class join करवानी है")
+  - a workplace concern — a supervisor, a fairness issue, piece-rate
+  - an ambition or interest she lights up about — learning English,
+    a new skill, a small business idea
+  - a health or family worry she's carrying (open it `mark_sensitive`
+    if it's tender — see below)
+  - a business or money plan (the saree-loan example below)
+
+Four operations:
+
+  <thread>open: <slug> / <one-line context></thread>
+  <thread>update: <slug> / <one-line context></thread>
+  <thread>close: <slug> / <one-line reason></thread>
+  <thread>mark_sensitive: <slug></thread>
+
+Slug format: lowercase letters, digits, underscores only. Pick a name
+that describes the THREAD ("saree_business_expansion") not the FACT
+("manimalas_loan_50k"). The slug is the stable key — re-use the same
+slug across `open` → `update` → `close`.
+
+Operation semantics:
+
+- `open` — first time a durable concern surfaces. Example:
+    <thread>open: saree_business_expansion / Manimala mentioned ₹1L loan to source from a wider Surat supplier base</thread>
+- `update` — same thread, new development. The thinker sees the chain
+  of updates as the thread's evolution.
+    <thread>update: saree_business_expansion / Decided not to take loan after EMI math; exploring credit terms with current supplier instead</thread>
+- `close` — user acted on it, or visibly moved on. The thread won't be
+  surfaced again on the proactive side.
+    <thread>close: saree_business_expansion / User went ahead with the Surat trip and bought 3-month inventory; thread resolved</thread>
+- `mark_sensitive` — flag a thread `do_not_nudge`. Use this when the
+  topic is too tender for unsolicited follow-up — a medical struggle,
+  a recent loss, a disability, debt or money shame, a caste/religion
+  experience, household conflict or abuse, anything she shared in pain
+  rather than as a task. The thread stays in the dossier so you have
+  context, but the proactive thinker won't open with it.
+    <thread>mark_sensitive: daughter_recovery</thread>
+
+Special case — trust ruptures. If the user expresses that bhAI misled
+her, lied, broke a promise, or let her down (e.g. *"तुम तो झूठ बोलते
+हो"*, *"तुमने कहा था फिर किया नहीं"*), open a thread with the reserved
+slug `trust_repair`:
+    <thread>open: trust_repair / User felt misled about an outreach I can't actually do; rebuild trust gently</thread>
+The proactive side reads an open `trust_repair` thread as a signal to
+slow down — no jokes, no pushy suggestions — and to lead the next
+check-in with a gentle, honest repair. Close it once the relationship
+feels steady again:
+    <thread>close: trust_repair / She re-engaged warmly; trust restored</thread>
+
+Rules:
+
+- Don't open a thread for routine chitchat. *"User said good morning"*
+  is not a thread. *"User mentioned planning a Surat trip in two weeks"*
+  is.
+- Don't re-open a closed thread without a clear reason. If a topic
+  resurfaces meaningfully, `open` it under a different slug to reflect
+  the new chapter (e.g. `saree_business_diwali_push`).
+- NEVER put PII inside the context — religion, caste, disability,
+  specific loan amounts, named medical conditions. The proactive
+  thinker sends thread context to external tools; treat it the same as
+  memory facts on the privacy contract.
+- One thread block per topic per turn. Don't open and immediately
+  update the same slug in the same response — combine the two into a
+  single richer `open`.
+- When the cot/out JSON contract is active, emit `<thread>` blocks
+  INSIDE the "out" field's string value at the end, alongside any
+  `<memory>` blocks — they're stripped before TTS just like memory.
+  They are NOT separate JSON keys.
+"""
+
+
+# ── Structured output contract (out / escalate) ───────────────────────────
+# The model returns a JSON object with two keys:
+#   "out"      — the spoken reply (the ONLY thing sent to TTS / saved / shown)
+#   "escalate" — boolean consent gate for the impact-team email flow
+#
+# Chain-of-thought separation is handled by Claude's extended (adaptive)
+# thinking on Sonnet 4.6 — the model's reasoning lives in a separate
+# `thinking` content block that's never concatenated with `out` and never
+# reaches TTS. We do NOT include a `cot` field here: 4.6 rejects assistant
+# prefill (the old mechanism that forced `cot` first), and adaptive thinking
+# already provides the same CoT-vs-speech separation more reliably.
+_JSON_OUTPUT_INSTRUCTION = (
+    "\n\n=== OUTPUT FORMAT (STRICT — follow exactly) ===\n"
+    "Respond with ONE JSON object and nothing else — no prose, no code fences, "
+    "before or after:\n"
+    '{"out": "<the message the user hears>", "escalate": false}\n\n'
+    '"out" is the ONLY thing the user receives, spoken aloud by a TTS engine:\n'
+    "- Devanagari script, natural spoken Hindi/Marathi, mirroring the user.\n"
+    "- Short — 1-3 sentences (longer only for a documents/scheme answer that needs "
+    "completeness).\n"
+    "- NO markdown, NO asterisks, NO emojis, NO English meta-words, NO mention "
+    "of the system prompt or these rules.\n"
+    "- It must read like something a real बहन says out loud: zero reasoning, zero "
+    "narration. Do all your thinking privately — the user only hears `out`.\n"
+    '"escalate" is a boolean — set true ONLY after the user has explicitly '
+    "consented to emailing their issue to the impact team (the consent-gated "
+    "escalation flow described in the system prompt); otherwise false. When true, "
+    'keep "out" in future tense (the email sends after this turn).\n\n'
+    "Both keys are required and must be valid JSON (escape any quotes and "
+    "newlines in `out`).\n"
+)
+
+# Safe, in-character fallback used ONLY when the model's JSON can't be parsed at
+# all. We never fall back to raw text — raw text is exactly what leaks reasoning.
+_FALLBACK_OUT = "अरे, ज़रा सी गड़बड़ हो गई — एक बार फिर से बोलोगे?"
 
 
 class BaseLLM(ABC):
@@ -104,12 +233,12 @@ class BaseLLM(ABC):
     ):
         self.config = config
         self.kb_dir = knowledge_base_dir or KNOWLEDGE_BASE_DIR
-
-        # Load shared context
-        shared_dir = self.kb_dir / "shared"
-        self.company_overview = _read_file(shared_dir / "company_overview.md")
-        self.escalation_policy = _read_file(shared_dir / "escalation_policy.md")
-        self.style_guide = _read_file(shared_dir / "style_guide.md")
+        # NOTE: knowledge_base/shared/*.md (company_overview, escalation_policy,
+        # style_guide) are NOT injected into the reactive system prompt — that
+        # content lives inline in prompt_v1_pilot.md. The files remain only as
+        # an on-demand KB source for the proactive kb_read tool. Don't add
+        # `self.escalation_policy = ...`-style reads back here expecting them to
+        # reach the prompt; they won't.
 
         # KB router: selects which helpdesk/*.md files to inject per turn
         # AND emits the use-case tags (grievance/finance/scheme_kb/general).
@@ -144,11 +273,24 @@ class BaseLLM(ABC):
     @abstractmethod
     def _call_api(self, system_prompt: str, user_message: str) -> str:
         """
-        Make the LLM API call and return the raw response text.
+        Make a PLAIN LLM API call and return the raw response text.
 
-        This is the only method subclasses must implement.
+        This is the only method subclasses must implement. It must NOT force
+        the cot/out JSON contract — free-form callers (summarizer, nudges)
+        depend on plain text here. Structured replies go through _call_api_json.
         """
         pass
+
+    def _call_api_json(self, system_prompt: str, user_message: str) -> str:
+        """Structured-output variant used by the cot/out contract.
+
+        Backends with a native JSON-forcing mechanism (e.g. Claude assistant
+        prefill) override this. The default delegates to ``_call_api`` and
+        relies on the prompt's JSON instruction + the tolerant parser. Keeping
+        this separate from ``_call_api`` guarantees plain-text callers are never
+        forced into JSON mode.
+        """
+        return self._call_api(system_prompt, user_message)
 
     # ── knowledge base ────────────────────────────────────────────────────
 
@@ -275,7 +417,15 @@ class BaseLLM(ABC):
             )
             helpdesk_paths = result.paths
             use_case_tags = result.use_cases
-        helpdesk_kb = self._load_domain_context("helpdesk", paths=helpdesk_paths)
+        # Only inject the helpdesk KB when the turn is actually a docs/scheme
+        # turn (the `scheme_kb` tag). Most conversations are open-ended
+        # companionship and should NOT carry KB context — it bloats the prompt
+        # and skews the bot toward scheme-shaped answers. The router still
+        # classifies use-cases every turn; the helpdesk files it picks are used
+        # only here, gated on scheme_kb.
+        helpdesk_kb = ""
+        if "scheme_kb" in use_case_tags:
+            helpdesk_kb = self._load_domain_context("helpdesk", paths=helpdesk_paths)
         if helpdesk_kb:
             prompt += f"\n\n=== Helpdesk Knowledge Base (documents, schemes) ===\n{helpdesk_kb}"
 
@@ -500,19 +650,28 @@ class BaseLLM(ABC):
             return match.group(1).lower() == "true"
         return "escalate" in text.lower()
 
-    # Valid ESCALATE_CATEGORY values. Anything else → routed as "grievance"
-    # (the default impact-team list). Office-specific docs categories route
-    # to the per-office recipients (see escalations/handler.py).
-    _ESCALATION_CATEGORIES = ("docs_bc", "docs_midc", "docs_unknown", "grievance")
+    # Valid ESCALATE_CATEGORY values. Anything else → routed as "mental_health"
+    # (the default impact-team list — the safe fallback for an unclassified
+    # escalation). Office-specific docs categories and workplace (HR) route to
+    # their own recipients (see escalations/handler.py).
+    _ESCALATION_CATEGORIES = (
+        "docs_bc",
+        "docs_midc",
+        "docs_unknown",
+        "workplace",
+        "mental_health",
+        "loan_hardship",
+    )
 
     @staticmethod
     def _detect_escalation_category(text: str) -> Optional[str]:
         """Detect the office/topic routing category from the LLM response.
 
-        Returns one of: 'docs_bc', 'docs_midc', 'docs_unknown', 'grievance', or
-        None if the model didn't emit a category (caller treats None as
-        'grievance' default). Unknown category strings also return None so
-        a bad model output can't silently misroute.
+        Returns one of: 'docs_bc', 'docs_midc', 'docs_unknown', 'workplace',
+        'mental_health', or None if the model didn't emit a category (caller
+        treats None as the 'mental_health' impact-team default). Unknown
+        category strings also return None so a bad model output can't silently
+        misroute.
         """
         match = re.search(
             r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", text, flags=re.IGNORECASE
@@ -542,10 +701,11 @@ class BaseLLM(ABC):
         rule apply होता है...") before the actual response. Even though the
         prompt forbids this, the model can still slip when rules conflict.
         """
-        # First strip memory patches (must precede reasoning-leak detection
-        # so memory contents don't trip the jargon filter), then reasoning
-        # leakage at the paragraph level, then per-line cleanup.
+        # First strip memory + thread patches (must precede reasoning-leak
+        # detection so their contents don't trip the jargon filter), then
+        # reasoning leakage at the paragraph level, then per-line cleanup.
         text = BaseLLM._strip_memory_patches(raw_text)
+        text = BaseLLM._strip_thread_patches(text)
         text = BaseLLM._strip_reasoning_leak(text)
 
         cleaned_lines = []
@@ -632,6 +792,99 @@ class BaseLLM(ABC):
             return None
         return {"summary": summary, "facts": facts}
 
+    # Matches a single <thread>...</thread> block. Mirrors _MEMORY_BLOCK_RE
+    # — case-insensitive on the tag, DOTALL so updates/closes with long
+    # multi-line context still parse.
+    _THREAD_BLOCK_RE = re.compile(
+        r"<thread>(.*?)</thread>", flags=re.DOTALL | re.IGNORECASE
+    )
+
+    @staticmethod
+    def _strip_thread_patches(raw_text: str) -> str:
+        """Remove all <thread>...</thread> blocks from text.
+
+        Idempotent. Collapses adjacent blank lines left behind so the
+        spoken reply doesn't develop awkward gaps. Mirrors
+        ``_strip_memory_patches``.
+        """
+        if not raw_text or "<thread" not in raw_text.lower():
+            return raw_text
+        stripped = BaseLLM._THREAD_BLOCK_RE.sub("", raw_text)
+        stripped = re.sub(r"\n{3,}", "\n\n", stripped)
+        return stripped.strip()
+
+    @staticmethod
+    def _parse_thread_patches(raw_text: str) -> Optional[List[Any]]:
+        """Extract thread ops from a raw LLM response.
+
+        Returns a list of ``ThreadPatch`` objects in emission order, or
+        ``None`` if no ``<thread>`` block was present. Malformed blocks
+        (bad op, bad slug, missing context where required) are logged
+        and skipped — they're never silently coerced into something
+        else, because the persistence layer has to trust what it gets.
+
+        Like ``_parse_memory_patches``, BaseLLM stays storage-ignorant;
+        the caller (the webhook) applies the patches via the
+        forthcoming ``apply_thread_patches()`` once the storage layer
+        lands.
+        """
+        if not raw_text or "<thread" not in raw_text.lower():
+            return None
+
+        # Local import to avoid a circular dependency: ThreadPatch lives
+        # in src/bhai/proactive/threads.py which is a v2-only module and
+        # has no reason to import BaseLLM.
+        import logging
+
+        from ..proactive.threads import THREAD_OPS, ThreadPatch
+
+        log = logging.getLogger("bhai.llm")
+
+        patches: List[ThreadPatch] = []
+        for match in BaseLLM._THREAD_BLOCK_RE.finditer(raw_text):
+            body = match.group(1).strip()
+            if not body or ":" not in body:
+                log.warning("Thread block missing op prefix, ignored: %r", body[:80])
+                continue
+            op_raw, value = body.split(":", 1)
+            op = op_raw.strip().lower()
+            value = value.strip()
+
+            if op not in THREAD_OPS:
+                log.warning("Unknown thread op %r, ignored", op)
+                continue
+
+            if op == "mark_sensitive":
+                # No body required — value IS the slug.
+                topic = value
+                context = ""
+            else:
+                # `open` / `update` / `close` carry slug + context split
+                # on the first " / ". Reject if no slash separator.
+                if " / " not in value:
+                    log.warning(
+                        "Thread %s missing ' / ' separator, ignored: %r",
+                        op,
+                        value[:80],
+                    )
+                    continue
+                topic, context = value.split(" / ", 1)
+                topic = topic.strip()
+                context = context.strip()
+
+            patch = ThreadPatch(op=op, topic=topic, context=context)
+            if not patch.is_valid():
+                log.warning(
+                    "Invalid thread patch dropped: op=%r topic=%r ctx=%r",
+                    op,
+                    topic[:40],
+                    context[:60],
+                )
+                continue
+            patches.append(patch)
+
+        return patches if patches else None
+
     # Markers that indicate the model is narrating its own reasoning instead
     # of speaking to the user. These terms should NEVER appear in a
     # Hindi/Marathi/Gujarati voice note. If any of them shows up in a
@@ -706,9 +959,12 @@ class BaseLLM(ABC):
     # `_detect_outreach_claim` to flag confabulated outreach. "impact team"
     # is included as a phrase; "team" alone is too noisy.
     _OUTREACH_CONTACTS = (
-        "Vijay",
+        "Vijay",  # legacy PoC; kept as the canonical fake-attribution example
         "Priti",
+        "Dinesh",
+        "Simran",
         "Rishi",
+        "Anu",
         "Sarfaraz",
         "Vidhi",
         "impact team",
@@ -817,6 +1073,47 @@ class BaseLLM(ABC):
         text = re.sub(r"\n{3,}", "\n\n", text)
         return text.strip()
 
+    # Unicode blocks that are mostly emoji / symbol pictographs. Stripping
+    # these prevents Sarvam TTS from reading them as their literal Unicode
+    # names ("face with tears of joy"). Devanagari and other Indic scripts
+    # live in lower code points (U+0900-U+0DFF, U+0B80-U+0BFF, etc.) and
+    # are NOT in this pattern.
+    _EMOJI_PATTERN = re.compile(
+        "["
+        "\U0001f300-\U0001f5ff"  # symbols & pictographs
+        "\U0001f600-\U0001f64f"  # emoticons
+        "\U0001f680-\U0001f6ff"  # transport & map
+        "\U0001f700-\U0001f77f"  # alchemical
+        "\U0001f780-\U0001f7ff"  # geometric shapes ext.
+        "\U0001f800-\U0001f8ff"  # supplemental arrows-c
+        "\U0001f900-\U0001f9ff"  # supplemental symbols & pictographs
+        "\U0001fa00-\U0001fa6f"  # chess
+        "\U0001fa70-\U0001faff"  # symbols & pictographs ext-a
+        "\U00002600-\U000026ff"  # misc symbols (☀ ☔ ⚽ etc.)
+        "\U00002700-\U000027bf"  # dingbats (✂ ✔ ✨ etc.)
+        "\U0000fe00-\U0000fe0f"  # variation selectors
+        "\U0000200d"  # ZWJ
+        "]+",
+        flags=re.UNICODE,
+    )
+
+    @staticmethod
+    def _strip_emoji(text: str) -> str:
+        """Remove Unicode emoji codepoints.
+
+        Sarvam TTS reads emojis as their Unicode names ("face with tears
+        of joy") — unusable in a voice note. We strip them here so the
+        structured-output `out` text never carries them to TTS or to the
+        Telegram message body. Indic scripts are NOT affected (they live
+        below U+0E00 and outside every range in _EMOJI_PATTERN).
+        """
+        if not text:
+            return text
+        cleaned = BaseLLM._EMOJI_PATTERN.sub("", text)
+        # Mid-sentence emoji removal leaves "word  word" — collapse the gap.
+        cleaned = re.sub(r" {2,}", " ", cleaned)
+        return cleaned.strip()
+
     @staticmethod
     def _parse_emotion_segments(raw_text: str) -> Optional[List[dict]]:
         """Extract EMOTIONS_JSON line from raw LLM output and parse it."""
@@ -833,6 +1130,143 @@ class BaseLLM(ABC):
                 except (json.JSONDecodeError, TypeError):
                     pass
         return None
+
+    # ── structured output parsing (cot / out contract) ───────────────────
+
+    @staticmethod
+    def _json_unescape(s: str) -> str:
+        """Unescape a JSON string body (the text between the quotes)."""
+        try:
+            return str(json.loads(f'"{s}"'))
+        except (json.JSONDecodeError, ValueError):
+            return s
+
+    @staticmethod
+    def _parse_structured_output(raw_text: str) -> Tuple[str, str, bool]:
+        """Parse the {"cot", "out", "escalate"} JSON contract from raw output.
+
+        Tolerant by design: handles code fences, leading/trailing prose around
+        the object, and a final regex that pulls just the "out" value when the
+        JSON is malformed. Returns ``(cot, out, escalate)``; ``out`` is "" when
+        nothing usable could be extracted, signalling the caller to use a safe
+        fallback rather than ever delivering raw text.
+        """
+        if not raw_text:
+            return "", "", False
+
+        s = raw_text.strip()
+
+        # Strip ```json ... ``` fences if the model wrapped the object.
+        if s.startswith("```"):
+            s = re.sub(r"^```[a-zA-Z0-9]*\n?", "", s)
+            s = re.sub(r"\n?```\s*$", "", s).strip()
+
+        # Try the whole string, then the {...} substring (drops surrounding prose).
+        candidates = [s]
+        first, last = s.find("{"), s.rfind("}")
+        if first != -1 and last != -1 and last > first:
+            candidates.append(s[first : last + 1])
+
+        for cand in candidates:
+            try:
+                obj = json.loads(cand)
+            except (json.JSONDecodeError, ValueError):
+                continue
+            if isinstance(obj, dict) and isinstance(obj.get("out"), str):
+                cot = obj.get("cot")
+                return (
+                    cot if isinstance(cot, str) else "",
+                    obj["out"],
+                    bool(obj.get("escalate", False)),
+                )
+
+        # Last resort: regex-extract the "out" (and "cot"/"escalate") values.
+        out_m = re.search(r'"out"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+        if out_m:
+            cot_m = re.search(r'"cot"\s*:\s*"((?:[^"\\]|\\.)*)"', s)
+            esc_m = re.search(r'"escalate"\s*:\s*(true|false)', s, re.IGNORECASE)
+            return (
+                BaseLLM._json_unescape(cot_m.group(1)) if cot_m else "",
+                BaseLLM._json_unescape(out_m.group(1)),
+                bool(esc_m and esc_m.group(1).lower() == "true"),
+            )
+
+        return "", "", False
+
+    def _generate_structured(
+        self, system_prompt: str, user_message: str
+    ) -> Dict[str, Any]:
+        """Call the model, parse the cot/out/escalate JSON, return cleaned out.
+
+        On a cot/out parse failure the whole call is re-rolled up to
+        ``config.llm_json_max_attempts`` times (each re-roll is a fresh
+        generation, so non-zero temperature usually yields valid JSON next
+        time). Only after every attempt fails do we drop to a safe canned line
+        — never to raw text. ``out`` is run through markdown stripping as a TTS
+        safety net.
+        """
+        max_attempts = max(1, int(getattr(self.config, "llm_json_max_attempts", 3)))
+
+        raw, cot, out, escalate = "", "", "", False
+        for attempt in range(1, max_attempts + 1):
+            raw = self._call_api_json_with_retry(system_prompt, user_message)
+            cot, out, escalate = self._parse_structured_output(raw)
+            if out:
+                break
+            logger.warning(
+                "cot/out parse failed (attempt %d/%d); retrying. raw=%r",
+                attempt,
+                max_attempts,
+                raw[:300],
+            )
+
+        parsed = bool(out)
+        if not parsed:
+            logger.error(
+                "cot/out parse failed after %d attempts; using fallback.",
+                max_attempts,
+            )
+            out = _FALLBACK_OUT
+            escalate = False  # never escalate off a failed/fallback response
+
+        if cot:
+            logger.info("cot: %s", cot[:300])
+
+        # Stripping order (each runs on the output of the previous):
+        #   1. memory patches  — <memory>...</memory> blocks live INSIDE `out`
+        #      per MEMORY_INSTRUCTION; the patches are extracted upstream from
+        #      `raw`, here we strip them from the spoken text.
+        #   2. thread patches  — <thread>...</thread> blocks (THREAD_INSTRUCTION)
+        #      also live INSIDE `out`; extracted upstream from `raw`, stripped
+        #      here so TTS never reads "thread open ..." aloud.
+        #   3. escalate-category line  — "ESCALATE_CATEGORY: docs_bc" is also
+        #      inside `out` and gets read aloud by TTS if left in.
+        #   4. markdown  — asterisks/headers/list markers from the model.
+        #   5. emoji  — Sarvam TTS reads emojis as their Unicode names.
+        cleaned = self._strip_memory_patches(out)
+        cleaned = self._strip_thread_patches(cleaned)
+        cleaned = "\n".join(
+            line
+            for line in cleaned.splitlines()
+            if not line.strip().upper().startswith("ESCALATE_CATEGORY")
+            and not line.strip().upper().startswith("ESCALATE:")
+        )
+        text = self._strip_emoji(self._strip_markdown(cleaned)).strip()
+        if not text:
+            # Parsed but empty after markdown stripping — treat as a failure too.
+            text = _FALLBACK_OUT
+            parsed = False
+            escalate = False
+
+        # ``parsed`` lets callers distinguish a real reply from the safe canned
+        # fallback (e.g. nudges skip sending rather than speak the fallback).
+        return {
+            "text": text,
+            "raw": raw,
+            "cot": cot,
+            "parsed": parsed,
+            "escalate": escalate,
+        }
 
     # ── retry helper ─────────────────────────────────────────────────────
 
@@ -851,60 +1285,65 @@ class BaseLLM(ABC):
 
     def _guard_outreach(
         self,
-        raw_text: str,
-        escalate: bool,
-        cleaned_text: str,
+        result: Dict[str, Any],
         system_prompt: str,
         user_message: str,
-        strip_emotions: bool,
-    ) -> tuple:
+    ) -> Dict[str, Any]:
         """One-shot re-prompt if a confabulated outreach claim is detected.
 
-        bhAI cannot message anyone today outside ``ESCALATE: true``. If the
-        cleaned response contains a past-tense or future-tense outreach
-        claim against a named contact and no escalation is in flight, log
-        the violation, re-prompt the LLM once with a corrective system
-        message, and return the corrected outputs. If the second draft
-        still fails, emit a warning but return the (still-failing) text —
-        the response cleaner has already stripped the worst structural
-        leaks, and silence is worse than a logged warning.
-
-        Returns ``(raw_text, escalate, cleaned_text)``.
+        Operates on the cot/out structured ``result``. bhAI cannot message
+        anyone today outside the consent-gated ``escalate`` flow. If ``out``
+        contains a past-tense or (non-escalate) future-tense outreach claim
+        against a named contact, log the violation, re-prompt once with a
+        corrective system message, and return the corrected structured result.
+        If the second draft still fails, emit a warning but return it —
+        silence is worse than a logged warning.
         """
-        violation = BaseLLM._detect_outreach_claim(cleaned_text, escalate)
+        violation = BaseLLM._detect_outreach_claim(
+            result["text"], result.get("escalate", False)
+        )
         if not violation:
-            return raw_text, escalate, cleaned_text
+            return result
 
-        import logging
-
-        log = logging.getLogger("bhai.llm")
-        log.warning("Confabulated outreach detected, re-prompting: %s", violation)
+        logger.warning("Confabulated outreach detected, re-prompting: %s", violation)
 
         corrected_prompt = system_prompt + self._OUTREACH_CORRECTION_PROMPT
         try:
-            new_raw = self._call_api_with_retry(corrected_prompt, user_message)
+            new_result = self._generate_structured(corrected_prompt, user_message)
         except Exception:  # pragma: no cover - defensive fallback
-            log.exception("Outreach re-prompt failed; keeping original draft")
-            return raw_text, escalate, cleaned_text
+            logger.exception("Outreach re-prompt failed; keeping original draft")
+            return result
 
-        new_escalate = self._detect_escalation(new_raw)
-        new_cleaned = self._clean_response(new_raw, strip_emotions=strip_emotions)
-
-        residual = BaseLLM._detect_outreach_claim(new_cleaned, new_escalate)
+        residual = BaseLLM._detect_outreach_claim(
+            new_result["text"], new_result.get("escalate", False)
+        )
         if residual:
-            log.warning(
+            logger.warning(
                 "Outreach claim persisted after re-prompt: %s (emitting anyway)",
                 residual,
             )
 
-        return new_raw, new_escalate, new_cleaned
+        return new_result
 
     def _call_api_with_retry(
         self, system_prompt: str, user_message: str, max_attempts: int = 3
     ) -> str:
-        """Call _call_api with retry and exponential backoff."""
+        """Call _call_api (plain) with retry and exponential backoff."""
         return retry_with_backoff(
             self._call_api,
+            system_prompt,
+            user_message,
+            max_attempts=max_attempts,
+            base_delay=1.0,
+            max_delay=10.0,
+        )
+
+    def _call_api_json_with_retry(
+        self, system_prompt: str, user_message: str, max_attempts: int = 3
+    ) -> str:
+        """Call _call_api_json (structured cot/out) with retry and backoff."""
+        return retry_with_backoff(
+            self._call_api_json,
             system_prompt,
             user_message,
             max_attempts=max_attempts,
@@ -937,7 +1376,7 @@ class BaseLLM(ABC):
             is_new_session: Whether this is a new conversation session
 
         Returns:
-            Dictionary with text, raw, and escalate.
+            Dictionary with text (the parsed "out"), raw, cot, and escalate.
         """
         system_prompt = (
             self._build_system_prompt(
@@ -949,37 +1388,32 @@ class BaseLLM(ABC):
                 conversation_history=conversation_history,
             )
             + MEMORY_INSTRUCTION
+            + THREAD_INSTRUCTION
+            + _JSON_OUTPUT_INSTRUCTION
         )
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
         )
-        raw_text = self._call_api_with_retry(system_prompt, user_message)
+        result = self._generate_structured(system_prompt, user_message)
+        # One-shot re-prompt if the reply confabulates outreach (bhAI can only
+        # message anyone via the consent-gated escalate flow).
+        result = self._guard_outreach(result, system_prompt, user_message)
 
-        escalate = self._detect_escalation(raw_text)
-        cleaned_text = self._clean_response(raw_text)
-
-        # One-shot re-prompt if the response contains a confabulated outreach
-        # claim. bhAI cannot actually message anyone outside the consent-gated
-        # ESCALATE: true flow.
-        raw_text, escalate, cleaned_text = self._guard_outreach(
-            raw_text,
-            escalate,
-            cleaned_text,
-            system_prompt,
-            user_message,
-            strip_emotions=False,
-        )
-
-        # Memory patches parsed from the FINAL raw_text (after any outreach
-        # re-prompt). The webhook applies them via store.save_memory().
-        memory_patches = self._parse_memory_patches(raw_text)
+        # Memory + thread patches parsed from the FINAL structured output
+        # (after any outreach re-prompt). The webhook applies memory via
+        # store.save_memory() and threads via store.apply_thread_patches().
+        memory_patches = self._parse_memory_patches(result["raw"])
+        thread_patches = self._parse_thread_patches(result["raw"])
 
         return {
-            "text": cleaned_text or raw_text,
-            "raw": raw_text,
-            "escalate": escalate,
-            "category": self._detect_escalation_category(raw_text),
+            "text": result["text"],
+            "raw": result["raw"],
+            "cot": result["cot"],
+            "parsed": result["parsed"],
+            "escalate": result["escalate"],
+            "category": self._detect_escalation_category(result["raw"]),
             "memory_patches": memory_patches,
+            "thread_patches": thread_patches,
         }
 
     def generate_with_emotions(
@@ -1000,8 +1434,9 @@ class BaseLLM(ABC):
         one-off behaviours (re-onboarding on /start, etc.) without forking the
         whole prompt template. Pass empty string for default behaviour.
 
-        Falls back to a single neutral segment if parsing fails.
-        Returns dict with text, raw, escalate, and segments.
+        Returns dict with text (the parsed "out"), raw, cot, escalate, and a
+        single neutral segment (per-segment emotions were dropped in favour of
+        the cot/out JSON contract; the Telegram TTS path re-chunks plain text).
         """
         system_prompt = (
             self._build_system_prompt(
@@ -1012,39 +1447,35 @@ class BaseLLM(ABC):
                 transcript,
                 conversation_history=conversation_history,
             )
-            + EMOTION_INSTRUCTION
             + MEMORY_INSTRUCTION
+            + THREAD_INSTRUCTION
         )
+        # EMOTION_INSTRUCTION intentionally NOT appended — per-segment
+        # emotions were dropped (see docstring above), and on the new
+        # `output_config.format` path the trailing "EMOTIONS_JSON: [...]"
+        # line slips into the `out` string and gets read aloud by TTS.
         if mode_instruction:
             system_prompt += "\n\n" + mode_instruction
+        system_prompt += _JSON_OUTPUT_INSTRUCTION
+
         user_message = self._build_user_message(
             transcript, conversation_history, is_new_session
         )
-        raw_text = self._call_api_with_retry(system_prompt, user_message)
+        result = self._generate_structured(system_prompt, user_message)
+        result = self._guard_outreach(result, system_prompt, user_message)
+        text = result["text"]
 
-        escalate = self._detect_escalation(raw_text)
-        cleaned_text = self._clean_response(raw_text, strip_emotions=True)
-
-        raw_text, escalate, cleaned_text = self._guard_outreach(
-            raw_text,
-            escalate,
-            cleaned_text,
-            system_prompt,
-            user_message,
-            strip_emotions=True,
-        )
-
-        segments = self._parse_emotion_segments(raw_text)
-        if segments is None:
-            segments = [{"text": cleaned_text or raw_text, "emotion": "neutral"}]
-
-        memory_patches = self._parse_memory_patches(raw_text)
+        memory_patches = self._parse_memory_patches(result["raw"])
+        thread_patches = self._parse_thread_patches(result["raw"])
 
         return {
-            "text": cleaned_text or raw_text,
-            "raw": raw_text,
-            "escalate": escalate,
-            "segments": segments,
-            "category": self._detect_escalation_category(raw_text),
+            "text": text,
+            "raw": result["raw"],
+            "cot": result["cot"],
+            "parsed": result["parsed"],
+            "escalate": result["escalate"],
+            "segments": [{"text": text, "emotion": "neutral"}],
+            "category": self._detect_escalation_category(result["raw"]),
             "memory_patches": memory_patches,
+            "thread_patches": thread_patches,
         }

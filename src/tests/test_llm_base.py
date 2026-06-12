@@ -242,6 +242,56 @@ def test_strip_markdown_preserves_mid_sentence_dash():
 # test_telegram_webhook.py.
 
 
+# ── _strip_emoji ──────────────────────────────────────────────────────
+
+
+def test_strip_emoji_removes_common_emojis():
+    """Folded-hands, smileys, check marks all get scrubbed before TTS sees them."""
+    assert BaseLLM._strip_emoji("Namaste 🙏 Manimala ji!") == "Namaste Manimala ji!"
+    assert BaseLLM._strip_emoji("😄😄😄 Sab theek hai") == "Sab theek hai"
+    assert BaseLLM._strip_emoji("Done ✅") == "Done"
+
+
+def test_strip_emoji_preserves_devanagari():
+    """Indic codepoints live below U+0E00 — they must NOT be touched."""
+    text = "अरे, सब ठीक है ना? बेटी कैसी है?"
+    assert BaseLLM._strip_emoji(text) == text
+
+
+def test_strip_emoji_preserves_tamil_and_gujarati():
+    """The exact prod-bug case: Tamil nudges with 🙏 had the emoji leak but
+    the Tamil text must stay intact end-to-end."""
+    assert BaseLLM._strip_emoji("மணிமாலா ஜி") == "மணிமாலா ஜி"
+    assert BaseLLM._strip_emoji("બહાર ગઈ") == "બહાર ગઈ"
+    # The canonical Manimala prod-bug nudge: same Tamil text, emoji gone.
+    assert (
+        BaseLLM._strip_emoji("மணிமாலா, காலை வணக்கம்! 🙏 இன்னைக்கு easy-ஆ இருக்கா?")
+        == "மணிமாலா, காலை வணக்கம்! இன்னைக்கு easy-ஆ இருக்கா?"
+    )
+
+
+def test_strip_emoji_handles_empty_string():
+    assert BaseLLM._strip_emoji("") == ""
+
+
+def test_strip_emoji_collapses_double_spaces_from_removed_emojis():
+    """Mid-sentence emoji removal leaves 'word  word' — collapse to one space."""
+    assert BaseLLM._strip_emoji("Hi 😊 there") == "Hi there"
+
+
+def test_strip_emoji_handles_zwj_sequences():
+    """ZWJ-joined family emojis are stripped cleanly (ZWJ U+200D is in the pattern)."""
+    # Family man+woman+boy: U+1F468 U+200D U+1F469 U+200D U+1F466
+    assert BaseLLM._strip_emoji("Bachche 👨‍👩‍👦 ke saath") == "Bachche ke saath"
+
+
+def test_strip_emoji_strips_dingbats_and_misc_symbols():
+    """Sun, snowflake, sparkle, checkmark — all in misc-symbols / dingbats."""
+    assert BaseLLM._strip_emoji("Aaj ☀ achha din") == "Aaj achha din"
+    assert BaseLLM._strip_emoji("Done ✔") == "Done"
+    assert BaseLLM._strip_emoji("Magic ✨") == "Magic"
+
+
 # ── _parse_emotion_segments ───────────────────────────────────────────
 
 
@@ -395,7 +445,9 @@ def test_strip_memory_patches_removes_multiple_blocks():
 
 def test_strip_memory_patches_handles_multiline_summary():
     """summary: patches can span multiple lines (DOTALL)."""
-    raw = "हाँ। <memory>summary: line one\nline two\nline three</memory>\n" "और कुछ बात?"
+    raw = (
+        "हाँ। <memory>summary: line one\nline two\nline three</memory>\n" "और कुछ बात?"
+    )
     cleaned = BaseLLM._strip_memory_patches(raw)
     assert "<memory>" not in cleaned
     assert "line one" not in cleaned
@@ -499,25 +551,23 @@ class _StubRouterWithUseCases:
 
 def test_system_prompt_includes_use_case_block(stub_llm):
     """Active use-case tags inject their instruction block into the prompt."""
-    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["finance"])
-    prompt = stub_llm._build_system_prompt("hr_admin", transcript="PF balance?")
-    assert "=== Active Use Cases" in prompt
-    # The finance block must be present (key phrase from the file)
-    assert (
-        "data is not yet wired in" in prompt
-        or "data is coming soon" in prompt
-        or "अभी ये data मेरे पास नहीं" in prompt
+    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["grievance"])
+    prompt = stub_llm._build_system_prompt(
+        "hr_admin", transcript="supervisor pareshan kar raha hai"
     )
+    assert "=== Active Use Cases" in prompt
+    # The grievance block must be present (key phrase from the file)
+    assert "Listen first" in prompt
 
 
 def test_system_prompt_multi_use_cases_concatenated(stub_llm):
     """Multiple tags inject multiple blocks under one heading."""
-    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["grievance", "finance"])
+    stub_llm._kb_router = _StubRouterWithUseCases(use_cases=["grievance", "general"])
     prompt = stub_llm._build_system_prompt(
-        "hr_admin", transcript="Salary aayi nahi, supervisor kuch bata nahi raha"
+        "hr_admin", transcript="supervisor se jhagda, aur ek jagah bata"
     )
     assert "Grievance" in prompt
-    assert "Finance" in prompt
+    assert "General" in prompt
 
 
 def test_system_prompt_no_use_cases_means_no_block(stub_llm):
@@ -525,3 +575,230 @@ def test_system_prompt_no_use_cases_means_no_block(stub_llm):
     stub_llm._kb_router = _StubRouterWithUseCases(use_cases=[])
     prompt = stub_llm._build_system_prompt("hr_admin", transcript="नमस्ते")
     assert "=== Active Use Cases" not in prompt
+
+
+# ── _parse_structured_output (cot / out / escalate contract) ──────────
+
+
+def test_parse_structured_output_valid():
+    raw = '{"cot": "user is sad, be gentle", "out": "अरे, क्या हुआ? बताओ ना।"}'
+    cot, out, escalate = BaseLLM._parse_structured_output(raw)
+    assert cot == "user is sad, be gentle"
+    assert out == "अरे, क्या हुआ? बताओ ना।"
+    assert escalate is False
+
+
+def test_parse_structured_output_strips_code_fence():
+    raw = '```json\n{"cot": "x", "out": "नमस्ते"}\n```'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == "नमस्ते"
+
+
+def test_parse_structured_output_ignores_surrounding_prose():
+    raw = 'Sure!\n{"cot": "x", "out": "ठीक है"} Hope that helps.'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == "ठीक है"
+
+
+def test_parse_structured_output_regex_fallback_on_broken_json():
+    # Unterminated object (no closing brace) — json.loads fails, regex recovers out.
+    raw = '{"cot": "thinking { broken", "out": "सब बढ़िया"'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == "सब बढ़िया"
+
+
+def test_parse_structured_output_handles_escaped_quotes():
+    raw = '{"cot": "x", "out": "उसने कहा \\"हाँ\\""}'
+    _cot, out, _esc = BaseLLM._parse_structured_output(raw)
+    assert out == 'उसने कहा "हाँ"'
+
+
+def test_parse_structured_output_escalate_true():
+    raw = '{"cot": "user consented to email", "out": "Team ko email kar rahi hoon.", "escalate": true}'
+    _cot, out, escalate = BaseLLM._parse_structured_output(raw)
+    assert out == "Team ko email kar rahi hoon."
+    assert escalate is True
+
+
+def test_parse_structured_output_escalate_regex_fallback():
+    # Broken JSON (no closing brace) — escalate still recovered via regex.
+    raw = '{"cot": "x", "out": "ठीक है", "escalate": true'
+    _cot, out, escalate = BaseLLM._parse_structured_output(raw)
+    assert out == "ठीक है"
+    assert escalate is True
+
+
+def test_parse_structured_output_unparseable_returns_empty():
+    assert BaseLLM._parse_structured_output("totally not json") == ("", "", False)
+
+
+def test_parse_structured_output_empty_input():
+    assert BaseLLM._parse_structured_output("") == ("", "", False)
+
+
+# ── generate() / generate_with_emotions() use "out", never "cot" ──────
+
+
+class JsonStubLLM(BaseLLM):
+    """Stub that returns a fixed raw payload, to exercise the JSON contract."""
+
+    model_name = "json-stub"
+
+    def __init__(self, cfg, kb, payload):
+        super().__init__(cfg, knowledge_base_dir=kb)
+        self._payload = payload
+
+    def _call_api(self, system_prompt: str, user_message: str) -> str:
+        return self._payload
+
+
+def test_generate_uses_out_and_never_leaks_cot(tmp_knowledge_base):
+    cfg = load_config()
+    payload = '{"cot": "internal reasoning that must NOT leak", "out": "नमस्ते भाई!"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["text"] == "नमस्ते भाई!"
+    assert "internal reasoning" not in result["text"]
+    assert result["cot"] == "internal reasoning that must NOT leak"
+    assert result["parsed"] is True
+
+
+def test_generate_falls_back_safely_when_unparseable(tmp_knowledge_base):
+    cfg = load_config()
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, "this is not json at all")
+    result = llm.generate("hi")
+    # Never delivers the raw text; uses the safe canned fallback.
+    assert result["text"]
+    assert "not json" not in result["text"]
+    # parsed=False signals callers (e.g. nudges) to skip rather than send it.
+    assert result["parsed"] is False
+
+
+def test_generate_strips_emoji_from_out(tmp_knowledge_base):
+    """End-to-end: a model that returns emojis in `out` produces text
+    without them, while cot and the rest of the parsed result flow
+    through normally."""
+    cfg = load_config()
+    payload = (
+        '{"cot": "internal reasoning — 🙏 emoji here is fine, cot never reaches TTS", '
+        '"out": "Namaste 🙏 Manimala ji! आज का दिन कैसा रहा? 😊"}'
+    )
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["parsed"] is True
+    # No emoji codepoints in any user-facing text.
+    assert "🙏" not in result["text"]
+    assert "😊" not in result["text"]
+    # Devanagari and ASCII survive.
+    assert "Namaste" in result["text"]
+    assert "Manimala ji" in result["text"]
+    assert "आज का दिन कैसा रहा" in result["text"]
+    # cot is unaffected — it's reasoning, never spoken.
+    assert "🙏" in result["cot"]
+
+
+def test_generate_strips_thread_blocks_from_out(tmp_knowledge_base):
+    """Regression for the dev→v2 merge: `<thread>` blocks live INSIDE `out`
+    (like `<memory>`), so the structured path must strip them from the spoken
+    text — otherwise TTS reads "thread open ..." aloud — while still parsing
+    them into thread_patches from the raw payload."""
+    cfg = load_config()
+    payload = (
+        '{"cot": "x", "out": "अच्छा, तो saree का काम कैसा चल रहा है?\\n'
+        "<memory>fact: runs a saree business</memory>\\n"
+        '<thread>open: saree_business_expansion / ₹1L loan plan for Surat supplier</thread>"}'
+    )
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["parsed"] is True
+    # Neither block kind leaks into the spoken reply.
+    assert "<thread>" not in result["text"]
+    assert "<memory>" not in result["text"]
+    assert "saree_business_expansion" not in result["text"]
+    # The actual Hindi reply survives.
+    assert "saree का काम कैसा चल रहा है" in result["text"]
+    # Threads are still parsed from raw, so the proactive layer sees them.
+    patches = result["thread_patches"]
+    assert patches and patches[0].op == "open"
+    assert patches[0].topic == "saree_business_expansion"
+
+
+def test_generate_strips_emoji_from_markdown_emphasis(tmp_knowledge_base):
+    """`*✨*` becomes empty: markdown strips the asterisks first, emoji-scrub
+    removes the sparkle — no stray asterisks left orphaned."""
+    cfg = load_config()
+    payload = '{"cot": "x", "out": "*✨* ठीक है ना?"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["text"].strip() == "ठीक है ना?"
+    assert "*" not in result["text"]
+    assert "✨" not in result["text"]
+
+
+def test_generate_with_emotions_returns_single_neutral_segment(tmp_knowledge_base):
+    cfg = load_config()
+    payload = '{"cot": "x", "out": "ठीक है ना?"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate_with_emotions("hi")
+    assert result["text"] == "ठीक है ना?"
+    assert result["segments"] == [{"text": "ठीक है ना?", "emotion": "neutral"}]
+
+
+class SequenceStubLLM(BaseLLM):
+    """Stub that returns a different payload per call, to exercise retries."""
+
+    model_name = "seq-stub"
+
+    def __init__(self, cfg, kb, payloads):
+        super().__init__(cfg, knowledge_base_dir=kb)
+        self._payloads = list(payloads)
+        self.calls = 0
+
+    def _call_api(self, system_prompt: str, user_message: str) -> str:
+        payload = self._payloads[min(self.calls, len(self._payloads) - 1)]
+        self.calls += 1
+        return payload
+
+
+def test_generate_retries_on_cot_parse_failure_then_succeeds(tmp_knowledge_base):
+    cfg = load_config()
+    # First call returns garbage; the re-roll returns valid JSON.
+    llm = SequenceStubLLM(
+        cfg,
+        tmp_knowledge_base,
+        ["garbage, not json", '{"cot": "x", "out": "अब ठीक है!"}'],
+    )
+    result = llm.generate("hi")
+    assert result["text"] == "अब ठीक है!"
+    assert llm.calls >= 2  # it actually retried
+
+
+def test_generate_stops_retrying_after_max_attempts(tmp_knowledge_base):
+    cfg = load_config()
+    cfg.llm_json_max_attempts = 2  # cap retries for the test
+    llm = SequenceStubLLM(cfg, tmp_knowledge_base, ["still not json"])
+    result = llm.generate("hi")
+    # Gave up to the safe fallback, and did NOT loop forever.
+    assert result["text"]
+    assert "not json" not in result["text"]
+    assert llm.calls == 2
+
+
+def test_generate_propagates_escalate_flag(tmp_knowledge_base):
+    cfg = load_config()
+    payload = (
+        '{"cot": "user consented", "out": "Team ko email kar rahi hoon.", '
+        '"escalate": true}'
+    )
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("please email the team")
+    assert result["escalate"] is True
+    assert result["text"] == "Team ko email kar rahi hoon."
+
+
+def test_generate_escalate_defaults_false_when_absent(tmp_knowledge_base):
+    cfg = load_config()
+    payload = '{"cot": "x", "out": "अच्छा, बताओ।"}'
+    llm = JsonStubLLM(cfg, tmp_knowledge_base, payload)
+    result = llm.generate("hi")
+    assert result["escalate"] is False

@@ -5,7 +5,7 @@ Per turn, sends the transcribed user message — plus the last 1-2 turns of
 conversation history for disambiguation — to Sonnet alongside a static
 list of available helpdesk topics. Sonnet returns two lines: the 1-3 most
 relevant KB file stems, and zero-or-more use-case tags from a fixed
-allowlist (grievance, finance, scheme_kb, general). The static prefix
+allowlist (grievance, finance_advice, scheme_kb, general). The static prefix
 carries a ``cache_control`` breakpoint so repeat calls within the 5-minute
 cache TTL pay 10% of input cost.
 
@@ -46,7 +46,6 @@ DEFAULT_CONTEXT_TURNS = 4
 # Fixed allowlist. Anything the router LLM emits outside this set is dropped.
 VALID_USE_CASES = (
     "grievance",
-    "finance",
     "finance_advice",
     "scheme_kb",
     "general",
@@ -71,14 +70,13 @@ KB topics available:
 
 USE_CASES allowlist (multi-label OK):
   grievance      — workplace problem, pay dispute, supervisor/co-worker conflict, harassment, family situation bleeding into work
-  finance        — user asking to LOOK UP a number from their own records: salary received this month, PF balance, EPF contribution, loan repayment status, EMI auto-deducted. Data lookup, not advice.
-  finance_advice — user discussing a financial DECISION: should I take this loan, is this EMI affordable, should I make this business investment, can I afford this purchase, how do I plan for X cost. ANY discussion of a loan / EMI / business investment / large purchase that calls for math (breakeven, cash-flow, debt-service ratio) is finance_advice — not just finance.
+  finance_advice — user discussing a financial DECISION: should I take this loan, is this EMI affordable, should I make this business investment, can I afford this purchase, how do I plan for X cost. ANY discussion of a loan / EMI / business investment / large purchase that calls for math (breakeven, cash-flow) is finance_advice.
   scheme_kb      — user asking about a government scheme or document (Aadhaar, PAN, voter ID, ration card, ESIC, marriage cert, PMMY, PMJAY, Ladki Bahin, etc.) — overlaps with a non-empty KB line
   general        — everyday "stuff you'd Google": restaurants, kids' classes, brands, recipes, prices, opinions on common decisions
 
 Leave USE_CASES empty for pure companion chitchat (greetings, "how are you", talking about food/weather/family with no specific ask).
 
-Multi-label is allowed when the turn genuinely touches more than one: e.g. a user venting about delayed employer salary = `grievance, finance`. But don't over-tag — if the turn is clearly about one thing, emit one tag.
+Multi-label is allowed when the turn genuinely touches more than one: e.g. a user venting about a supervisor while also weighing a loan = `grievance, finance_advice`. But don't over-tag — if the turn is clearly about one thing, emit one tag.
 
 Examples:
 
@@ -125,7 +123,7 @@ Prior:
 Current: Salary abhi tak nahi aayi, supervisor kuch bata bhi nahi raha
 Output:
 KB: _index
-USE_CASES: grievance, finance
+USE_CASES: grievance
 
 Prior:
   (none)
@@ -155,13 +153,6 @@ Current: haan ₹5000 ka pehle ka chal raha hai, par wo khatam hone wala hai
 Output:
 KB: _index
 USE_CASES: finance_advice
-
-Prior:
-  (none)
-Current: salary slip aayi nahi abhi tak, kya hua?
-Output:
-KB: _index
-USE_CASES: finance
 """
 
 

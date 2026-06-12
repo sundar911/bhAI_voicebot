@@ -45,8 +45,16 @@ _WORK_LOCATION_RE = re.compile(
 )
 
 # Valid ESCALATE_CATEGORY values the LLM may emit. Anything else (or absent)
-# → routed as "grievance" (the default impact-team list).
-_VALID_CATEGORIES = ("docs_bc", "docs_midc", "docs_unknown", "grievance")
+# → routed as "mental_health" (the default impact-team list — the safe
+# fallback, since an unclassified escalation may be a welfare/safety case).
+_VALID_CATEGORIES = (
+    "docs_bc",
+    "docs_midc",
+    "docs_unknown",
+    "workplace",
+    "mental_health",
+    "loan_hardship",
+)
 _CATEGORY_RE = re.compile(r"ESCALATE_CATEGORY\s*:\s*([a-zA-Z_]+)", re.IGNORECASE)
 
 
@@ -111,29 +119,58 @@ VoiceSender = Callable[..., bool]
 
 def _recipients_for_category(
     config: Config, category: Optional[str]
-) -> Tuple[List[str], str]:
-    """Pick recipients and a human-readable category label based on the LLM
-    category. Unknown / missing → default impact-team list (grievance).
+) -> Tuple[List[str], List[str], str]:
+    """Pick TO recipients, CC recipients, and a human-readable label for the
+    LLM category. Unknown / missing → mental_health (impact-team default).
 
-    Returns (recipients, label_for_subject).
+    CC rule (matches the routing matrix):
+      - The OPERATOR (escalation_cc, Sundar) CCs EVERY email — deliverability.
+      - The IMPACT HEAD (escalation_impact_head, Anu) CCs every category in
+        the impact team's domain — docs_* and mental_health — but NOT
+        workplace (HR/Simran is outside the impact team).
+    CC is deduped and never repeats a TO address.
+
+    Returns (to_recipients, cc_recipients, label_for_subject).
     """
+    operator_cc = list(config.escalation_cc)
+    impact_head = list(config.escalation_impact_head)
+
+    def _cc(*, include_impact_head: bool, to: List[str]) -> List[str]:
+        raw = (impact_head if include_impact_head else []) + operator_cc
+        out: List[str] = []
+        for addr in raw:
+            if addr and addr not in to and addr not in out:
+                out.append(addr)
+        return out
+
     if category == "docs_bc" and config.escalation_recipients_docs_bc:
-        return list(config.escalation_recipients_docs_bc), "docs_bc"
+        to = list(config.escalation_recipients_docs_bc)
+        return to, _cc(include_impact_head=True, to=to), "docs_bc"
     if category == "docs_midc" and config.escalation_recipients_docs_midc:
-        return list(config.escalation_recipients_docs_midc), "docs_midc"
-    if category == "docs_unknown":
-        # Send to BOTH office contacts; let them sort. Skip silently if neither
-        # is configured. Dedup with order preserved.
-        deduped: List[str] = []
-        for addr in list(config.escalation_recipients_docs_bc) + list(
-            config.escalation_recipients_docs_midc
-        ):
-            if addr not in deduped:
-                deduped.append(addr)
-        if deduped:
-            return deduped, "docs_unknown"
-    # Default: grievance / unknown category → impact team
-    return list(config.escalation_recipients), "grievance"
+        to = list(config.escalation_recipients_docs_midc)
+        return to, _cc(include_impact_head=True, to=to), "docs_midc"
+    if category == "docs_unknown" and impact_head:
+        # Office still ambiguous after the bot asked → route to the impact
+        # head (Anu) to triage to Priti/Dinesh. We do NOT email both offices.
+        return (
+            list(impact_head),
+            _cc(include_impact_head=False, to=list(impact_head)),
+            "docs_unknown",
+        )
+    if category == "workplace" and config.escalation_recipients_workplace:
+        to = list(config.escalation_recipients_workplace)
+        # HR is outside the impact team — operator CC only, no impact head.
+        return to, _cc(include_impact_head=False, to=to), "workplace"
+    if category == "loan_hardship" and config.escalation_recipients_docs_bc:
+        # TM-loan missed-EMI flag → Priti (member services), CC Anu (she
+        # approves hardship defaults) + operator. Impact-team category.
+        to = list(config.escalation_recipients_docs_bc)
+        return to, _cc(include_impact_head=True, to=to), "loan_hardship"
+    # Default: mental_health / unknown category → Rishi (TO), Anu + operator
+    # (CC). The safe fallback — an unclassified escalation may be a welfare or
+    # safety case, so it goes to the team with welfare oversight.
+    to = list(config.escalation_recipients)
+    return to, _cc(include_impact_head=True, to=to), "mental_health"
 
 
 async def handle_escalation(
@@ -161,14 +198,16 @@ async def handle_escalation(
     asyncio.create_task from the webhook handler.
 
     `category` (from BaseLLM._detect_escalation_category) routes to the right
-    recipients: 'docs_bc'→Priti, 'docs_midc'→Dinesh, 'docs_unknown'→both,
-    anything else / None → default impact-team list (Rishi + Anu).
+    recipients: 'docs_bc'→Priti, 'docs_midc'→Dinesh, 'docs_unknown'→Anu
+    (triages), 'workplace'→Simran (HR), 'mental_health' / None → Rishi. CC is
+    category-aware: the operator (Sundar) CCs every email; the impact head
+    (Anu) CCs every category except workplace. See _recipients_for_category.
     """
     if not config.escalation_enabled:
         logger.warning("Escalation skipped for user=%s: escalation disabled", phone_id)
         return
 
-    recipients, category_label = _recipients_for_category(config, category)
+    recipients, cc_list, category_label = _recipients_for_category(config, category)
     if not recipients:
         logger.warning(
             "Escalation skipped for user=%s: no recipients configured for category=%s",
@@ -209,8 +248,8 @@ async def handle_escalation(
         work_location=work_location,
     )
 
-    cc_list = list(getattr(config, "escalation_cc", ()) or ())
-
+    # cc_list is category-aware (operator always; impact head on impact-team
+    # categories) — see _recipients_for_category.
     logger.info(
         "Escalation routing user=%s category=%s recipients=%d cc=%d",
         phone_id,

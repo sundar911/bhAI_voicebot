@@ -221,9 +221,11 @@ def test_route_dedupes_repeated_stems(kb_with_helpdesk):
 
 def test_route_multi_label_use_cases(kb_with_helpdesk):
     """A turn can carry multiple use-case tags simultaneously."""
-    router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES: grievance, finance")
-    result = router.route("Salary nahi aayi, supervisor kuch bata nahi raha")
-    assert result.use_cases == ["grievance", "finance"]
+    router = _make_router(
+        kb_with_helpdesk, "KB: _index\nUSE_CASES: grievance, finance_advice"
+    )
+    result = router.route("Supervisor se jhagda, aur loan le lu kya")
+    assert result.use_cases == ["grievance", "finance_advice"]
 
 
 def test_route_filters_invalid_use_cases(kb_with_helpdesk):
@@ -238,10 +240,10 @@ def test_route_filters_invalid_use_cases(kb_with_helpdesk):
 def test_route_dedupes_use_cases(kb_with_helpdesk):
     """Repeated tags are collapsed."""
     router = _make_router(
-        kb_with_helpdesk, "KB: _index\nUSE_CASES: finance, finance, finance"
+        kb_with_helpdesk, "KB: _index\nUSE_CASES: general, general, general"
     )
-    result = router.route("PF balance")
-    assert result.use_cases == ["finance"]
+    result = router.route("kuch bhi")
+    assert result.use_cases == ["general"]
 
 
 def test_route_legacy_bare_stem_format_still_works(kb_with_helpdesk):
@@ -268,18 +270,6 @@ def test_route_finance_advice_tag_recognised(kb_with_helpdesk):
     router = _make_router(kb_with_helpdesk, "KB: _index\nUSE_CASES: finance_advice")
     result = router.route("₹1 lakh ka loan le rahi hu, EMI ₹8000")
     assert result.use_cases == ["finance_advice"]
-
-
-def test_route_finance_advice_distinct_from_finance(kb_with_helpdesk):
-    """The router treats data-lookup (finance) and decision-help
-    (finance_advice) as distinct tags; both can be emitted, but they
-    have different semantics in the use-case blocks."""
-    router = _make_router(
-        kb_with_helpdesk, "KB: _index\nUSE_CASES: finance, finance_advice"
-    )
-    result = router.route("salary kab aayegi aur ₹1 lakh loan le lu kya")
-    assert "finance" in result.use_cases
-    assert "finance_advice" in result.use_cases
 
 
 # ── conversation_history context ──────────────────────────────────────

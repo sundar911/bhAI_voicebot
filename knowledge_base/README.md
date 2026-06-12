@@ -68,6 +68,20 @@ Tell Claude Code what you want to update. For example:
 
 Claude Code will edit the file, create a branch, and push the changes. Sundar will review and approve.
 
+### Adding to the Knowledge Base
+
+The folder layout above is **not optional** — bhAI's code finds answers by reading specific paths and the topic list in `helpdesk/_index.md`. Edit content freely, but **keep the structure** (don't rename or move folders), and follow the case that matches what you're doing:
+
+**1. Fixing or updating an existing topic** — edit the matching file in `helpdesk/` (a changed fee, phone number, centre address in, say, `voter_id.md`). Keep the existing section headings (`## Keywords`, `## Common Questions & Answers`, `## Required Documents`, `## Centre Address`) — bhAI relies on them. Nothing else to touch.
+
+**2. Adding a brand-new topic** (a new government document, scheme, or service) — two steps, **both required**:
+1. Create the file `helpdesk/<short_name>.md` (lowercase, underscores — e.g. `birth_certificate.md`). Copy the layout of an existing file like `voter_id.md`: open with a `## Keywords` line (the words a user might actually say — bhAI matches on these), then the Q&A and documents.
+2. Add one line to `helpdesk/_index.md` under the right heading (*Documents & IDs* or *Government Schemes*), e.g. `- Birth certificate — apply, corrections, where to go`. **If it isn't in `_index.md`, bhAI will never find it** — that index is the only list it reads to know what it can answer.
+
+Keep entries short — every loaded file goes into bhAI's working memory, so bloat means slower, costlier replies.
+
+**3. Adding a whole new *theme*** — any document/scheme/government service is just a new topic (use case 2 above). But a fundamentally different *kind* of help — health guidance, legal aid, a production-floor helpdesk — is more than a KB file: it needs a small **code** change (a new "use case" so bhAI knows when to pull it, plus routing). **Don't try to wire that up by reorganising folders — it won't work and can break routing.** Instead, put your draft content in a new file, open the PR, and **flag it to Sundar in the PR description** ("new theme — needs code wiring"). He adds the few lines of code so it plugs into the existing setup cleanly.
+
 ### Writing Guidelines
 
 - **Use simple Hindi** - the same way you'd explain it to a colleague
@@ -95,12 +109,12 @@ bhAI's personality and conversation rules live in `src/bhai/llm/prompts/` (not i
 
 bhAI doesn't load every file every turn — that would blow the context window. Instead:
 
-- **shared/** files are always loaded at startup (company overview, escalation policy, style guide)
+- **shared/** files (company overview, escalation policy, style guide) are reference docs — bhAI's live persona, voice, and escalation rules now live directly in the system prompt (`src/bhai/llm/prompts/prompt_v1_pilot.md`), so editing shared/ alone won't change behavior
 - **helpdesk/_index.md** is always loaded (topic list, so bhAI knows what it *can* answer)
-- **helpdesk/{topic}.md** files are loaded only when a user asks something matching that topic. Claude Haiku reads each user query and picks 1-3 relevant files. See [ARCHITECTURE.md §5](../ARCHITECTURE.md#5-kb-retrieval-haiku-routed).
+- **helpdesk/{topic}.md** files are loaded only when a user asks something matching that topic. Claude Sonnet 4.6 reads each user query and picks 1-3 relevant files. See [ARCHITECTURE.md §5](../ARCHITECTURE.md#5-kb-retrieval-llm-routed).
 - **hr_admin/** files are loaded as part of the HR pipeline when applicable
 
-This means **adding a new helpdesk file requires updating `_index.md`** so the Haiku router can discover it. The file body itself isn't seen by the router — only by the main LLM when that topic is matched.
+This means **adding a new helpdesk file requires updating `_index.md`** so the router can discover it. The file body itself isn't seen by the router — only by the main LLM when that topic is matched.
 
 ### Updating the helpdesk source-of-truth
 

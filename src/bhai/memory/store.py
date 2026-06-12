@@ -4,13 +4,18 @@ Stores messages and rolling memory summaries per user.
 """
 
 import json
+import logging
 import sqlite3
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+from ..proactive.threads import MAX_HISTORY_ENTRIES, THREAD_STATES, Thread, ThreadPatch
 from ..security.crypto import decrypt_text, encrypt_text
+
+logger = logging.getLogger(__name__)
 
 # IST offset for session management
 IST = timezone(timedelta(hours=5, minutes=30))
@@ -22,6 +27,30 @@ SESSION_GAP_HOURS = 4
 def _now_iso() -> str:
     """Current time in ISO 8601 (IST)."""
     return datetime.now(IST).isoformat()
+
+
+@dataclass
+class NudgeLogEntry:
+    """One delivered proactive nudge, plus the user's reaction if one came.
+
+    Written by ``ConversationStore.log_nudge_delivered`` at delivery time;
+    ``reaction`` / ``reacted_at`` are filled in later by
+    ``record_nudge_reaction`` when the user's next message arrives inside
+    the attribution window. The dossier renderer turns these rows into
+    ``nudge_history.md`` — the data the anti-relentless brainstorm/critique
+    prompts and the joke-dedup pass have always been told to read but never
+    actually had (the file was a hardcoded placeholder before this).
+    """
+
+    phone: str
+    slot: str
+    category: str
+    text: str
+    delivered_at: str
+    topic: Optional[str] = None
+    reaction: Optional[str] = None
+    reacted_at: Optional[str] = None
+    id: Optional[int] = None
 
 
 class ConversationStore:
@@ -42,8 +71,7 @@ class ConversationStore:
 
     def _init_tables(self):
         """Create tables if they don't exist."""
-        self._conn.executescript(
-            """
+        self._conn.executescript("""
             CREATE TABLE IF NOT EXISTS messages (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 phone TEXT NOT NULL,
@@ -77,6 +105,40 @@ class ConversationStore:
                 updated_at TEXT NOT NULL
             );
 
+            -- v2 proactive feedback loop: the actual content of each
+            -- delivered nudge + the user's reaction. Distinct from the
+            -- `nudges` throttle table (which only holds per-slot
+            -- last_sent timestamps). text_enc / reaction_enc are
+            -- Fernet-encrypted like message content.
+            CREATE TABLE IF NOT EXISTS nudge_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                slot TEXT NOT NULL,
+                category TEXT NOT NULL,
+                topic TEXT,
+                text_enc TEXT NOT NULL,
+                delivered_at TEXT NOT NULL,
+                reaction_enc TEXT,
+                reacted_at TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_nudge_log_phone_time
+                ON nudge_log(phone, delivered_at);
+
+            CREATE TABLE IF NOT EXISTS threads (
+                phone TEXT NOT NULL,
+                slug TEXT NOT NULL,
+                state TEXT NOT NULL,
+                context_enc TEXT NOT NULL,
+                history_enc TEXT NOT NULL,
+                opened_at TEXT NOT NULL,
+                last_touched_at TEXT NOT NULL,
+                last_nudged_at TEXT,
+                PRIMARY KEY (phone, slug)
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_threads_phone_state
+                ON threads(phone, state);
             -- Append-only history of every nudge text sent, encrypted at
             -- rest. Read by the nudge prompt builder so tomorrow's nudge
             -- can avoid repeating today's topic (anti-relentless rule).
@@ -92,8 +154,24 @@ class ConversationStore:
 
             CREATE INDEX IF NOT EXISTS idx_nudge_history_phone_time
                 ON nudge_history(phone, sent_at);
-        """
-        )
+
+            -- Full model I/O per reactive turn, encrypted. raw_enc is the
+            -- model's COMPLETE output before any stripping; cleaned_enc is the
+            -- final spoken text after all <memory>/<thread>/markdown/block
+            -- stripping. Stored every turn so a reply that collapses after
+            -- stripping (e.g. "अरे," once a block ate the substance) is
+            -- debuggable from the raw instead of lost. View: /llm-io/{hash}.
+            CREATE TABLE IF NOT EXISTS llm_io (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                phone TEXT NOT NULL,
+                raw_enc TEXT NOT NULL,
+                cleaned_enc TEXT NOT NULL,
+                created_at TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_llm_io_phone_time
+                ON llm_io(phone, created_at);
+        """)
         self._conn.commit()
 
     def _encrypt(self, plaintext: str) -> str:
@@ -101,6 +179,62 @@ class ConversationStore:
 
     def _decrypt(self, ciphertext: str) -> str:
         return decrypt_text(ciphertext)
+
+    def _try_decrypt(self, ciphertext: str) -> Optional[str]:
+        """Decrypt a stored value, returning None (and logging) instead of
+        raising when it can't be decrypted — e.g. a row written under a
+        different ``BHAI_ENCRYPTION_KEY``. Read paths use this so one poisoned
+        row degrades to "skip it" rather than crashing the whole request.
+        """
+        try:
+            return decrypt_text(ciphertext)
+        except ValueError:
+            logger.warning(
+                "Skipping undecryptable stored value (key mismatch or corrupt data)"
+            )
+            return None
+
+    # ── LLM I/O capture (debugging: full model output, pre + post strip) ──
+
+    def save_llm_io(self, phone: str, raw: str, cleaned: str) -> None:
+        """Persist the model's full output for a reactive turn, encrypted.
+
+        ``raw`` is the complete model output BEFORE any stripping; ``cleaned``
+        is the final spoken text AFTER it. Stored every turn so a reply that
+        collapses after stripping (a block eating the substance) can be
+        debugged from the raw rather than silently lost. Best-effort — never
+        raises into the reply path.
+        """
+        try:
+            self._conn.execute(
+                "INSERT INTO llm_io (phone, raw_enc, cleaned_enc, created_at)"
+                " VALUES (?, ?, ?, ?)",
+                (
+                    phone,
+                    self._encrypt(raw or ""),
+                    self._encrypt(cleaned or ""),
+                    _now_iso(),
+                ),
+            )
+            self._conn.commit()
+        except Exception:
+            logger.exception("save_llm_io failed for phone=%s (non-fatal)", phone)
+
+    def get_recent_llm_io(self, phone: str, limit: int = 20) -> List[Dict[str, str]]:
+        """Recent (raw, cleaned) model-output pairs for a user, decrypted."""
+        rows = self._conn.execute(
+            "SELECT raw_enc, cleaned_enc, created_at FROM llm_io"
+            " WHERE phone = ? ORDER BY created_at DESC LIMIT ?",
+            (phone, limit),
+        ).fetchall()
+        return [
+            {
+                "raw": self._try_decrypt(raw_enc) or "",
+                "cleaned": self._try_decrypt(cleaned_enc) or "",
+                "created_at": ts,
+            }
+            for raw_enc, cleaned_enc, ts in rows
+        ]
 
     # ── Session management ────────────────────────────────────────────
 
@@ -170,10 +304,13 @@ class ConversationStore:
 
         messages = []
         for role, content_enc, ts in reversed(rows):  # chronological order
+            content = self._try_decrypt(content_enc)
+            if content is None:  # poisoned row (wrong key) — skip, don't crash
+                continue
             messages.append(
                 {
                     "role": role,
-                    "content": self._decrypt(content_enc),
+                    "content": content,
                     "timestamp": ts,
                 }
             )
@@ -188,10 +325,13 @@ class ConversationStore:
             (phone, session_id),
         ).fetchall()
 
-        return [
-            {"role": role, "content": self._decrypt(enc), "timestamp": ts}
-            for role, enc, ts in rows
-        ]
+        out = []
+        for role, enc, ts in rows:
+            content = self._try_decrypt(enc)
+            if content is None:  # poisoned row (wrong key) — skip, don't crash
+                continue
+            out.append({"role": role, "content": content, "timestamp": ts})
+        return out
 
     def count_user_messages(self, phone: str) -> int:
         """Count total user (not assistant) messages for summarization trigger."""
@@ -218,9 +358,15 @@ class ConversationStore:
             return None
 
         summary_enc, facts_enc, last_updated = row
+        summary = self._try_decrypt(summary_enc)
+        if summary is None:
+            # Memory written under a different key — act as if there is no
+            # memory rather than crashing the request.
+            return None
+        facts_raw = self._try_decrypt(facts_enc)
         return {
-            "summary": self._decrypt(summary_enc),
-            "facts": json.loads(self._decrypt(facts_enc)),
+            "summary": summary,
+            "facts": json.loads(facts_raw) if facts_raw else [],
             "last_updated": last_updated,
         }
 
@@ -364,6 +510,564 @@ class ConversationStore:
         ).fetchall()
         return [r[0] for r in rows]
 
+    # ── Nudge content log (v2 proactive feedback loop) ────────────────
+
+    def log_nudge_delivered(
+        self,
+        phone: str,
+        slot: str,
+        *,
+        category: str,
+        text: str,
+        topic: Optional[str] = None,
+    ) -> int:
+        """Append the content of a delivered nudge to ``nudge_log``.
+
+        The write half of the proactive feedback loop. Stores the spoken
+        text encrypted (it carries the user's name + personal context, same
+        privacy contract as ``messages``). ``topic`` is the thread slug or a
+        short label the relentlessness gate dedups on; ``None`` for jokes /
+        domain-grounded nudges. Returns the new row id.
+        """
+        cur = self._conn.execute(
+            """INSERT INTO nudge_log
+                   (phone, slot, category, topic, text_enc, delivered_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (phone, slot, category, topic, self._encrypt(text), _now_iso()),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid) if cur.lastrowid is not None else -1
+
+    def record_nudge_reaction(
+        self,
+        phone: str,
+        reaction_text: str,
+        *,
+        window_hours: int = 24,
+    ) -> bool:
+        """Attach a user message as the reaction to their most recent
+        un-reacted nudge, if one went out within ``window_hours``.
+
+        Called from the reactive ingest on every inbound user message. Only
+        the FIRST reply after a nudge attaches (the row is then non-NULL, so
+        later unrelated messages can't clobber it). Returns True if a
+        reaction was recorded. The read-back half of the feedback loop — the
+        brainstorm pass reads these reactions to learn what actually landed.
+        """
+        cutoff = (datetime.now(IST) - timedelta(hours=window_hours)).isoformat()
+        row = self._conn.execute(
+            """SELECT id FROM nudge_log
+               WHERE phone = ? AND reaction_enc IS NULL AND delivered_at >= ?
+               ORDER BY delivered_at DESC LIMIT 1""",
+            (phone, cutoff),
+        ).fetchone()
+        if not row:
+            return False
+        self._conn.execute(
+            "UPDATE nudge_log SET reaction_enc = ?, reacted_at = ? WHERE id = ?",
+            (self._encrypt(reaction_text), _now_iso(), row[0]),
+        )
+        self._conn.commit()
+        return True
+
+    def backfill_nudge_log(
+        self,
+        phone: str,
+        slot: str,
+        *,
+        category: str,
+        text: str,
+        delivered_at: str,
+        reaction: Optional[str] = None,
+        reacted_at: Optional[str] = None,
+        topic: Optional[str] = None,
+    ) -> Optional[int]:
+        """Idempotent historical insert for the nudge_log migration.
+
+        Unlike ``log_nudge_delivered`` (which stamps ``_now_iso()``), this
+        writes the ORIGINAL ``delivered_at`` and an optional already-known
+        ``reaction``/``reacted_at`` in one shot — used by the one-off
+        reconstruction that seeds nudge_log from the ``messages`` transcript
+        for pilot users who pre-date the feedback loop. Skips (returns None)
+        if a row with the same ``(phone, slot, delivered_at)`` already exists,
+        so re-runs are safe. Returns the new row id otherwise.
+        """
+        exists = self._conn.execute(
+            """SELECT 1 FROM nudge_log
+               WHERE phone = ? AND slot = ? AND delivered_at = ? LIMIT 1""",
+            (phone, slot, delivered_at),
+        ).fetchone()
+        if exists:
+            return None
+        cur = self._conn.execute(
+            """INSERT INTO nudge_log
+                   (phone, slot, category, topic, text_enc, delivered_at,
+                    reaction_enc, reacted_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+            (
+                phone,
+                slot,
+                category,
+                topic,
+                self._encrypt(text),
+                delivered_at,
+                self._encrypt(reaction) if reaction else None,
+                reacted_at,
+            ),
+        )
+        self._conn.commit()
+        return int(cur.lastrowid) if cur.lastrowid is not None else -1
+
+    def recent_nudges(
+        self,
+        phone: str,
+        *,
+        days: int = 30,
+        limit: int = 30,
+    ) -> List[NudgeLogEntry]:
+        """Most-recent-first delivered nudges (with reactions) in the last N
+        days. Feeds the dossier's ``nudge_history.md`` so the anti-relentless
+        prompts and joke dedup finally have real data to read."""
+        cutoff = (datetime.now(IST) - timedelta(days=days)).isoformat()
+        rows = self._conn.execute(
+            """SELECT id, phone, slot, category, topic, text_enc,
+                      delivered_at, reaction_enc, reacted_at
+               FROM nudge_log
+               WHERE phone = ? AND delivered_at >= ?
+               ORDER BY delivered_at DESC LIMIT ?""",
+            (phone, cutoff, limit),
+        ).fetchall()
+        return [
+            NudgeLogEntry(
+                id=r[0],
+                phone=r[1],
+                slot=r[2],
+                category=r[3],
+                topic=r[4],
+                text=self._decrypt(r[5]),
+                delivered_at=r[6],
+                reaction=self._decrypt(r[7]) if r[7] else None,
+                reacted_at=r[8],
+            )
+            for r in rows
+        ]
+
+    def recent_joke_texts(self, phone: str, *, days: int = 30) -> List[str]:
+        """Stripped texts of jokes delivered in the last N days — the hard
+        dedup gate the joke pass seeds so the same vault joke can't fire
+        twice in a month (replay finding #4: the fan/AC joke fired 5×)."""
+        return [
+            n.text.strip()
+            for n in self.recent_nudges(phone, days=days, limit=100)
+            if n.category == "joke"
+        ]
+
+    # ── Open threads (v2 proactive) ───────────────────────────────────
+
+    def _row_to_thread(self, row: Tuple[Any, ...]) -> Thread:
+        """Decrypt and hydrate a thread row into the public dataclass."""
+        (
+            phone,
+            slug,
+            state,
+            context_enc,
+            history_enc,
+            opened_at,
+            last_touched_at,
+            last_nudged_at,
+        ) = row
+        history_raw = self._decrypt(history_enc)
+        try:
+            history = json.loads(history_raw) if history_raw else []
+        except json.JSONDecodeError:
+            # Defensive: if the encrypted blob ever decodes to something
+            # other than a JSON array, surface it as empty rather than
+            # crashing the proactive loop.
+            logger.warning(
+                "thread.history.malformed phone=%s slug=%s — resetting to empty",
+                phone,
+                slug,
+            )
+            history = []
+        return Thread(
+            phone=phone,
+            slug=slug,
+            state=state,
+            context=self._decrypt(context_enc),
+            history=history,
+            opened_at=opened_at,
+            last_touched_at=last_touched_at,
+            last_nudged_at=last_nudged_at,
+        )
+
+    def get_thread(self, phone: str, slug: str) -> Optional[Thread]:
+        """Fetch a single thread by (phone, slug), or None if missing."""
+        row = self._conn.execute(
+            """SELECT phone, slug, state, context_enc, history_enc,
+                      opened_at, last_touched_at, last_nudged_at
+               FROM threads WHERE phone = ? AND slug = ?""",
+            (phone, slug),
+        ).fetchone()
+        return self._row_to_thread(row) if row else None
+
+    def list_threads(
+        self,
+        phone: str,
+        *,
+        states: Optional[List[str]] = None,
+    ) -> List[Thread]:
+        """List a user's threads, optionally filtered by state.
+
+        Without ``states``, returns every thread for the user (including
+        closed ones) ordered by most-recently-touched first — useful for
+        the dossier renderer which groups by state itself. With ``states``,
+        returns only threads in one of the listed states.
+        """
+        if states is None:
+            rows = self._conn.execute(
+                """SELECT phone, slug, state, context_enc, history_enc,
+                          opened_at, last_touched_at, last_nudged_at
+                   FROM threads WHERE phone = ?
+                   ORDER BY last_touched_at DESC""",
+                (phone,),
+            ).fetchall()
+        else:
+            # Build placeholders for the IN clause; SQLite has no native
+            # array binding so we expand inline.
+            placeholders = ",".join("?" * len(states))
+            rows = self._conn.execute(
+                f"""SELECT phone, slug, state, context_enc, history_enc,
+                           opened_at, last_touched_at, last_nudged_at
+                    FROM threads
+                    WHERE phone = ? AND state IN ({placeholders})
+                    ORDER BY last_touched_at DESC""",
+                (phone, *states),
+            ).fetchall()
+        return [self._row_to_thread(r) for r in rows]
+
+    def apply_thread_patches(
+        self, phone: str, patches: List[ThreadPatch]
+    ) -> Dict[str, int]:
+        """Apply a batch of thread patches emitted by the reactive LLM.
+
+        State transitions (see ``THREAD_STATES`` in
+        ``bhai.proactive.threads`` for the meaning of each state):
+
+        - ``open`` on a new slug → INSERT as ``dormant``.
+        - ``open`` on a ``closed`` slug → revive as ``dormant`` (the
+          user re-raised something we'd previously resolved).
+        - ``open`` on a slug already in ``dormant``/``active``/
+          ``do_not_nudge`` → treated as an ``update`` (the LLM lost
+          track of which threads exist; auto-degrade rather than
+          double-create).
+        - ``update`` on a known slug → refresh context, keep state.
+        - ``update`` on a missing slug → auto-promote to a new
+          ``dormant`` thread (so a thinker that drafts a patch slightly
+          ahead of the LLM's open-emission still persists context).
+        - ``close`` on a known slug → state → ``closed``.
+        - ``close`` on a missing slug → skipped (nothing to close).
+        - ``mark_sensitive`` on a known slug → state → ``do_not_nudge``,
+          context preserved.
+        - ``mark_sensitive`` on a missing slug → INSERT as
+          ``do_not_nudge`` with empty context (the agent has decided to
+          steer clear of this topic before any thread record existed —
+          we still want a row to prevent future nudges).
+
+        Invalid patches (failing ``ThreadPatch.is_valid``) are logged
+        and skipped without raising. Returns a counter dict:
+        ``{"opened", "updated", "closed", "marked_sensitive", "skipped"}``.
+        """
+        counts = {
+            "opened": 0,
+            "updated": 0,
+            "closed": 0,
+            "marked_sensitive": 0,
+            "skipped": 0,
+        }
+        for patch in patches:
+            if not patch.is_valid():
+                logger.warning(
+                    "thread.patch.invalid op=%s topic=%s — skipped",
+                    patch.op,
+                    patch.topic,
+                )
+                counts["skipped"] += 1
+                continue
+
+            existing = self.get_thread(phone, patch.topic)
+            now = _now_iso()
+
+            if patch.op == "open":
+                if existing is None:
+                    self._insert_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state="dormant",
+                        context=patch.context,
+                        history=[{"ts": now, "op": "open", "context": patch.context}],
+                        opened_at=now,
+                        last_touched_at=now,
+                    )
+                    counts["opened"] += 1
+                elif existing.state == "closed":
+                    history = self._append_history(
+                        existing.history, now, "open", patch.context
+                    )
+                    self._update_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state="dormant",
+                        context=patch.context,
+                        history=history,
+                        last_touched_at=now,
+                    )
+                    counts["opened"] += 1
+                else:
+                    # Slug already live — treat as update to avoid
+                    # silently dropping the LLM's new context.
+                    history = self._append_history(
+                        existing.history, now, "update", patch.context
+                    )
+                    self._update_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state=existing.state,
+                        context=patch.context,
+                        history=history,
+                        last_touched_at=now,
+                    )
+                    counts["updated"] += 1
+                    logger.info(
+                        "thread.open.already_active phone=%s slug=%s "
+                        "state=%s — treated as update",
+                        phone,
+                        patch.topic,
+                        existing.state,
+                    )
+
+            elif patch.op == "update":
+                if existing is None:
+                    # Auto-promote: the agent referenced a slug the
+                    # LLM hadn't formally opened yet. Better to persist
+                    # the context than to lose it.
+                    self._insert_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state="dormant",
+                        context=patch.context,
+                        history=[{"ts": now, "op": "update", "context": patch.context}],
+                        opened_at=now,
+                        last_touched_at=now,
+                    )
+                    counts["opened"] += 1
+                    logger.info(
+                        "thread.update.missing_slug phone=%s slug=%s "
+                        "— auto-promoted to dormant",
+                        phone,
+                        patch.topic,
+                    )
+                else:
+                    history = self._append_history(
+                        existing.history, now, "update", patch.context
+                    )
+                    self._update_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state=existing.state,
+                        context=patch.context,
+                        history=history,
+                        last_touched_at=now,
+                    )
+                    counts["updated"] += 1
+
+            elif patch.op == "close":
+                if existing is None:
+                    logger.info(
+                        "thread.close.missing_slug phone=%s slug=%s " "— skipped",
+                        phone,
+                        patch.topic,
+                    )
+                    counts["skipped"] += 1
+                else:
+                    history = self._append_history(
+                        existing.history, now, "close", patch.context
+                    )
+                    self._update_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state="closed",
+                        context=patch.context,
+                        history=history,
+                        last_touched_at=now,
+                    )
+                    counts["closed"] += 1
+
+            elif patch.op == "mark_sensitive":
+                if existing is None:
+                    self._insert_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state="do_not_nudge",
+                        context="",
+                        history=[{"ts": now, "op": "mark_sensitive", "context": ""}],
+                        opened_at=now,
+                        last_touched_at=now,
+                    )
+                    counts["marked_sensitive"] += 1
+                else:
+                    history = self._append_history(
+                        existing.history, now, "mark_sensitive", ""
+                    )
+                    self._update_thread(
+                        phone=phone,
+                        slug=patch.topic,
+                        state="do_not_nudge",
+                        context=existing.context,
+                        history=history,
+                        last_touched_at=now,
+                    )
+                    counts["marked_sensitive"] += 1
+
+        self._conn.commit()
+        return counts
+
+    def _append_history(
+        self,
+        prior: List[Dict[str, str]],
+        ts: str,
+        op: str,
+        context: str,
+    ) -> List[Dict[str, str]]:
+        """Append a history entry and trim to MAX_HISTORY_ENTRIES."""
+        prior = list(prior) + [{"ts": ts, "op": op, "context": context}]
+        if len(prior) > MAX_HISTORY_ENTRIES:
+            prior = prior[-MAX_HISTORY_ENTRIES:]
+        return prior
+
+    def _insert_thread(
+        self,
+        *,
+        phone: str,
+        slug: str,
+        state: str,
+        context: str,
+        history: List[Dict[str, str]],
+        opened_at: str,
+        last_touched_at: str,
+    ) -> None:
+        """Raw INSERT — caller validates state and slug."""
+        assert state in THREAD_STATES, f"unknown state: {state}"
+        self._conn.execute(
+            """INSERT INTO threads (phone, slug, state, context_enc,
+                                    history_enc, opened_at, last_touched_at,
+                                    last_nudged_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, NULL)""",
+            (
+                phone,
+                slug,
+                state,
+                self._encrypt(context),
+                self._encrypt(json.dumps(history, ensure_ascii=False)),
+                opened_at,
+                last_touched_at,
+            ),
+        )
+
+    def _update_thread(
+        self,
+        *,
+        phone: str,
+        slug: str,
+        state: str,
+        context: str,
+        history: List[Dict[str, str]],
+        last_touched_at: str,
+    ) -> None:
+        """Raw UPDATE — caller validates state. Does NOT touch
+        ``opened_at`` or ``last_nudged_at``."""
+        assert state in THREAD_STATES, f"unknown state: {state}"
+        self._conn.execute(
+            """UPDATE threads
+               SET state = ?, context_enc = ?, history_enc = ?,
+                   last_touched_at = ?
+               WHERE phone = ? AND slug = ?""",
+            (
+                state,
+                self._encrypt(context),
+                self._encrypt(json.dumps(history, ensure_ascii=False)),
+                last_touched_at,
+                phone,
+                slug,
+            ),
+        )
+
+    def record_nudge_outcome(
+        self,
+        phone: str,
+        slot: str,
+        thread_slug: Optional[str] = None,
+        *,
+        category: Optional[str] = None,
+        text: Optional[str] = None,
+    ) -> None:
+        """Atomic post-delivery hook the nudge schedulers call after a
+        successful send.
+
+        Wraps the two state mutations a delivered nudge produces:
+          - ``record_nudge_sent`` — bumps the per-slot last-sent
+            timestamp (existing v1.5 throttle gate).
+          - ``mark_thread_nudged`` — transitions the targeted thread
+            from ``dormant`` to ``active`` (v2 piece D).
+
+        ``thread_slug=None`` is normal — the v1.5 nudge path doesn't
+        choose a thread, and the v2 thinker leaves it ``None`` when the
+        candidate is grounded in a domain-file fact rather than an open
+        thread. In both cases we still need to record the send.
+
+        When ``category`` and ``text`` are both supplied the nudge content
+        is also appended to ``nudge_log`` (the feedback loop). Callers that
+        only have a bare send (legacy admin pings) can omit them and just
+        get the throttle + thread-state bump as before.
+        """
+        self.record_nudge_sent(phone, slot)
+        if thread_slug:
+            self.mark_thread_nudged(phone, thread_slug)
+        if category is not None and text is not None:
+            self.log_nudge_delivered(
+                phone, slot, category=category, text=text, topic=thread_slug
+            )
+
+    def mark_thread_nudged(self, phone: str, slug: str) -> bool:
+        """Stamp ``last_nudged_at`` and transition ``dormant → active``.
+
+        Called by the proactive thinker (piece D) after it fires a nudge
+        that references a specific thread. Returns True if the row was
+        found and updated, False if the slug doesn't exist for this user.
+
+        - ``dormant`` → ``active`` (we just nudged; watch for reaction).
+        - ``active``/``closed``/``do_not_nudge`` → state unchanged but
+          ``last_nudged_at`` still refreshed, so the thinker has an
+          accurate "I touched this on day N" signal regardless.
+        """
+        existing = self.get_thread(phone, slug)
+        if existing is None:
+            logger.warning(
+                "thread.mark_nudged.missing_slug phone=%s slug=%s",
+                phone,
+                slug,
+            )
+            return False
+        new_state = "active" if existing.state == "dormant" else existing.state
+        now = _now_iso()
+        self._conn.execute(
+            """UPDATE threads
+               SET state = ?, last_nudged_at = ?
+               WHERE phone = ? AND slug = ?""",
+            (new_state, now, phone, slug),
+        )
+        self._conn.commit()
+        return True
+
     # ── Cleanup ───────────────────────────────────────────────────────
 
     def delete_old_messages(self, days: int) -> int:
@@ -384,7 +1088,12 @@ class ConversationStore:
         memory and nudges — assumes the target is empty (e.g. just /start'd).
         """
         if from_phone == to_phone:
-            return {"messages_migrated": 0, "memory_migrated": 0, "nudges_migrated": 0}
+            return {
+                "messages_migrated": 0,
+                "memory_migrated": 0,
+                "nudges_migrated": 0,
+                "threads_migrated": 0,
+            }
 
         msg_cur = self._conn.execute(
             "UPDATE messages SET phone = ? WHERE phone = ?",
@@ -402,10 +1111,20 @@ class ConversationStore:
             "UPDATE nudges SET phone = ? WHERE phone = ?",
             (to_phone, from_phone),
         )
-        # nudge_history is append-only with surrogate id — straight UPDATE,
-        # no pre-clear needed.
+        # Threads has (phone, slug) as composite PRIMARY KEY — same fix.
+        self._conn.execute("DELETE FROM threads WHERE phone = ?", (to_phone,))
+        thread_cur = self._conn.execute(
+            "UPDATE threads SET phone = ? WHERE phone = ?",
+            (to_phone, from_phone),
+        )
+        # nudge_history and nudge_log are append-only with surrogate ids —
+        # straight UPDATE, no pre-clear needed.
         self._conn.execute(
             "UPDATE nudge_history SET phone = ? WHERE phone = ?",
+            (to_phone, from_phone),
+        )
+        self._conn.execute(
+            "UPDATE nudge_log SET phone = ? WHERE phone = ?",
             (to_phone, from_phone),
         )
         self._conn.commit()
@@ -413,6 +1132,7 @@ class ConversationStore:
             "messages_migrated": msg_cur.rowcount,
             "memory_migrated": mem_cur.rowcount,
             "nudges_migrated": nudge_cur.rowcount,
+            "threads_migrated": thread_cur.rowcount,
         }
 
     def delete_user(self, phone: str) -> Dict[str, int]:
@@ -424,13 +1144,17 @@ class ConversationStore:
         msg_cur = self._conn.execute("DELETE FROM messages WHERE phone = ?", (phone,))
         mem_cur = self._conn.execute("DELETE FROM memory WHERE phone = ?", (phone,))
         nudge_cur = self._conn.execute("DELETE FROM nudges WHERE phone = ?", (phone,))
-        # Also wipe the append-only nudge_history rows — privacy.
+        thread_cur = self._conn.execute("DELETE FROM threads WHERE phone = ?", (phone,))
+        # Also wipe the append-only nudge_history + nudge_log rows — privacy
+        # (nudge_log holds Fernet-encrypted nudge text and reactions).
         self._conn.execute("DELETE FROM nudge_history WHERE phone = ?", (phone,))
+        self._conn.execute("DELETE FROM nudge_log WHERE phone = ?", (phone,))
         self._conn.commit()
         return {
             "messages_deleted": msg_cur.rowcount,
             "memory_deleted": mem_cur.rowcount,
             "nudges_deleted": nudge_cur.rowcount,
+            "threads_deleted": thread_cur.rowcount,
         }
 
     def close(self):
